@@ -23,4 +23,16 @@ export const env = {
     synchronize: required('DB_SYNCHRONIZE', 'false') === 'true',
     logging: required('DB_LOGGING', 'false') === 'true',
   },
+  // Optional at startup; checked when the Gmail client is created.
+  gmail: {
+    mailbox: process.env.GMAIL_MAILBOX ?? 'erp.postfg@mcaffeine.com',
+    authMode: (process.env.GMAIL_AUTH_MODE ?? 'service_account') as 'service_account' | 'oauth',
+    serviceAccountKeyFile: process.env.GMAIL_SERVICE_ACCOUNT_KEY_FILE,
+    oauthClientId: process.env.GMAIL_OAUTH_CLIENT_ID,
+    oauthClientSecret: process.env.GMAIL_OAUTH_CLIENT_SECRET,
+    oauthRefreshToken: process.env.GMAIL_OAUTH_REFRESH_TOKEN,
+  },
+  storage: {
+    emailDir: process.env.EMAIL_STORAGE_DIR ?? 'storage/emails',
+  },
 };

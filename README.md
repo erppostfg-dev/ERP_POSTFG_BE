@@ -22,6 +22,16 @@ npm run dev            # http://localhost:3000/api/v1
 | `npm run migration:generate -- src/migrations/<Name>` | Generate migration from entity changes |
 | `npm run migration:run` / `migration:revert` | Apply / roll back migrations |
 
+## Pulling PO emails (test)
+
+Finds the email with the exact subject you give in the Gmail mailbox in `GMAIL_MAILBOX`. It checks the email against the channel filter, then saves it to `EMAIL_STORAGE_DIR/<channel>/<PO>_<gmailId>/` (attachments, `body.txt`, `body.html`, `metadata.json`).
+
+```bash
+npm run email:pull -- --channel zepto --subject "Purchase Order for [PEP TECHNOLOGIES PRIVATE LIMITED and P5691383]"
+```
+
+Channel filters are in `src/modules/email-intake/channel-filters/`. Each one is built from that channel's `Email-Format-*.txt` samples.
+
 ## Structure
 
 ```
