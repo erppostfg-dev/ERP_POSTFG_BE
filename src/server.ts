@@ -2,21 +2,44 @@ import 'reflect-metadata';
 import app from './app';
 import { AppDataSource } from './config/data-source';
 import { env } from './config/env';
+import { startEmailListener } from './modules/email-intake/pubsub.listener';
 
 const start = async (): Promise<void> => {
-  try {
-    await AppDataSource.initialize();
-    console.log(`Database connected: ${env.db.host}:${env.db.port}/${env.db.name}`);
-  } catch (err) {
-    console.error('Failed to connect to the database', err);
-    process.exit(1);
+  if (env.db.enabled) {
+    try {
+      await AppDataSource.initialize();
+      console.log(`Database connected: ${env.db.host}:${env.db.port}/${env.db.name}`);
+    } catch (err) {
+      console.error('Failed to connect to the database', err);
+      process.exit(1);
+    }
+  } else {
+    console.log('Database disabled (DB_ENABLED=false)');
   }
 
-  const server = app.listen(env.port, () => {
-    console.log(`Server running on http://localhost:${env.port}${env.apiPrefix}`);  });
+  const server = app.listen(env.port);
+  // The email listener posts to our own endpoint, so wait until we are listening.
+  await new Promise<void>((resolve, reject) => {
+    server.once('listening', resolve);
+    server.once('error', reject);
+  });
+  console.log(`Server running on http://localhost:${env.port}${env.apiPrefix}`);
+
+  // Gmail watch + Pub/Sub pull: labelled emails are sent to their route's endpoint.
+  let listener: { stop: () => Promise<void> } | undefined;
+  if (env.pubsub.enabled) {
+    try {
+      listener = await startEmailListener();
+    } catch (err) {
+      console.error('Email listener did not start:', err instanceof Error ? err.message : err);
+    }
+  } else {
+    console.log('Email listener disabled (PUBSUB_ENABLED=false)');
+  }
 
   const shutdown = async (signal: string): Promise<void> => {
     console.log(`${signal} received, shutting down...`);
+    await listener?.stop();
     server.close(async () => {
       if (AppDataSource.isInitialized) await AppDataSource.destroy();
       process.exit(0);

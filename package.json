@@ -9,8 +9,8 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
-    "email:pull": "ts-node --transpile-only src/scripts/pull-emails.ts",
     "gmail:token": "ts-node --transpile-only src/scripts/gmail-token.ts",
+    "email:route": "ts-node --transpile-only src/scripts/route-label.ts",
     "typeorm": "typeorm-ts-node-commonjs",
     "migration:generate": "npm run typeorm -- migration:generate -d src/config/data-source.ts",
     "migration:create": "typeorm-ts-node-commonjs migration:create",
@@ -18,11 +18,13 @@
     "migration:revert": "npm run typeorm -- migration:revert -d src/config/data-source.ts"
   },
   "dependencies": {
+    "@google-cloud/pubsub": "^6.1.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.2",
     "googleapis": "^182.0.0",
     "helmet": "^8.0.0",
+    "multer": "^2.4.0",
     "mysql2": "^3.11.5",
     "reflect-metadata": "^0.2.2",
     "typeorm": "^0.3.20"
@@ -30,6 +32,7 @@
   "devDependencies": {
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
+    "@types/multer": "^2.3.0",
     "@types/node": "^22.10.2",
     "ts-node": "^10.9.2",
     "ts-node-dev": "^2.0.0",

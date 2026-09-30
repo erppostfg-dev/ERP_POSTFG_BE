@@ -11,8 +11,10 @@ import http from 'http';
 import { AddressInfo } from 'net';
 import { google } from 'googleapis';
 import { env } from '../config/env';
+import { GMAIL_SCOPES, PUBSUB_SCOPES } from '../modules/email-intake/gmail.client';
 
-const SCOPES = ['https://www.googleapis.com/auth/gmail.readonly'];
+// Gmail read + Pub/Sub pull, so one refresh token serves the whole email listener.
+const SCOPES = [...GMAIL_SCOPES, ...PUBSUB_SCOPES];
 
 const openBrowser = (url: string): void => {
   const cmd =
