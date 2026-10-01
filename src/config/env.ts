@@ -53,6 +53,15 @@ export const env = {
     baseUrl: process.env.INTAKE_BASE_URL ?? `http://localhost:${port}${apiPrefix}`,
     webhookSecret: process.env.WEBHOOK_SECRET,
   },
+  // Python OCR (ocr-service/, a git submodule), run as a child process by extractPo().
+  ocr: {
+    // true: every newly stored email goes to extractPo() straight away (testing; later a BullMQ worker does this).
+    enabled: flag('OCR_ENABLED'),
+    pythonBin: process.env.PYTHON_BIN ?? 'python',
+    script: process.env.OCR_SCRIPT ?? 'ocr-service/dev/scripts/run_po.py',
+    timeoutMs: Number(process.env.OCR_TIMEOUT_MS ?? 10 * 60 * 1000),
+    concurrency: Number(process.env.OCR_CONCURRENCY ?? 2),
+  },
   storage: {
     emailDir: process.env.EMAIL_STORAGE_DIR ?? 'storage/emails',
     gmailStateFile: process.env.GMAIL_STATE_FILE ?? 'storage/gmail-state.json',

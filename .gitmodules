@@ -1,0 +1,4 @@
+[submodule "ocr-service"]
+	path = ocr-service
+	url = https://github.com/erppostfg-dev/mcaffeine-erp-post-fg-plugins.git
+	branch = main

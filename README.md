@@ -47,6 +47,28 @@ Gmail filter -> label (e.g. Po-Intake) -> users.watch -> Pub/Sub topic -> pull s
   - Returns `202 { data: { messageId, label, duplicate, status, folder, attachments } }`.
   - The same `messageId` is stored once.
 
+## OCR: extractPo()
+
+```
+extractPo(<stored email folder>)
+  1. read metadata.json (from, subject, files)
+  2. detect the channel     src/modules/ocr/channels.config.ts  (sender + optional subject)
+  3. pick the files         pdf and/or sheet, as the channel's OCR "expects"
+  4. run the Python OCR     python ocr-service/dev/scripts/run_po.py <ocrChannel> <files> --output ocr-output.csv
+  5. save ocr-result.json   in the email folder (plus the OCR's CSV)
+```
+
+- **Add a channel:** add one entry to `channels.config.ts` (`channel`, `ocrChannel`, `senders`, `subject`, `files`). Its `ocrChannel` must exist in `ocr-service/dev/scripts/channels.json`.
+- **Testing:** with `OCR_ENABLED=true`, every newly stored email goes to `extractPo()` in the background, `OCR_CONCURRENCY` at a time. The final design replaces this with an S3 upload plus a BullMQ worker that calls the same `extractPo()`.
+- **By hand:**
+  - `npm run ocr:run -- --folder <email folder>` runs one email.
+  - `npm run ocr:run -- --label po-intake` runs every stored email in a label folder.
+  - Add `--detect` to only show the detected channel, without running OCR.
+- **Python setup:** `ocr-service/` is a git submodule. Run `git submodule update --init` after cloning.
+  - `python -m venv ocr-service/.venv`, then pip install `boto3 pymupdf openpyxl xlrd`.
+  - Set `PYTHON_BIN` to that venv's python.
+  - AWS credentials need Textract, Bedrock and S3 (ap-south-1).
+
 ## Structure
 
 ```
@@ -56,11 +78,13 @@ src/
   migrations/    TypeORM migrations
   middlewares/   error / 404 handlers
   modules/email-intake/  Gmail client, label routes, Pub/Sub listener, storage
+  modules/ocr/   extractPo(): channel config + detection, Python OCR runner
   routes/        Express routers (health, po-intake)
-  scripts/       gmail:token, email:route
+  scripts/       gmail:token, email:route, ocr:run
   utils/         ApiError etc.
   app.ts         Express app
   server.ts      DB (optional) + listen + email listener
+ocr-service/     Python OCR (git submodule)
 ```
 
 ## Adding an API

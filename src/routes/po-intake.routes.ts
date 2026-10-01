@@ -3,6 +3,7 @@ import { NextFunction, Request, Response, Router } from 'express';
 import multer from 'multer';
 import { env } from '../config/env';
 import { storeInboundEmail } from '../modules/email-intake/email-storage.service';
+import { queueExtractPo } from '../modules/ocr/extract-po.service';
 import { ApiError } from '../utils/ApiError';
 
 const router = Router();
@@ -75,6 +76,9 @@ router.post('/email', requireWebhookSecret, upload.array('files', MAX_FILES), as
     console.log(
       `[po-intake] ${stored.duplicate ? 'repeat of' : 'stored'} ${body.label ?? 'manual'} "${body.subject ?? ''}" -> ${stored.folder}`,
     );
+
+    // Testing: straight to OCR. Later: upload to S3 and add a BullMQ job instead.
+    if (env.ocr.enabled && !stored.duplicate) queueExtractPo(stored.folder);
 
     res.status(202).json({
       data: {

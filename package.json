@@ -15,7 +15,8 @@
     "migration:generate": "npm run typeorm -- migration:generate -d src/config/data-source.ts",
     "migration:create": "typeorm-ts-node-commonjs migration:create",
     "migration:run": "npm run typeorm -- migration:run -d src/config/data-source.ts",
-    "migration:revert": "npm run typeorm -- migration:revert -d src/config/data-source.ts"
+    "migration:revert": "npm run typeorm -- migration:revert -d src/config/data-source.ts",
+    "ocr:run": "ts-node --transpile-only src/scripts/ocr-run.ts"
   },
   "dependencies": {
     "@google-cloud/pubsub": "^6.1.0",
