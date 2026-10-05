@@ -29,18 +29,35 @@ const safeName = (name: string): string => name.replace(/[<>:"/\\|?*\x00-\x1f]/g
 /** Short, stable key for a Message-ID (Message-IDs are long and full of <>@). */
 const messageKey = (messageId: string): string => crypto.createHash('sha1').update(messageId).digest('hex').slice(0, 16);
 
+/** Emails of a group that are not POs are moved to <group>-not-po/ (see email-sorter.service.ts). */
+export const NOT_PO_SUFFIX = '-not-po';
+
+/** <EMAIL_STORAGE_DIR>/<group>/ */
+export const groupDirFor = (group: string): string => path.resolve(env.storage.emailDir, safeName(group.toLowerCase()));
+
+/** The folder already holding this key, in the group or its not-PO folder. */
+const findStored = async (groupDir: string, key: string): Promise<string | undefined> => {
+  for (const dir of [groupDir, `${groupDir}${NOT_PO_SUFFIX}`]) {
+    const names = await fs.readdir(dir).catch(() => [] as string[]);
+    const hit = names.find((d) => d.endsWith(`_${key}`));
+    if (hit) return path.join(dir, hit);
+  }
+  return undefined;
+};
+
 /**
  * Saves one email to <EMAIL_STORAGE_DIR>/<group>/<received date>_<key>/.
- * The same Message-ID is stored once; a repeat returns the existing folder with duplicate = true.
+ * The same Message-ID is stored once (also when it was moved to <group>-not-po/);
+ * a repeat returns the existing folder with duplicate = true.
  */
 export const storeInboundEmail = async (email: InboundEmail): Promise<StoredEmail> => {
-  const groupDir = path.resolve(env.storage.emailDir, safeName(email.group.toLowerCase()));
+  const groupDir = groupDirFor(email.group);
   const key = messageKey(email.messageId);
 
   await fs.mkdir(groupDir, { recursive: true });
-  const existing = (await fs.readdir(groupDir)).find((d) => d.endsWith(`_${key}`));
+  const existing = await findStored(groupDir, key);
   if (existing) {
-    const folder = path.join(groupDir, existing);
+    const folder = existing;
     const meta = JSON.parse(await fs.readFile(path.join(folder, 'metadata.json'), 'utf8')) as {
       files?: { filename: string; size: number }[];
     };

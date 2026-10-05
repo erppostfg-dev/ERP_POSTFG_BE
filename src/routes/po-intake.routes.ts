@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { NextFunction, Request, Response, Router } from 'express';
 import multer from 'multer';
 import { env } from '../config/env';
+import { sortStoredEmail, SortResult } from '../modules/email-intake/email-sorter.service';
 import { storeInboundEmail } from '../modules/email-intake/email-storage.service';
 import { queueExtractPo } from '../modules/ocr/extract-po.service';
 import { ApiError } from '../utils/ApiError';
@@ -42,7 +43,8 @@ type Body = Partial<
  * multipart/form-data: files (0-10, max 20 MB each), from, subject, messageId,
  * plus optional label, provider, gmailId, receivedAt, bodyText, bodyHtml.
  * Emails from a label are all accepted, with or without attachments. For a manual call
- * (no label) at least one file is required. For now the email is only saved to storage.
+ * (no label) at least one file is required. A label email that is not a PO is moved to
+ * <label>-not-po/ with a reason (status "not_po"); a PO stays in <label>/ and goes to OCR when OCR_ENABLED.
  */
 router.post('/email', requireWebhookSecret, upload.array('files', MAX_FILES), async (req, res, next) => {
   try {
@@ -77,8 +79,17 @@ router.post('/email', requireWebhookSecret, upload.array('files', MAX_FILES), as
       `[po-intake] ${stored.duplicate ? 'repeat of' : 'stored'} ${body.label ?? 'manual'} "${body.subject ?? ''}" -> ${stored.folder}`,
     );
 
+    // Not a PO (reply, notice, unknown sender): moved to <label>-not-po/ with a reason, and never sent to OCR.
+    let folder = stored.folder;
+    let sort: SortResult | undefined;
+    if (!stored.duplicate && body.label) {
+      sort = await sortStoredEmail(stored.folder);
+      folder = sort.folder;
+      if (!sort.isPo) console.log(`[sort] not a PO (${sort.code}): ${sort.reason} -> ${sort.folder}`);
+    }
+
     // Testing: straight to OCR. Later: upload to S3 and add a BullMQ job instead.
-    if (env.ocr.enabled && !stored.duplicate) queueExtractPo(stored.folder);
+    if (env.ocr.enabled && !stored.duplicate && sort?.isPo !== false) queueExtractPo(folder);
 
     res.status(202).json({
       data: {
@@ -88,8 +99,10 @@ router.post('/email', requireWebhookSecret, upload.array('files', MAX_FILES), as
         from: body.from ?? null,
         subject: body.subject ?? null,
         duplicate: stored.duplicate,
-        status: stored.duplicate ? 'duplicate' : 'stored',
-        folder: stored.folder,
+        status: stored.duplicate ? 'duplicate' : sort && !sort.isPo ? 'not_po' : 'stored',
+        channel: sort?.isPo ? sort.channel : null,
+        notPoReason: sort && !sort.isPo ? sort.reason : null,
+        folder,
         attachments: stored.files.map((f) => ({ filename: f.filename, size: f.size, status: 'stored' })),
       },
     });

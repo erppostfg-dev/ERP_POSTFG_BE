@@ -27,18 +27,24 @@ const senderMatches = (from: string, sender: string): boolean => {
   return s.startsWith('@') ? from.endsWith(s) : from === s;
 };
 
+/** Why an email is not a PO: no sender, a sender that is no channel's, or a channel's sender with a non-PO subject. */
+export type NotPoCode = 'NO_SENDER' | 'UNKNOWN_SENDER' | 'NOT_PO_SUBJECT';
+
 /** The channel whose sender (and subject, if set) matches the email, or a reason why none did. */
-export const detectChannel = (email: EmailInfo): { config: ChannelConfig } | { reason: string } => {
+export const detectChannel = (email: EmailInfo): { config: ChannelConfig } | { code: NotPoCode; reason: string } => {
   const from = (email.from ?? '').trim().toLowerCase();
-  if (!from) return { reason: 'email has no sender' };
+  if (!from) return { code: 'NO_SENDER', reason: 'email has no sender' };
 
   const bySender = channelConfigs.filter((c) => c.senders.some((s) => senderMatches(from, s)));
-  if (!bySender.length) return { reason: `no channel configured for sender ${from}` };
+  if (!bySender.length) return { code: 'UNKNOWN_SENDER', reason: `no channel configured for sender ${from}` };
 
   const subject = (email.subject ?? '').trim();
   const match = bySender.find((c) => !c.subject || c.subject.test(subject));
   if (!match) {
-    return { reason: `sender ${from} is ${bySender.map((c) => c.channel).join('/')}, but the subject is not a PO subject` };
+    return {
+      code: 'NOT_PO_SUBJECT',
+      reason: `sender ${from} is ${bySender.map((c) => c.channel).join('/')}, but the subject is not a PO subject`,
+    };
   }
   return { config: match };
 };

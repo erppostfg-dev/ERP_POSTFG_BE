@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "gmail:token": "ts-node --transpile-only src/scripts/gmail-token.ts",
     "email:route": "ts-node --transpile-only src/scripts/route-label.ts",
+    "email:sort": "ts-node --transpile-only src/scripts/sort-emails.ts",
     "typeorm": "typeorm-ts-node-commonjs",
     "migration:generate": "npm run typeorm -- migration:generate -d src/config/data-source.ts",
     "migration:create": "typeorm-ts-node-commonjs migration:create",
