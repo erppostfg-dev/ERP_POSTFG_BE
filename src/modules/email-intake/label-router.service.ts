@@ -106,22 +106,25 @@ export const forwardMessage = async (gmail: gmail_v1.Gmail, gmailId: string, rou
   return true;
 };
 
-/** Sends each id not sent before, and remembers it. Stops at the first error (the rest is retried later). */
+/** Adds one id to the stored list, re-reading the state so ids saved by a parallel run are kept. */
+const rememberForwarded = async (id: string): Promise<void> => {
+  const forwarded = (await readState()).forwardedIds ?? [];
+  if (!forwarded.includes(id)) await writeState({ forwardedIds: [...forwarded, id].slice(-MAX_FORWARDED_IDS) });
+};
+
+/**
+ * Sends each id not sent before, and saves it right after it is sent, so a stop in the middle loses nothing.
+ * Stops at the first error (the rest is retried later).
+ */
 const forwardNew = async (gmail: gmail_v1.Gmail, ids: string[], routes: ResolvedRoute[]): Promise<number> => {
-  const state = await readState();
-  const done = new Set(state.forwardedIds ?? []);
-  const forwarded = [...(state.forwardedIds ?? [])];
+  const done = new Set((await readState()).forwardedIds ?? []);
   let sent = 0;
 
-  try {
-    for (const id of ids) {
-      if (done.has(id)) continue;
-      if (await forwardMessage(gmail, id, routes)) sent++;
-      done.add(id);
-      forwarded.push(id);
-    }
-  } finally {
-    await writeState({ forwardedIds: forwarded.slice(-MAX_FORWARDED_IDS) });
+  for (const id of ids) {
+    if (done.has(id)) continue;
+    if (await forwardMessage(gmail, id, routes)) sent++;
+    done.add(id);
+    await rememberForwarded(id);
   }
   return sent;
 };

@@ -35,7 +35,10 @@ export const readState = async (): Promise<GmailState> => {
 export const writeState = async (patch: GmailState): Promise<void> => {
   const next = { ...(await readState()), ...patch };
   await fs.mkdir(path.dirname(statePath()), { recursive: true });
-  await fs.writeFile(statePath(), JSON.stringify(next, null, 2), 'utf8');
+  // Write a temp file and rename it, so a stop mid-write never leaves a broken state file.
+  const tmp = `${statePath()}.tmp`;
+  await fs.writeFile(tmp, JSON.stringify(next, null, 2), 'utf8');
+  await fs.rename(tmp, statePath());
 };
 
 /** Looks up the Gmail label id for every route. Fails if a label does not exist in the mailbox. */
