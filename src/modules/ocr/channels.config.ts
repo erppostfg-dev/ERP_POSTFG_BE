@@ -73,12 +73,51 @@ export const channelConfigs: ChannelConfig[] = [
     },
   },
 
-  // Template for the next channel (e.g. Blinkit, pdf + sheet):
-  // {
-  //   channel: 'blinkit',
-  //   ocrChannel: 'blinkit',
-  //   senders: ['purchaseorder@handsontrades.com'],
-  //   subject: /^PO_.+ : \d{4}-\d{2}-\d{2}$/,
-  //   files: { pdf: /\.pdf$/i, sheet: /\.xlsx$/i },
-  // },
+  {
+    // PosFromEmail/Blinkit(blink): subject "PO_<Bill To>_<CITY>_<warehouse>_<our entity>-<PO number> : <YYYY-MM-DD>",
+    // Bill To "BCPL - …" or "BLINK COMMERCE PRIVATE LIMITED - …" (same company). <PO>_<date>_<time>.xlsx (all lines
+    // and totals) + the same name .pdf (header on page 1, totals block near the end) -> pdf + sheet pipeline.
+    // The samples (2026-09-28) came from purchaseorder@handsontrades.com; live POs since 2026-10-01 come from
+    // ordering@partnersbiz.com.
+    channel: 'blinkit',
+    ocrChannel: 'blinkit',
+    senders: ['ordering@partnersbiz.com', 'purchaseorder@handsontrades.com'],
+    subject: /^PO_.+-\d{10,16} : \d{4}-\d{2}-\d{2}$/,
+    files: { pdf: /\.pdf$/i, sheet: /\.xlsx$/i },
+  },
+
+  {
+    // PosFromEmail/Reliance: Reply-To noreply@ril.com, subject "PO. INTM: <10-digit PO> .PDF Reliance Retail Limited",
+    // one PDF "PO. INTM_ <PO> .PDF Reliance Retail Limited.PDF" (page 1 = header, then lines up to "Grand Total of Qty",
+    // last 10 pages = terms) -> pdf pipeline. Replies from Reliance staff (@ril.com, "Re: PO. INTM: …") don't match.
+    // Not in the OCR repo's channels.json yet, so run_po.py uses its defaults (no "expects" check).
+    channel: 'reliance',
+    ocrChannel: 'reliance',
+    senders: ['noreply@ril.com'],
+    subject: /^PO\. INTM:\s*\d{10}\s*\.PDF Reliance Retail Limited$/i,
+    files: { pdf: /\.pdf$/i },
+  },
+
+  {
+    // PosFromEmail/Scootsy (Swiggy Instamart): Reply-To no-reply.procurement@scootsy.com,
+    // subject "<facility>-<PO number>-<our entity>", e.g. "JAI IM1-JPAPO76710-PEP TECHNOLOGIES PRIVATE LIMITED".
+    // <file id>_CREATE_OTB_PURCHASE_ORDER_<uuid>.xlsx holds the whole PO -> sheet pipeline; the .pdf is kept for reference.
+    // The PO number is the one in the subject, not the file id.
+    channel: 'scootsy',
+    ocrChannel: 'scootsy',
+    senders: ['no-reply.procurement@scootsy.com'],
+    subject: /^.+?-[A-Z]{2,5}PO\d+-.+$/,
+    files: { sheet: /\.xlsx$/i },
+  },
+
+  {
+    // PosFromEmail/Purple(PO not there in Email): From IT0002@purplle.com, subject "Purplle <our entity> Dt DD/MM/YY".
+    // One email = a summary of ALL POs raised that day (no PO PDF). EXECL_ATTACHED.XLS is really tab-separated text
+    // (one row per PO line, 14 columns, trailing NUL bytes) -> sheet pipeline, not the OCR repo's "purple" (pdf) entry.
+    channel: 'purplle',
+    ocrChannel: 'purplle',
+    senders: ['it0002@purplle.com'],
+    subject: /^Purplle .+ Dt \d{2}\/\d{2}\/\d{2}$/i,
+    files: { sheet: /\.(xlsx?|csv|tsv|txt)$/i },
+  },
 ];
