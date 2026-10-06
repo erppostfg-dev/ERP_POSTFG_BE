@@ -5,6 +5,7 @@ import { detectChannel, emailInfo, StoredMetadata } from './channel-detector';
 import { ChannelConfig } from './channels.config';
 import { DownloadedLink, downloadLinkedFiles } from './link-downloader';
 import { runOcr } from './ocr-runner';
+import { s3KeyFor, syncTreeToS3 } from '../email-intake/s3-mirror.service';
 
 export type ExtractStatus = 'ok' | 'failed' | 'skipped';
 
@@ -14,6 +15,8 @@ export interface ExtractResult {
   channel?: string;
   ocrChannel?: string;
   files?: string[];
+  /** The paths given to the OCR: local paths, or s3:// URIs with OCR_INPUT_FROM_S3. */
+  inputs?: string[];
   exitCode?: number | null;
   timedOut?: boolean;
   durationMs?: number;
@@ -57,6 +60,8 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
   const save = async (r: Omit<ExtractResult, 'folder' | 'startedAt' | 'finishedAt'>): Promise<ExtractResult> => {
     const full: ExtractResult = { ...r, folder: dir, startedAt, finishedAt: new Date().toISOString() };
     await fs.writeFile(path.join(dir, RESULT_FILE), JSON.stringify(full, null, 2), 'utf8');
+    // The OCR result, its CSV and any downloaded files go to S3 too (awaited, so `npm run ocr:run` uploads before exiting).
+    await syncTreeToS3(dir).catch((err) => console.error(`[s3] upload ${dir} failed (retried by the next sync):`, (err as Error).message));
     return full;
   };
 
@@ -84,14 +89,23 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
   const picked = pickFiles(config, filenames);
   if ('reason' in picked) return save({ status: 'skipped', reason: picked.reason, channel: config.channel, links });
 
-  // 4. Run the OCR in the email folder.
-  console.log(`[extractPo] ${config.channel}: ${picked.files.join(', ')} (${path.basename(dir)})`);
-  const run = await runOcr(
-    config.ocrChannel,
-    picked.files.map((f) => path.join(dir, f)),
-    dir,
-    OUTPUT_CSV,
-  );
+  // 4. The OCR's inputs: the local files, or their S3 copies (uploaded first if missing).
+  let inputs = picked.files.map((f) => path.join(dir, f));
+  if (env.ocr.inputFromS3) {
+    if (!env.s3.enabled) {
+      return save({ status: 'failed', reason: 'OCR_INPUT_FROM_S3 needs S3_ENABLED=true', channel: config.channel, links });
+    }
+    try {
+      await syncTreeToS3(dir);
+    } catch (err) {
+      return save({ status: 'failed', reason: `S3 upload before OCR failed: ${(err as Error).message}`, channel: config.channel, links });
+    }
+    inputs = inputs.map((f) => `s3://${env.s3.bucket}/${s3KeyFor(f)}`);
+  }
+
+  // 5. Run the OCR in the email folder (its CSV and result are written there).
+  console.log(`[extractPo] ${config.channel}: ${inputs.join(', ')} (${path.basename(dir)})`);
+  const run = await runOcr(config.ocrChannel, inputs, dir, OUTPUT_CSV);
 
   const ok = run.exitCode === 0 && run.result?.status === 'ok';
   const reason = ok
@@ -106,6 +120,7 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
     channel: config.channel,
     ocrChannel: config.ocrChannel,
     files: picked.files,
+    inputs,
     links,
     exitCode: run.exitCode,
     timedOut: run.timedOut,
@@ -119,11 +134,17 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
 
 // Direct connection for testing: run extractPo in the background, a few at a time.
 let running = 0;
+let started = 0;
 const waiting: string[] = [];
+const queued = new Set<string>();
+
+/** OCR_RUN_LIMIT runs were started (or queued) since the server started. */
+const limitReached = (): boolean => env.ocr.runLimit > 0 && started + waiting.length >= env.ocr.runLimit;
 
 const next = (): void => {
   while (running < env.ocr.concurrency && waiting.length) {
     const folder = waiting.shift() as string;
+    started++;
     running++;
     extractPo(folder)
       .catch((err) => console.error(`[extractPo] ${folder} crashed`, err))
@@ -134,8 +155,41 @@ const next = (): void => {
   }
 };
 
-/** Queues a stored email for OCR without waiting for it (stand-in for the BullMQ queue). */
-export const queueExtractPo = (folder: string): void => {
-  waiting.push(folder);
+/**
+ * Queues a stored email for OCR without waiting for it (stand-in for the BullMQ queue).
+ * Returns false when OCR_RUN_LIMIT is reached: the email keeps no ocr-result.json, so the next start's backlog takes it.
+ */
+export const queueExtractPo = (folder: string): boolean => {
+  const dir = path.resolve(folder);
+  if (queued.has(dir)) return true;
+  if (limitReached()) return false;
+  queued.add(dir);
+  waiting.push(dir);
   next();
+  return true;
+};
+
+/** Stored emails in a label folder that have no ocr-result.json yet, oldest first. */
+export const foldersWithoutOcr = async (groupDir: string): Promise<string[]> => {
+  const out: string[] = [];
+  for (const d of (await fs.readdir(groupDir, { withFileTypes: true }).catch(() => [])).sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!d.isDirectory()) continue;
+    const dir = path.join(groupDir, d.name);
+    const hasResult = await fs.access(path.join(dir, RESULT_FILE)).then(() => true, () => false);
+    if (!hasResult) out.push(dir);
+  }
+  return out;
+};
+
+/** Queues every stored email of the label folders that was never run through OCR (OCR_BACKLOG). */
+export const queueOcrBacklog = async (groupDirs: string[]): Promise<{ found: number; queued: number }> => {
+  let found = 0;
+  let queuedNow = 0;
+  for (const groupDir of groupDirs) {
+    for (const dir of await foldersWithoutOcr(groupDir)) {
+      found++;
+      if (queueExtractPo(dir)) queuedNow++;
+    }
+  }
+  return { found, queued: queuedNow };
 };

@@ -57,6 +57,13 @@ export const env = {
   ocr: {
     // true: every newly stored email goes to extractPo() straight away (testing; later a BullMQ worker does this).
     enabled: flag('OCR_ENABLED'),
+    // true: the OCR reads its input files from the S3 copy (s3://<S3_BUCKET>/...) instead of the local folder. Needs S3_ENABLED.
+    inputFromS3: flag('OCR_INPUT_FROM_S3'),
+    // true: at startup, stored POs that have no ocr-result.json yet are queued too (oldest first).
+    backlog: flag('OCR_BACKLOG'),
+    // Most OCR runs per server start (new + backlog); 0 = no limit. Emails over the limit keep no result,
+    // so the next start's backlog picks them up.
+    runLimit: Number(process.env.OCR_RUN_LIMIT ?? 0),
     pythonBin: process.env.PYTHON_BIN ?? 'python',
     script: process.env.OCR_SCRIPT ?? 'ocr-service/dev/scripts/run_po.py',
     timeoutMs: Number(process.env.OCR_TIMEOUT_MS ?? 10 * 60 * 1000),
@@ -65,5 +72,13 @@ export const env = {
   storage: {
     emailDir: process.env.EMAIL_STORAGE_DIR ?? 'storage/emails',
     gmailStateFile: process.env.GMAIL_STATE_FILE ?? 'storage/gmail-state.json',
+  },
+  // Copy of the email storage in S3: <prefix><label>/<folder>/<file>, the same layout as EMAIL_STORAGE_DIR.
+  // Local storage stays; S3 is written after it. Credentials come from AWS_* (later the EC2 IAM role).
+  s3: {
+    enabled: flag('S3_ENABLED'),
+    bucket: process.env.S3_BUCKET ?? 'mcaffeine-erp-post-fg-s3-dev',
+    region: process.env.S3_REGION ?? process.env.AWS_REGION ?? 'ap-south-1',
+    prefix: process.env.S3_EMAIL_PREFIX ?? '',
   },
 };

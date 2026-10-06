@@ -6,11 +6,13 @@
  * 1. Every email in storage/emails/<label>/ that is not a PO moves to <label>-not-po/ with a reason.json.
  * 2. Every email in <label>-not-po/ that is a PO now (e.g. after a channel was added) moves back.
  * 3. <label>-not-po/report.csv is rewritten: one row per email (date, sender, subject, reason).
+ * With S3_ENABLED, each move is done in S3 too and the report is uploaded.
  */
 import fs from 'fs/promises';
 import path from 'path';
 import { recheckNotPo, sortStoredEmail, writeNotPoReport } from '../modules/email-intake/email-sorter.service';
 import { groupDirFor, NOT_PO_SUFFIX } from '../modules/email-intake/email-storage.service';
+import { moveFolderInS3, uploadFileToS3 } from '../modules/email-intake/s3-mirror.service';
 
 const arg = (name: string): string | undefined => {
   const i = process.argv.indexOf(`--${name}`);
@@ -22,24 +24,30 @@ const main = async (): Promise<void> => {
   if (!label) throw new Error('Give --label <label folder>, e.g. --label po-intake');
   const groupDir = groupDirFor(label);
 
+  const notPoDir = `${groupDir}${NOT_PO_SUFFIX}`;
   const back = await recheckNotPo(groupDir);
-  for (const b of back) console.log(`back to ${label}: ${path.basename(b.folder)} -> ${b.channel}`);
+  for (const b of back) {
+    console.log(`back to ${label}: ${path.basename(b.folder)} -> ${b.channel}`);
+    await moveFolderInS3(path.join(notPoDir, path.basename(b.folder)), b.folder);
+  }
 
   const perChannel: Record<string, number> = {};
   let notPo = 0;
   for (const d of await fs.readdir(groupDir, { withFileTypes: true })) {
     if (!d.isDirectory()) continue;
-    const r = await sortStoredEmail(path.join(groupDir, d.name));
+    const from = path.join(groupDir, d.name);
+    const r = await sortStoredEmail(from);
     if (r.isPo) {
       perChannel[r.channel] = (perChannel[r.channel] ?? 0) + 1;
     } else {
       notPo++;
       console.log(`not a PO: ${d.name}  ${r.code}: ${r.reason}`);
+      await moveFolderInS3(from, r.folder);
     }
   }
 
-  const notPoDir = `${groupDir}${NOT_PO_SUFFIX}`;
   const total = await writeNotPoReport(notPoDir);
+  await uploadFileToS3(path.join(notPoDir, 'report.csv'));
   console.log(`\nPOs in ${label}:`, perChannel);
   console.log(`moved now: ${notPo}, moved back: ${back.length}, total in ${path.basename(notPoDir)}: ${total}`);
   console.log(`report: ${path.join(notPoDir, 'report.csv')}`);

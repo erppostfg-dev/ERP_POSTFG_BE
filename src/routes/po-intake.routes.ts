@@ -1,9 +1,11 @@
 import crypto from 'crypto';
 import { NextFunction, Request, Response, Router } from 'express';
 import multer from 'multer';
+import path from 'path';
 import { env } from '../config/env';
 import { sortStoredEmail, SortResult } from '../modules/email-intake/email-sorter.service';
 import { storeInboundEmail } from '../modules/email-intake/email-storage.service';
+import { mirrorLater, syncTreeToS3, uploadFileToS3 } from '../modules/email-intake/s3-mirror.service';
 import { queueExtractPo } from '../modules/ocr/extract-po.service';
 import { ApiError } from '../utils/ApiError';
 
@@ -88,8 +90,20 @@ router.post('/email', requireWebhookSecret, upload.array('files', MAX_FILES), as
       if (!sort.isPo) console.log(`[sort] not a PO (${sort.code}): ${sort.reason} -> ${sort.folder}`);
     }
 
+    // Copy to S3 after sorting, so it goes straight to its final folder (S3 can't move without delete rights).
+    if (!stored.duplicate) {
+      const sortedFolder = folder;
+      mirrorLater(`upload ${sortedFolder}`, async () => {
+        const r = await syncTreeToS3(sortedFolder);
+        console.log(`[s3] ${r.uploaded} file(s) uploaded for ${path.basename(path.dirname(sortedFolder))}/${path.basename(sortedFolder)}`);
+      });
+      if (sort && !sort.isPo) mirrorLater('upload report.csv', () => uploadFileToS3(path.join(path.dirname(sortedFolder), 'report.csv')));
+    }
+
     // Testing: straight to OCR. Later: upload to S3 and add a BullMQ job instead.
-    if (env.ocr.enabled && !stored.duplicate && sort?.isPo !== false) queueExtractPo(folder);
+    if (env.ocr.enabled && !stored.duplicate && sort?.isPo !== false && !queueExtractPo(folder)) {
+      console.log(`[extractPo] OCR_RUN_LIMIT ${env.ocr.runLimit} reached; ${path.basename(folder)} waits for the next start`);
+    }
 
     res.status(202).json({
       data: {

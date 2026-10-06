@@ -12,6 +12,7 @@
     "gmail:token": "ts-node --transpile-only src/scripts/gmail-token.ts",
     "email:route": "ts-node --transpile-only src/scripts/route-label.ts",
     "email:sort": "ts-node --transpile-only src/scripts/sort-emails.ts",
+    "s3:sync": "ts-node --transpile-only src/scripts/s3-sync.ts",
     "typeorm": "typeorm-ts-node-commonjs",
     "migration:generate": "npm run typeorm -- migration:generate -d src/config/data-source.ts",
     "migration:create": "typeorm-ts-node-commonjs migration:create",
@@ -20,6 +21,7 @@
     "ocr:run": "ts-node --transpile-only src/scripts/ocr-run.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1146.0",
     "@google-cloud/pubsub": "^6.1.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
