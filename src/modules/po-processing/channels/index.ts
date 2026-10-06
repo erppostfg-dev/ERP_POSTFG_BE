@@ -1,0 +1,13 @@
+import { ChannelName } from '../../../constants/channels';
+import { blinkitHandler } from './blinkit/blinkit.handler';
+import { ChannelHandler } from './channel-handler';
+import { zeptoHandler } from './zepto/zepto.handler';
+
+/**
+ * Channel name -> that channel's route (its handler in channels/<channel>/).
+ * A channel is added here once its mapping has been checked against its real OCR output.
+ */
+export const channelHandlers: Partial<Record<ChannelName, ChannelHandler>> = {
+  [blinkitHandler.channel]: blinkitHandler,
+  [zeptoHandler.channel]: zeptoHandler,
+};

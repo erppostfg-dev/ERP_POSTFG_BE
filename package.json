@@ -18,7 +18,8 @@
     "migration:create": "typeorm-ts-node-commonjs migration:create",
     "migration:run": "npm run typeorm -- migration:run -d src/config/data-source.ts",
     "migration:revert": "npm run typeorm -- migration:revert -d src/config/data-source.ts",
-    "ocr:run": "ts-node --transpile-only src/scripts/ocr-run.ts"
+    "ocr:run": "ts-node --transpile-only src/scripts/ocr-run.ts",
+    "po:process": "ts-node --transpile-only src/scripts/po-process.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1146.0",
