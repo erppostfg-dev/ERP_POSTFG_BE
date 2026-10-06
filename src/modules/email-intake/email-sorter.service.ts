@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { detectChannel, emailInfo, NotPoCode, StoredMetadata } from '../ocr/channel-detector';
 import { NOT_PO_SUFFIX } from './email-storage.service';
+import { EmailMetadata, plannedS3Folder } from './s3-layout';
 
 const REASON_FILE = 'reason.json';
 const REPORT_FILE = 'report.csv';
@@ -30,21 +31,23 @@ const csvCell = (v: string | undefined): string => `"${(v ?? '').replace(/"/g, '
  * one row per email, to see why non-PO mail reaches the label and tune the Gmail filter.
  */
 export const writeNotPoReport = async (notPoDir: string): Promise<number> => {
-  const rows: (NotPoReason & { folder: string })[] = [];
+  const rows: (NotPoReason & { folder: string; s3Folder: string })[] = [];
   for (const d of await fs.readdir(notPoDir, { withFileTypes: true }).catch(() => [])) {
     if (!d.isDirectory()) continue;
     try {
-      const r = JSON.parse(await fs.readFile(path.join(notPoDir, d.name, REASON_FILE), 'utf8')) as NotPoReason;
-      rows.push({ ...r, folder: d.name });
+      const dir = path.join(notPoDir, d.name);
+      const r = JSON.parse(await fs.readFile(path.join(dir, REASON_FILE), 'utf8')) as NotPoReason;
+      const meta = JSON.parse(await fs.readFile(path.join(dir, 'metadata.json'), 'utf8')) as EmailMetadata;
+      rows.push({ ...r, folder: d.name, s3Folder: `${meta.s3Folder ?? plannedS3Folder(dir, meta)}/` });
     } catch {
       // a folder without reason.json is not ours
     }
   }
   rows.sort((a, b) => (b.receivedAt ?? '').localeCompare(a.receivedAt ?? ''));
 
-  const header = ['receivedAt', 'from', 'subject', 'code', 'reason', 'files', 'folder'];
+  const header = ['receivedAt', 'from', 'subject', 'code', 'reason', 'files', 'folder', 's3_folder'];
   const lines = rows.map((r) =>
-    [r.receivedAt, r.from, r.subject, r.code, r.reason, r.files.join(' | '), r.folder].map(csvCell).join(','),
+    [r.receivedAt, r.from, r.subject, r.code, r.reason, r.files.join(' | '), r.folder, r.s3Folder].map(csvCell).join(','),
   );
   await fs.mkdir(notPoDir, { recursive: true });
   await fs.writeFile(path.join(notPoDir, REPORT_FILE), [header.join(','), ...lines].join('\r\n') + '\r\n', 'utf8');

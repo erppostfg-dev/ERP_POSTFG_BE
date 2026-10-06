@@ -5,7 +5,7 @@ import { getAuthClient } from './gmail.client';
 import { keepWatching, resolveRoutes } from './gmail-watch.service';
 import { groupDirFor, NOT_PO_SUFFIX } from './email-storage.service';
 import { catchUpOnStart, processGmailChanges } from './label-router.service';
-import { mirrorLater, syncTreeToS3 } from './s3-mirror.service';
+import { mirrorLater, syncLabelToS3 } from './s3-mirror.service';
 import { queueOcrBacklog } from '../ocr/extract-po.service';
 
 const pubsubClient = (): PubSub => {
@@ -48,8 +48,8 @@ export const startEmailListener = async (): Promise<{ stop: () => Promise<void> 
     for (const route of routes) {
       for (const dir of [groupDirFor(route.label), `${groupDirFor(route.label)}${NOT_PO_SUFFIX}`]) {
         mirrorLater(`startup sync ${dir}`, async () => {
-          const r = await syncTreeToS3(dir);
-          console.log(`[s3] ${dir}: ${r.uploaded} uploaded, ${r.same} already in S3`);
+          const r = await syncLabelToS3(dir);
+          console.log(`[s3] ${dir}: ${r.emails} email(s), ${r.uploaded} file(s) uploaded, ${r.same} already in S3`);
         });
       }
     }

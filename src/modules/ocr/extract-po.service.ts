@@ -5,7 +5,7 @@ import { detectChannel, emailInfo, StoredMetadata } from './channel-detector';
 import { ChannelConfig } from './channels.config';
 import { DownloadedLink, downloadLinkedFiles } from './link-downloader';
 import { runOcr } from './ocr-runner';
-import { s3KeyFor, syncTreeToS3 } from '../email-intake/s3-mirror.service';
+import { syncEmailToS3 } from '../email-intake/s3-mirror.service';
 
 export type ExtractStatus = 'ok' | 'failed' | 'skipped';
 
@@ -61,7 +61,7 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
     const full: ExtractResult = { ...r, folder: dir, startedAt, finishedAt: new Date().toISOString() };
     await fs.writeFile(path.join(dir, RESULT_FILE), JSON.stringify(full, null, 2), 'utf8');
     // The OCR result, its CSV and any downloaded files go to S3 too (awaited, so `npm run ocr:run` uploads before exiting).
-    await syncTreeToS3(dir).catch((err) => console.error(`[s3] upload ${dir} failed (retried by the next sync):`, (err as Error).message));
+    await syncEmailToS3(dir).catch((err) => console.error(`[s3] upload ${dir} failed (retried by the next sync):`, (err as Error).message));
     return full;
   };
 
@@ -95,12 +95,13 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
     if (!env.s3.enabled) {
       return save({ status: 'failed', reason: 'OCR_INPUT_FROM_S3 needs S3_ENABLED=true', channel: config.channel, links });
     }
+    let s3Folder: string;
     try {
-      await syncTreeToS3(dir);
+      s3Folder = (await syncEmailToS3(dir)).s3Folder;
     } catch (err) {
       return save({ status: 'failed', reason: `S3 upload before OCR failed: ${(err as Error).message}`, channel: config.channel, links });
     }
-    inputs = inputs.map((f) => `s3://${env.s3.bucket}/${s3KeyFor(f)}`);
+    inputs = picked.files.map((f) => `s3://${env.s3.bucket}/${s3Folder}/${f}`);
   }
 
   // 5. Run the OCR in the email folder (its CSV and result are written there).

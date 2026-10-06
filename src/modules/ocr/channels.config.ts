@@ -1,3 +1,5 @@
+import { CHANNELS, ChannelName } from '../../constants/channels';
+
 /**
  * Channel configuration for extractPo().
  *
@@ -5,14 +7,18 @@
  * exists in ocr-service/dev/scripts/channels.json with the same "expects").
  */
 export interface ChannelConfig {
-  /** Our channel name. */
-  channel: string;
+  /** Our channel name (from constants/channels.ts); also the channel folder name in S3. */
+  channel: ChannelName;
   /** Channel name passed to run_po.py (a key in ocr-service/dev/scripts/channels.json). */
   ocrChannel: string;
   /** Who sends this channel's POs: full addresses or "@domain". Matched against metadata.from. */
   senders: string[];
   /** Optional: the subject must also match (keeps out replies and other mail from the same sender). */
   subject?: RegExp;
+  /** The PO number in the subject (group 1): the PO's S3 folder name. Without it the folder is <date>_<id>. */
+  poNumber?: RegExp;
+  /** Sender domains of this channel (people, notices): files non-PO mail under po-intake-not-po/<channel>/. */
+  domains: string[];
   /**
    * The files the OCR needs; must match "expects" in channels.json:
    * pdf only -> { pdf }, sheet only -> { sheet }, pdf + sheet -> { pdf, sheet }.
@@ -37,10 +43,12 @@ export const channelConfigs: ChannelConfig[] = [
   {
     // PosFromEmail/BigBasket: Reply-To alerts@bigbasket.com,
     // subject "Big Basket <warehouse> PO Details: PO No IRA<digits> <vendor>", one .xlsx, no PDF.
-    channel: 'bigbasket',
+    channel: CHANNELS.BIGBASKET,
     ocrChannel: 'bigbasket',
     senders: ['alerts@bigbasket.com'],
     subject: /^Big Basket .+ PO Details: PO No [A-Z]{3}\d+/i,
+    poNumber: /PO No ([A-Z]{3}\d+)/,
+    domains: ['bigbasket.com'],
     files: { sheet: /\.xlsx?$/i },
   },
 
@@ -48,10 +56,12 @@ export const channelConfigs: ChannelConfig[] = [
     // PosFromEmail/Zepto: Reply-To po_fulfilment@zeptonow.com, subject "Purchase Order for [<entity> and P<digits>]",
     // <PO>.csv (header + all lines) and <PO>.pdf (page 1 = PO, page 2 = terms) -> pdf + sheet pipeline.
     // Not in the OCR repo's channels.json yet, so run_po.py uses its defaults (no "expects" check).
-    channel: 'zepto',
+    channel: CHANNELS.ZEPTO,
     ocrChannel: 'zepto',
     senders: ['po_fulfilment@zeptonow.com'],
     subject: /^Purchase Order for \[.+ and P\d+\]$/,
+    poNumber: / and (P\d+)\]$/,
+    domains: ['zeptonow.com'],
     files: { pdf: /\.pdf$/i, sheet: /\.csv$/i },
   },
 
@@ -59,10 +69,12 @@ export const channelConfigs: ChannelConfig[] = [
     // PosFromEmail/FirstCry: Reply-To noreply@firstcry.com, subject "<entity> PONO pin<9 digits><7 chars> for <stockist>".
     // No attachments: the body links "download PO PDF" / "download PO Excel" (expire after 20 days) lead to a JS
     // redirect to a 10-minute S3 URL. The Excel (.xls) holds the whole PO -> sheet pipeline. The PDF is kept for reference.
-    channel: 'firstcry',
+    channel: CHANNELS.FIRSTCRY,
     ocrChannel: 'firstcry',
     senders: ['noreply@firstcry.com'],
     subject: /^.+? PONO pin\d{9}[a-z0-9]{7} for .+$/i,
+    poNumber: /PONO (pin\w+)/i,
+    domains: ['firstcry.com', 'brainbees.com'],
     files: { sheet: /\.(xlsx?|csv)$/i },
     links: {
       items: [
@@ -79,10 +91,12 @@ export const channelConfigs: ChannelConfig[] = [
     // and totals) + the same name .pdf (header on page 1, totals block near the end) -> pdf + sheet pipeline.
     // The samples (2026-09-28) came from purchaseorder@handsontrades.com; live POs since 2026-10-01 come from
     // ordering@partnersbiz.com.
-    channel: 'blinkit',
+    channel: CHANNELS.BLINKIT,
     ocrChannel: 'blinkit',
     senders: ['ordering@partnersbiz.com', 'purchaseorder@handsontrades.com'],
     subject: /^PO_.+-\d{10,16} : \d{4}-\d{2}-\d{2}$/,
+    poNumber: /-(\d{10,16}) : \d{4}-\d{2}-\d{2}$/,
+    domains: ['partnersbiz.com', 'handsontrades.com', 'grofers.com', 'zomato.com', 'blinkit.com'],
     files: { pdf: /\.pdf$/i, sheet: /\.xlsx$/i },
   },
 
@@ -91,10 +105,12 @@ export const channelConfigs: ChannelConfig[] = [
     // one PDF "PO. INTM_ <PO> .PDF Reliance Retail Limited.PDF" (page 1 = header, then lines up to "Grand Total of Qty",
     // last 10 pages = terms) -> pdf pipeline. Replies from Reliance staff (@ril.com, "Re: PO. INTM: …") don't match.
     // Not in the OCR repo's channels.json yet, so run_po.py uses its defaults (no "expects" check).
-    channel: 'reliance',
+    channel: CHANNELS.RELIANCE,
     ocrChannel: 'reliance',
     senders: ['noreply@ril.com'],
     subject: /^PO\. INTM:\s*\d{10}\s*\.PDF Reliance Retail Limited$/i,
+    poNumber: /INTM:\s*(\d{10})/,
+    domains: ['ril.com', 'qwik.co.in'],
     files: { pdf: /\.pdf$/i },
   },
 
@@ -103,10 +119,12 @@ export const channelConfigs: ChannelConfig[] = [
     // subject "<facility>-<PO number>-<our entity>", e.g. "JAI IM1-JPAPO76710-PEP TECHNOLOGIES PRIVATE LIMITED".
     // <file id>_CREATE_OTB_PURCHASE_ORDER_<uuid>.xlsx holds the whole PO -> sheet pipeline; the .pdf is kept for reference.
     // The PO number is the one in the subject, not the file id.
-    channel: 'scootsy',
+    channel: CHANNELS.SCOOTSY,
     ocrChannel: 'scootsy',
     senders: ['no-reply.procurement@scootsy.com'],
     subject: /^.+?-[A-Z]{2,5}PO\d+-.+$/,
+    poNumber: /-([A-Z]{2,5}PO\d+)-/,
+    domains: ['scootsy.com', 'swiggy.in'],
     files: { sheet: /\.xlsx$/i },
   },
 
@@ -114,10 +132,12 @@ export const channelConfigs: ChannelConfig[] = [
     // PosFromEmail/Purple(PO not there in Email): From IT0002@purplle.com, subject "Purplle <our entity> Dt DD/MM/YY".
     // One email = a summary of ALL POs raised that day (no PO PDF). EXECL_ATTACHED.XLS is really tab-separated text
     // (one row per PO line, 14 columns, trailing NUL bytes) -> sheet pipeline, not the OCR repo's "purple" (pdf) entry.
-    channel: 'purplle',
+    channel: CHANNELS.PURPLLE,
     ocrChannel: 'purplle',
     senders: ['it0002@purplle.com'],
     subject: /^Purplle .+ Dt \d{2}\/\d{2}\/\d{2}$/i,
+    // No PO number in the subject (one email = all POs of the day): the folder is <date>_<id>.
+    domains: ['purplle.com'],
     files: { sheet: /\.(xlsx?|csv|tsv|txt)$/i },
   },
 ];

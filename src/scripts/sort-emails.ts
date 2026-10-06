@@ -12,7 +12,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { recheckNotPo, sortStoredEmail, writeNotPoReport } from '../modules/email-intake/email-sorter.service';
 import { groupDirFor, NOT_PO_SUFFIX } from '../modules/email-intake/email-storage.service';
-import { moveFolderInS3, uploadFileToS3 } from '../modules/email-intake/s3-mirror.service';
+import { moveEmailInS3, uploadFileToS3 } from '../modules/email-intake/s3-mirror.service';
 
 const arg = (name: string): string | undefined => {
   const i = process.argv.indexOf(`--${name}`);
@@ -28,7 +28,7 @@ const main = async (): Promise<void> => {
   const back = await recheckNotPo(groupDir);
   for (const b of back) {
     console.log(`back to ${label}: ${path.basename(b.folder)} -> ${b.channel}`);
-    await moveFolderInS3(path.join(notPoDir, path.basename(b.folder)), b.folder);
+    await moveEmailInS3(b.folder);
   }
 
   const perChannel: Record<string, number> = {};
@@ -42,7 +42,7 @@ const main = async (): Promise<void> => {
     } else {
       notPo++;
       console.log(`not a PO: ${d.name}  ${r.code}: ${r.reason}`);
-      await moveFolderInS3(from, r.folder);
+      await moveEmailInS3(r.folder);
     }
   }
 
