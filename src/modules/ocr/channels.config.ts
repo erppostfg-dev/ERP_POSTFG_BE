@@ -119,11 +119,13 @@ export const channelConfigs: ChannelConfig[] = [
     // subject "<facility>-<PO number>-<our entity>", e.g. "JAI IM1-JPAPO76710-PEP TECHNOLOGIES PRIVATE LIMITED".
     // <file id>_CREATE_OTB_PURCHASE_ORDER_<uuid>.xlsx holds the whole PO -> sheet pipeline; the .pdf is kept for reference.
     // The PO number is the one in the subject, not the file id.
+    // The PO prefix can hold digits: CI3PO…, FC5PO…, JN2PO… (3 of 27 prefixes; 21 of 144 POs from 15 Sep to 6 Oct).
+    // A "Re:" / "Fw:" / "Fwd:" subject is a reply, never a PO.
     channel: CHANNELS.SCOOTSY,
     ocrChannel: 'scootsy',
     senders: ['no-reply.procurement@scootsy.com'],
-    subject: /^.+?-[A-Z]{2,5}PO\d+-.+$/,
-    poNumber: /-([A-Z]{2,5}PO\d+)-/,
+    subject: /^(?!\s*(re|fw|fwd)\s*:).+?-[A-Z0-9]{2,6}PO\d+-.+$/i,
+    poNumber: /-([A-Z0-9]{2,6}PO\d+)-/,
     domains: ['scootsy.com', 'swiggy.in'],
     files: { sheet: /\.xlsx$/i },
   },
