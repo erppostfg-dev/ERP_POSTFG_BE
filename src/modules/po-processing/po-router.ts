@@ -5,7 +5,7 @@ import { EmailMetadata } from '../email-intake/s3-layout';
 import { channelHandlers } from './channels';
 import { readBodyText } from './common/email-sources';
 import { hasRawOutput, readRawOcr } from './common/raw-reader';
-import { saveProcessed } from './common/processed-store';
+import { saveProcessed, saveProcessedMany } from './common/processed-store';
 
 /*
  * One entry for processing a PO after the OCR: finds the PO's channel and sends it down that channel's route
@@ -23,6 +23,8 @@ export interface ProcessResult {
   lines?: number;
   warnings?: string[];
   s3Folder?: string;
+  /** For an email with several POs (Purplle): one entry per PO, saved under POs/<PO number>/processed.json. */
+  pos?: { poNumber: string; poType: string; lines: number; needsReview: boolean; missingFields: string[] }[];
 }
 
 export const processPo = async (folder: string): Promise<ProcessResult> => {
@@ -37,7 +39,7 @@ export const processPo = async (folder: string): Promise<ProcessResult> => {
     if (!handler) return { folder: dir, status: 'skipped', channel, reason: `no processing route for ${channel} yet` };
     if (!(await hasRawOutput(dir))) return { folder: dir, status: 'skipped', channel, reason: 'no raw OCR output yet' };
 
-    const po = await handler.process({
+    const out = await handler.process({
       folder: dir,
       meta,
       channel,
@@ -45,6 +47,29 @@ export const processPo = async (folder: string): Promise<ProcessResult> => {
       body: await readBodyText(dir),
       subject: emailInfo(meta).subject ?? '',
     });
+
+    // One email with several POs (Purplle): one processed.json per PO under POs/<PO number>/.
+    if (Array.isArray(out)) {
+      const s3Folder = await saveProcessedMany(dir, out);
+      return {
+        folder: dir,
+        status: 'ok',
+        channel,
+        poNumber: `${out.length} POs`,
+        lines: out.reduce((n, po) => n + po.line_items.length, 0),
+        warnings: out.flatMap((po) => po.warnings.map((w) => `${po.po_number}: ${w}`)),
+        s3Folder,
+        pos: out.map((po) => ({
+          poNumber: po.po_number,
+          poType: po.po_type,
+          lines: po.line_items.length,
+          needsReview: po.needs_review ?? false,
+          missingFields: po.missing_fields ?? [],
+        })),
+      };
+    }
+
+    const po = out;
     const s3Folder = await saveProcessed(dir, po);
     return {
       folder: dir,

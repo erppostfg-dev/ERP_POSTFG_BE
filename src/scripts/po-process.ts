@@ -10,6 +10,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { env } from '../config/env';
 import { detectChannel, emailInfo, StoredMetadata } from '../modules/ocr/channel-detector';
+import { POS_DIR } from '../modules/po-processing/common/processed-store';
 import { hasRawOutput } from '../modules/po-processing/common/raw-reader';
 import { processPo } from '../modules/po-processing/po-router';
 
@@ -45,11 +46,17 @@ const main = async (): Promise<void> => {
   for (const f of folders) {
     const r = await processPo(f);
     if (r.status === 'ok') ok++;
+    const target = r.pos ? `${POS_DIR}/<PO>/processed.json` : 'processed.json';
     const detail =
       r.status === 'ok'
-        ? `${r.channel} ${r.poNumber}: ${r.lines} line(s), ${r.warnings?.length ?? 0} warning(s) -> ${r.s3Folder ? `${r.s3Folder}/processed.json` : 'processed.json (local only)'}`
+        ? `${r.channel} ${r.poNumber}: ${r.lines} line(s), ${r.warnings?.length ?? 0} warning(s) -> ${r.s3Folder ? `${r.s3Folder}/${target}` : `${target} (local only)`}`
         : `${r.channel ? `${r.channel}: ` : ''}${r.reason}`;
     console.log(`${path.basename(f)}  ${r.status}  ${detail}`);
+    for (const p of r.pos ?? []) {
+      const review = p.needsReview ? '  NEEDS REVIEW' : '';
+      const missing = p.missingFields.length ? `  missing: ${p.missingFields.join(', ')}` : '';
+      console.log(`    ${p.poNumber} ${p.poType}: ${p.lines} line(s)${review}${missing}`);
+    }
     for (const w of r.warnings ?? []) console.log(`    warning: ${w}`);
   }
   console.log(`\n${ok} of ${folders.length} processed`);

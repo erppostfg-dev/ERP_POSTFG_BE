@@ -27,7 +27,11 @@ export interface PoContext {
  */
 export interface ChannelHandler {
   channel: ChannelName;
-  process(ctx: PoContext): Promise<ProcessedPo>;
+  /**
+   * One PO per email folder, or a list when one email holds several POs (Purplle's daily summary). A list is saved
+   * as one processed.json per PO under <email folder>/POs/<PO number>/.
+   */
+  process(ctx: PoContext): Promise<ProcessedPo | ProcessedPo[]>;
 }
 
 /** A processed PO with the fields from our side filled in (the same for every channel). */
@@ -60,7 +64,10 @@ export const revisionOf = (ctx: PoContext): string => {
 /** Fills field_sources with "" for every header field that ended up without a value or a source. */
 export const finishSources = (po: ProcessedPo): void => {
   for (const [key, value] of Object.entries(po)) {
-    if (['line_items', 'unmapped', 'field_sources', 'cross_checks', 'warnings', 'processed_at'].includes(key)) continue;
+    if (
+      ['line_items', 'unmapped', 'field_sources', 'cross_checks', 'warnings', 'processed_at', 'needs_review', 'review_reasons', 'missing_fields'].includes(key)
+    )
+      continue;
     if (!(key in po.field_sources)) po.field_sources[key] = value === '' ? '' : 'raw';
   }
 };

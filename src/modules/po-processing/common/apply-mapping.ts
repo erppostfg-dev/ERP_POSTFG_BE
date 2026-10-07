@@ -23,6 +23,9 @@ export type HeaderKey = Exclude<
   | 'cross_checks'
   | 'warnings'
   | 'processed_at'
+  | 'needs_review'
+  | 'review_reasons'
+  | 'missing_fields'
 >;
 export type LineKey = Exclude<keyof ProcessedLine, 'unmapped'>;
 

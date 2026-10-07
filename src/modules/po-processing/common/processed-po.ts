@@ -107,6 +107,18 @@ export interface ProcessedPo {
   /** Values that could not be read (e.g. a date in an unknown format, a missing raw field) and cross-check mismatches. */
   warnings: string[];
   processed_at: string;
+
+  /*
+   * Manual review (Purplle only for now, user 2026-10-07). Absent on the other channels.
+   * What the channel doesn't send is never guessed: it stays "" and is listed in missing_fields. The validation step
+   * (later) fills what it can from our master data; whatever is still missing goes to a reviewer, who fills it by hand.
+   */
+  /** True when the PO must go to manual review whatever the validation finds (Purplle: FOC POs). */
+  needs_review?: boolean;
+  /** Why: e.g. "FOC PO", "missing fields". */
+  review_reasons?: string[];
+  /** Common names left "" that a PO needs; a line field is listed once as "line_items.<name>". */
+  missing_fields?: string[];
 }
 
 /** Date-valued header fields: written as YYYY-MM-DD. */

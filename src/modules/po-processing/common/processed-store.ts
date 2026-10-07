@@ -16,8 +16,27 @@ export const s3UrlFor = (folder: string, meta: EmailMetadata, fileName: string):
  * (po-intake/FY.../<month>/<channel>/<PO>/processed.json). Returns the S3 folder ("" when S3 is off).
  */
 export const saveProcessed = async (folder: string, po: ProcessedPo): Promise<string> => {
-  const file = path.join(folder, PROCESSED_FILE);
-  await fs.writeFile(`${file}.tmp`, JSON.stringify(po, null, 2), 'utf8');
-  await fs.rename(`${file}.tmp`, file);
+  await writeJson(path.join(folder, PROCESSED_FILE), po);
   return (await syncEmailToS3(folder)).s3Folder;
+};
+
+/** Sub-folder of an email folder that holds one folder per PO, for emails with several POs (Purplle). */
+export const POS_DIR = 'POs';
+
+/**
+ * For an email that holds several POs (Purplle's daily summary): writes <email folder>/POs/<PO number>/processed.json
+ * for each PO, then uploads the email folder (with POs/) to its S3 folder. Returns the S3 folder ("" when S3 is off).
+ */
+export const saveProcessedMany = async (folder: string, pos: ProcessedPo[]): Promise<string> => {
+  for (const po of pos) {
+    const dir = path.join(folder, POS_DIR, po.po_number || 'no-po-number');
+    await fs.mkdir(dir, { recursive: true });
+    await writeJson(path.join(dir, PROCESSED_FILE), po);
+  }
+  return (await syncEmailToS3(folder)).s3Folder;
+};
+
+const writeJson = async (file: string, value: unknown): Promise<void> => {
+  await fs.writeFile(`${file}.tmp`, JSON.stringify(value, null, 2), 'utf8');
+  await fs.rename(`${file}.tmp`, file);
 };
