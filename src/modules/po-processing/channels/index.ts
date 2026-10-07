@@ -1,6 +1,8 @@
 import { ChannelName } from '../../../constants/channels';
+import { bigbasketHandler } from './bigbasket/bigbasket.handler';
 import { blinkitHandler } from './blinkit/blinkit.handler';
 import { ChannelHandler } from './channel-handler';
+import { firstcryHandler } from './firstcry/firstcry.handler';
 import { zeptoHandler } from './zepto/zepto.handler';
 
 /**
@@ -10,4 +12,6 @@ import { zeptoHandler } from './zepto/zepto.handler';
 export const channelHandlers: Partial<Record<ChannelName, ChannelHandler>> = {
   [blinkitHandler.channel]: blinkitHandler,
   [zeptoHandler.channel]: zeptoHandler,
+  [bigbasketHandler.channel]: bigbasketHandler,
+  [firstcryHandler.channel]: firstcryHandler,
 };

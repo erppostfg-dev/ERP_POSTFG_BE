@@ -11,7 +11,18 @@ export type FieldKind = 'text' | 'number' | 'date';
 /** Header fields a mapping can fill (the ones from our side, line items and bookkeeping are set elsewhere). */
 export type HeaderKey = Exclude<
   keyof ProcessedPo,
-  'subject line if email' | 'channel_name' | 'input_type' | 'ref_file_urls' | 'line_items' | 'unmapped' | 'warnings' | 'processed_at'
+  | 'subject line if email'
+  | 'channel_name'
+  | 'input_type'
+  | 'ref_file_urls'
+  | 'revised'
+  | 'revision_of'
+  | 'line_items'
+  | 'unmapped'
+  | 'field_sources'
+  | 'cross_checks'
+  | 'warnings'
+  | 'processed_at'
 >;
 export type LineKey = Exclude<keyof ProcessedLine, 'unmapped'>;
 
@@ -56,8 +67,12 @@ export const emptyPo = (): ProcessedPo => ({
   cart_discount: '',
   net_amount: '',
   po_type: '',
+  revised: false,
+  revision_of: '',
   line_items: [],
   unmapped: {},
+  field_sources: {},
+  cross_checks: [],
   warnings: [],
   processed_at: '',
 });
@@ -70,6 +85,7 @@ export const emptyLine = (): ProcessedLine => ({
   ean: '',
   description: '',
   qty: '',
+  free_qty: '',
   pep_mrp: '',
   channel_mrp: '',
   landing_rate: '',
@@ -121,6 +137,11 @@ export const applyMapping = <K extends string>(
     target[m.common] = read(m.kind, values[key], `${where} ${m.common}`, warnings);
   }
   return used;
+};
+
+/** Records "raw" as the source of every mapped header field that got a value. */
+export const markRawSources = (po: ProcessedPo, maps: FieldMap<HeaderKey>[]): void => {
+  for (const m of maps) if (po[m.common] !== '') po.field_sources[m.common] = 'raw';
 };
 
 /** The raw fields that no mapping used (kept so nothing from the OCR is lost). */

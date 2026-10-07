@@ -1,4 +1,5 @@
 import { ChannelMapping } from '../../common/apply-mapping';
+import { EmailSourceMapping } from '../../common/email-sources';
 import { GstColumns } from '../../common/gst';
 
 /*
@@ -42,3 +43,30 @@ export const BLINKIT_MAPPING: ChannelMapping = {
 
 /** Line columns that make up the one GST rate (gst = CGST % + SGST %, or IGST %). */
 export const BLINKIT_GST_COLUMNS: GstColumns = { cgst: 'CGST %', sgst: 'SGST %', igst: 'IGST %' };
+
+/*
+ * Blinkit's email: cross-checks the raw values and fills the ones the raw JSON lacks (checked against all 53
+ * Blinkit emails: 51 have this block). A revised PO's body has no address block, only "has been REVISED".
+ *   Bill To: BCPL - Kolkata K4 Feeder Warehouse
+ *    GST NO : 19AAFCG9846E1Z8
+ *   Billing Address : ..., 700113
+ *   Shipping Address: ..., 700113
+ *   Contact Name : ...   Contact Number : ...
+ * Subject: PO_<Bill To>_<CITY>_<warehouse>_<our entity>-<PO number> : <PO date YYYY-MM-DD>
+ */
+export const BLINKIT_EMAIL: EmailSourceMapping = {
+  body: [
+    { common: 'delivery_facility_code', label: 'Bill To', kind: 'text' },
+    { common: 'shipping address', label: 'Shipping Address', kind: 'address' },
+    { common: 'delivery_pincode', label: 'Shipping Address', kind: 'pincode' },
+    { common: 'delivery_gstin', label: 'GST NO', kind: 'text' },
+  ],
+  bodyExtras: ['Billing Address', 'Contact Name', 'Contact Number'],
+  subject: [
+    { common: 'po_number', pattern: /-(\d{10,16}) : \d{4}-\d{2}-\d{2}\s*$/, kind: 'text' },
+    { common: 'po_date', pattern: / : (\d{4}-\d{2}-\d{2})\s*$/, kind: 'date' },
+  ],
+};
+
+/** The body text Blinkit uses for a revised PO. */
+export const BLINKIT_REVISED = /this purchase order has been revised/i;

@@ -27,7 +27,8 @@ const iso = (y: number, m: number, d: number): string | undefined =>
 
 /**
  * Any date the channels print -> "YYYY-MM-DD" (the time, if any, is dropped):
- * "Sept. 21, 2026, 11:39 a.m." / "Oct 5, 2026" (Blinkit, Scootsy), "2026-10-05", "25.09.2026" / "25/09/2026" / "25-09-2026" (day first).
+ * "Sept. 21, 2026, 11:39 a.m." / "Oct 5, 2026" (Blinkit, Scootsy), "05/Oct/2026" / "05-Oct-2026" (BigBasket),
+ * "2026-10-05", "25.09.2026" / "25/09/2026" / "25-09-2026" (day first).
  */
 export const toDate = (value: string | undefined, label: string, warnings: string[]): string => {
   const raw = text(value);
@@ -36,6 +37,12 @@ export const toDate = (value: string | undefined, label: string, warnings: strin
   if (m) {
     const month = MONTHS[m[1].toLowerCase()] ?? MONTHS[m[1].toLowerCase().slice(0, 3)];
     const out = month ? iso(Number(m[3]), month, Number(m[2])) : undefined;
+    if (out) return out;
+  }
+  m = /^(\d{1,2})[/ -]([A-Za-z]{3,9})\.?[/ -]+(\d{4})/.exec(raw);
+  if (m) {
+    const month = MONTHS[m[2].toLowerCase()] ?? MONTHS[m[2].toLowerCase().slice(0, 3)];
+    const out = month ? iso(Number(m[3]), month, Number(m[1])) : undefined;
     if (out) return out;
   }
   m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(raw);

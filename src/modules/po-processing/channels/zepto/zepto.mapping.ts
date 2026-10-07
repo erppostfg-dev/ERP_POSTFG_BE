@@ -1,4 +1,5 @@
 import { ChannelMapping } from '../../common/apply-mapping';
+import { EmailSourceMapping } from '../../common/email-sources';
 import { GstColumns } from '../../common/gst';
 
 /*
@@ -10,8 +11,9 @@ import { GstColumns } from '../../common/gst';
  * names change from PO to PO (the alternatives are listed).
  * Filled in zepto.handler.ts, not here: total_qty (SUM of Quantity: Zepto sends no total), total_line_items
  * (LineNumber of the last line), delivery_pincode (from the shipping address), gst (CGST + SGST, or IGST),
- * and "" for type_delivery_facility (StoreName is only the location code), appointment_date, cart_discount,
- * net_amount, po_type and the DB-later fields pep_sku_code, listing_sku_code, pep_mrp.
+ * cart_discount 0 and net_amount = po_value (Zepto POs have no discount), and "" for type_delivery_facility
+ * (StoreName is only the location code), appointment_date, po_type, free_qty and the DB-later fields
+ * pep_sku_code, listing_sku_code, pep_mrp.
  */
 export const ZEPTO_MAPPING: ChannelMapping = {
   header: [
@@ -45,3 +47,24 @@ export const ZEPTO_MAPPING: ChannelMapping = {
 };
 
 export const ZEPTO_GST_COLUMNS: GstColumns = { cgst: 'CGSTPercentage', sgst: 'SGSTPercentage', igst: 'IGSTPercentage' };
+
+/*
+ * Zepto's email: cross-checks the raw values and fills the ones the raw JSON lacks (all 33 Zepto PO emails have
+ * these lines):
+ *   Order Number: P5727174           Order Date: 2026-10-01
+ *   Shipping Address: R2,Shakti Logistics Park ..., Maharashtra 421302
+ *   Billing Address: ...             Expected Delivery Date: 2026-10-02     Expiry Date: 2026-10-22
+ * Subject: Purchase Order for [<our entity> and <PO number>]
+ */
+export const ZEPTO_EMAIL: EmailSourceMapping = {
+  body: [
+    { common: 'po_number', label: 'Order Number', kind: 'text' },
+    { common: 'po_date', label: 'Order Date', kind: 'date' },
+    { common: 'shipping address', label: 'Shipping Address', kind: 'address' },
+    { common: 'delivery_pincode', label: 'Shipping Address', kind: 'pincode' },
+    { common: 'expected_date', label: 'Expected Delivery Date', kind: 'date' },
+    { common: 'expiry_date', label: 'Expiry Date', kind: 'date' },
+  ],
+  bodyExtras: ['Billing Address'],
+  subject: [{ common: 'po_number', pattern: / and (P\d+)\]\s*$/, kind: 'text' }],
+};

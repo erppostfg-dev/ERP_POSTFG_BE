@@ -3,6 +3,7 @@ import path from 'path';
 import { detectChannel, emailInfo } from '../ocr/channel-detector';
 import { EmailMetadata } from '../email-intake/s3-layout';
 import { channelHandlers } from './channels';
+import { readBodyText } from './common/email-sources';
 import { hasRawOutput, readRawOcr } from './common/raw-reader';
 import { saveProcessed } from './common/processed-store';
 
@@ -36,7 +37,14 @@ export const processPo = async (folder: string): Promise<ProcessResult> => {
     if (!handler) return { folder: dir, status: 'skipped', channel, reason: `no processing route for ${channel} yet` };
     if (!(await hasRawOutput(dir))) return { folder: dir, status: 'skipped', channel, reason: 'no raw OCR output yet' };
 
-    const po = await handler.process({ folder: dir, meta, channel, raw: await readRawOcr(dir) });
+    const po = await handler.process({
+      folder: dir,
+      meta,
+      channel,
+      raw: await readRawOcr(dir),
+      body: await readBodyText(dir),
+      subject: emailInfo(meta).subject ?? '',
+    });
     const s3Folder = await saveProcessed(dir, po);
     return {
       folder: dir,
