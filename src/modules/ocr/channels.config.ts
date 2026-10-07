@@ -134,10 +134,12 @@ export const channelConfigs: ChannelConfig[] = [
     // PosFromEmail/Purple(PO not there in Email): From IT0002@purplle.com, subject "Purplle <our entity> Dt DD/MM/YY".
     // One email = a summary of ALL POs raised that day (no PO PDF). EXECL_ATTACHED.XLS is really tab-separated text
     // (one row per PO line, 14 columns, trailing NUL bytes) -> sheet pipeline, not the OCR repo's "purple" (pdf) entry.
+    // The same sender also sends "Purplle OPN PO … Dt …" (a list of OPEN POs, same EXECL_ATTACHED.XLS), "Purplle GRN … Dt …"
+    // and "Purplle RTV DN for RTV PO …": none of them is a new PO.
     channel: CHANNELS.PURPLLE,
     ocrChannel: 'purplle',
     senders: ['it0002@purplle.com'],
-    subject: /^Purplle .+ Dt \d{2}\/\d{2}\/\d{2}$/i,
+    subject: /^Purplle (?!OPN PO\b|GRN\b|RTV\b).+ Dt \d{2}\/\d{2}\/\d{2}$/i,
     // No PO number in the subject (one email = all POs of the day): the folder is <date>_<id>.
     domains: ['purplle.com'],
     files: { sheet: /\.(xlsx?|csv|tsv|txt)$/i },
