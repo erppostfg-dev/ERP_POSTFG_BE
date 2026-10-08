@@ -51,6 +51,12 @@ const findStored = async (groupDir: string, key: string): Promise<string | undef
  * The same Message-ID is stored once (also when it was moved to <group>-not-po/);
  * a repeat returns the existing folder with duplicate = true.
  */
+/** The folder of an email already stored under a group or its -not-po group, if any (reads only). */
+export const storedFolderOf = async (group: string, messageId: string): Promise<string | undefined> => {
+  const key = messageKey(messageId);
+  return (await findStored(groupDirFor(group), key)) ?? (await findStored(groupDirFor(`${group}${NOT_PO_SUFFIX}`), key));
+};
+
 export const storeInboundEmail = async (email: InboundEmail): Promise<StoredEmail> => {
   const groupDir = groupDirFor(email.group);
   const key = messageKey(email.messageId);

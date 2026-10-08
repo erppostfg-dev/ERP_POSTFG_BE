@@ -23,7 +23,8 @@
     "po:validate": "ts-node --transpile-only src/scripts/po-validate.ts",
     "po:record": "ts-node --transpile-only src/scripts/po-record.ts",
     "po:save": "ts-node --transpile-only src/scripts/po-save.ts",
-    "po:pipeline": "ts-node --transpile-only src/scripts/po-pipeline.ts"
+    "po:pipeline": "ts-node --transpile-only src/scripts/po-pipeline.ts",
+    "po:one": "ts-node --transpile-only src/scripts/po-one.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1146.0",
