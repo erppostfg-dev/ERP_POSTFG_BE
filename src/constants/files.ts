@@ -26,7 +26,12 @@ export const FILES = {
   OCR_RAW_JSON: 'ocr-raw.json',
   /** Our common-format PO. */
   PROCESSED: 'processed.json',
+  /** po:validate report (dev, read-only run): <storage>/validation/validation-<date>.csv, one row per issue. */
+  VALIDATION_REPORT: (date: string) => `validation-${date}.csv`,
 } as const;
+
+/** Attachment types that can be a PO file (po_uploads.file_type); a PDF is preferred when an email has several. */
+export const PO_FILE_EXTENSIONS = ['pdf', 'xlsx', 'xls', 'csv'] as const;
 
 /** Files that describe the email or our processing, not its attachments (left out of the re-send check). */
 export const OWN_FILES = new RegExp(

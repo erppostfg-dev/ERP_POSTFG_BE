@@ -7,6 +7,7 @@ import { sortStoredEmail, SortResult } from '../modules/email-intake/email-sorte
 import { storeInboundEmail } from '../modules/email-intake/email-storage.service';
 import { mirrorLater, syncEmailToS3, uploadFileToS3 } from '../modules/email-intake/s3-mirror.service';
 import { queueExtractPo } from '../modules/ocr/extract-po.service';
+import { emailStored } from '../modules/po-pipeline/pipeline.service';
 import { ERROR_CODES, errorMessage, FILES, FOLDERS, INTAKE_STATUS, PROVIDERS } from '../constants';
 import { appError } from '../utils/AppError';
 
@@ -108,6 +109,9 @@ router.post('/email', requireWebhookSecret, upload.array('files', MAX_FILES), as
         mirrorLater(`upload ${FILES.NOT_PO_REPORT}`, () => uploadFileToS3(path.join(path.dirname(sortedFolder), FILES.NOT_PO_REPORT)));
       }
     }
+
+    // A PO email gets its po_uploads row (when the database is connected) before the OCR can update it.
+    if (!stored.duplicate && sort?.isPo) await emailStored(folder);
 
     // Testing: straight to OCR. Later: upload to S3 and add a BullMQ job instead.
     if (env.ocr.enabled && !stored.duplicate && sort?.isPo !== false && !queueExtractPo(folder)) {

@@ -6,6 +6,7 @@ import { ChannelConfig } from './channels.config';
 import { DownloadedLink, downloadLinkedFiles } from './link-downloader';
 import { runOcr } from './ocr-runner';
 import { syncEmailToS3 } from '../email-intake/s3-mirror.service';
+import { ocrFinished, ocrStarted } from '../po-pipeline/pipeline.service';
 import { ErrorArgs, ErrorCode, ERROR_CODES, errorMessage, FILES, RESULT_STATUS, ResultStatus } from '../../constants';
 
 export type ExtractStatus = ResultStatus;
@@ -68,6 +69,8 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
     await fs.writeFile(path.join(dir, FILES.OCR_RESULT), JSON.stringify(full, null, 2), 'utf8');
     // The OCR result, its CSV and any downloaded files go to S3 too (awaited, so `npm run ocr:run` uploads before exiting).
     await syncEmailToS3(dir).catch((err) => console.error(`[s3] upload ${dir} failed (retried by the next sync):`, (err as Error).message));
+    // The chain goes on (processed.json -> validation -> DB -> CSV) when the database is connected.
+    await ocrFinished(dir, full);
     return full;
   };
 
@@ -116,6 +119,7 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
 
   // 5. Run the OCR in the email folder (its CSV and result are written there).
   console.log(`[extractPo] ${config.channel}: ${inputs.join(', ')} (${path.basename(dir)})`);
+  await ocrStarted(dir);
   const run = await runOcr(config.ocrChannel, inputs, dir, FILES.OCR_OUTPUT_CSV);
 
   const ok = run.exitCode === 0 && run.result?.status === RESULT_STATUS.OK;

@@ -7,6 +7,7 @@
  */
 import fs from 'fs/promises';
 import path from 'path';
+import { AppDataSource } from '../config/data-source';
 import { env } from '../config/env';
 import { detectChannel, emailInfo, StoredMetadata } from '../modules/ocr/channel-detector';
 import { extractPo } from '../modules/ocr/extract-po.service';
@@ -29,6 +30,9 @@ const main = async (): Promise<void> => {
         .filter((d) => d.isDirectory())
         .map((d) => path.join(env.storage.emailDir, label as string, d.name));
 
+  // With DB_ENABLED=true the chain goes on after the OCR (processed.json -> validation -> DB -> CSV).
+  if (env.db.enabled && !process.argv.includes('--detect')) await AppDataSource.initialize();
+
   for (const f of folders) {
     if (process.argv.includes('--detect')) {
       const meta = JSON.parse(await fs.readFile(path.join(f, FILES.METADATA), 'utf8')) as StoredMetadata;
@@ -39,6 +43,7 @@ const main = async (): Promise<void> => {
     const r = await extractPo(f);
     console.log(`${path.basename(f)}  ${r.status}${r.channel ? ` (${r.channel})` : ''}${r.reason ? `: ${r.reason}` : ''}`);
   }
+  if (AppDataSource.isInitialized) await AppDataSource.destroy();
 };
 
 main().catch((err) => {

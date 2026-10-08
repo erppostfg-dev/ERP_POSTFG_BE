@@ -36,6 +36,10 @@ export const ERRORS = {
   GMAIL_WATCH_CONFIG_MISSING: define(500, () => 'GCP_PROJECT_ID and PUBSUB_TOPIC are required for the Gmail watch'),
   PUBSUB_SUBSCRIPTION_MISSING: define(500, () => 'PUBSUB_SUBSCRIPTION is required'),
   S3_DISABLED: define(500, () => 'S3_ENABLED is not true in .env'),
+  DB_NOT_ALLOWED: define(
+    500,
+    (database: string, allowed: string) => `Database "${database}" is not allowed; the app may only use: ${allowed} (constants/db.ts)`,
+  ),
 
   // --- Gmail ------------------------------------------------------------------------------------------------------
   GMAIL_LABEL_NOT_FOUND: define(

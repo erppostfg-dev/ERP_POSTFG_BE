@@ -21,6 +21,8 @@ export const FOLDERS = {
   POS: 'POs',
   /** The POs/ sub-folder of a PO whose number could not be read. */
   NO_PO_NUMBER: 'no-po-number',
+  /** po:validate reports, next to the email storage: storage/validation/. */
+  VALIDATION: 'validation',
 } as const;
 
 /** Where an email came from (metadata.json "provider"). */
