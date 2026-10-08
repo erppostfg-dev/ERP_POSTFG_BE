@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { FILES, PoWarning, poWarning, WARNING_CODES } from '../../../constants';
 import { HeaderKey } from './apply-mapping';
 import { pincodeFrom, text, toDate, toNumber } from './parse';
 import { ProcessedPo } from './processed-po';
@@ -42,10 +43,10 @@ export interface EmailSourceMapping {
 /** The email body as plain text: body.txt, else body.html without its tags, else "". */
 export const readBodyText = async (folder: string): Promise<string> => {
   try {
-    return await fs.readFile(path.join(folder, 'body.txt'), 'utf8');
+    return await fs.readFile(path.join(folder, FILES.BODY_TEXT), 'utf8');
   } catch {
     try {
-      const html = await fs.readFile(path.join(folder, 'body.html'), 'utf8');
+      const html = await fs.readFile(path.join(folder, FILES.BODY_HTML), 'utf8');
       return html.replace(/<br\s*\/?>|<\/(p|div|tr|li)>/gi, '\n').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ');
     } catch {
       return '';
@@ -63,7 +64,7 @@ export const bodyValue = (body: string, label: string): string | undefined => {
 };
 
 /** A body/subject value in the same format as processed.json ("" when it can't be read). */
-const normalize = (kind: CheckKind, raw: string, label: string, warnings: string[]): string | number => {
+const normalize = (kind: CheckKind, raw: string, label: string, warnings: PoWarning[]): string | number => {
   if (kind === 'date') return toDate(raw, label, warnings);
   if (kind === 'number') return toNumber(raw, label, warnings);
   if (kind === 'pincode') return pincodeFrom(raw);
@@ -97,7 +98,7 @@ const check = (po: ProcessedPo, field: HeaderKey, kind: CheckKind, value: string
   }
   const ok = same(kind, current, value);
   po.cross_checks.push({ field, against, raw: current, value, result: ok ? 'match' : 'mismatch' });
-  if (!ok) po.warnings.push(`${field}: raw "${current}" differs from the ${against} "${value}"`);
+  if (!ok) po.warnings.push(poWarning(WARNING_CODES.CROSS_CHECK_MISMATCH, field, String(current), against, String(value)));
 };
 
 /** Cross-checks / fills the PO's header from the email body and subject, as the channel's mapping says. */

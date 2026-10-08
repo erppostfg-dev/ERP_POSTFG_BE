@@ -1,4 +1,4 @@
-import { CHANNELS, ChannelName } from '../../constants/channels';
+import { CHANNELS, ChannelName, OCR_CHANNELS } from '../../constants/channels';
 
 /**
  * Channel configuration for extractPo().
@@ -44,7 +44,7 @@ export const channelConfigs: ChannelConfig[] = [
     // PosFromEmail/BigBasket: Reply-To alerts@bigbasket.com,
     // subject "Big Basket <warehouse> PO Details: PO No IRA<digits> <vendor>", one .xlsx, no PDF.
     channel: CHANNELS.BIGBASKET,
-    ocrChannel: 'bigbasket',
+    ocrChannel: OCR_CHANNELS[CHANNELS.BIGBASKET],
     senders: ['alerts@bigbasket.com'],
     subject: /^Big Basket .+ PO Details: PO No [A-Z]{3}\d+/i,
     poNumber: /PO No ([A-Z]{3}\d+)/,
@@ -57,7 +57,7 @@ export const channelConfigs: ChannelConfig[] = [
     // <PO>.csv (header + all lines) and <PO>.pdf (page 1 = PO, page 2 = terms) -> pdf + sheet pipeline.
     // Not in the OCR repo's channels.json yet, so run_po.py uses its defaults (no "expects" check).
     channel: CHANNELS.ZEPTO,
-    ocrChannel: 'zepto',
+    ocrChannel: OCR_CHANNELS[CHANNELS.ZEPTO],
     senders: ['po_fulfilment@zeptonow.com'],
     subject: /^Purchase Order for \[.+ and P\d+\]$/,
     poNumber: / and (P\d+)\]$/,
@@ -70,7 +70,7 @@ export const channelConfigs: ChannelConfig[] = [
     // No attachments: the body links "download PO PDF" / "download PO Excel" (expire after 20 days) lead to a JS
     // redirect to a 10-minute S3 URL. The Excel (.xls) holds the whole PO -> sheet pipeline. The PDF is kept for reference.
     channel: CHANNELS.FIRSTCRY,
-    ocrChannel: 'firstcry',
+    ocrChannel: OCR_CHANNELS[CHANNELS.FIRSTCRY],
     senders: ['noreply@firstcry.com'],
     subject: /^.+? PONO pin\d{9}[a-z0-9]{7} for .+$/i,
     poNumber: /PONO (pin\w+)/i,
@@ -92,7 +92,7 @@ export const channelConfigs: ChannelConfig[] = [
     // The samples (2026-09-28) came from purchaseorder@handsontrades.com; live POs since 2026-10-01 come from
     // ordering@partnersbiz.com.
     channel: CHANNELS.BLINKIT,
-    ocrChannel: 'blinkit',
+    ocrChannel: OCR_CHANNELS[CHANNELS.BLINKIT],
     senders: ['ordering@partnersbiz.com', 'purchaseorder@handsontrades.com'],
     subject: /^PO_.+-\d{10,16} : \d{4}-\d{2}-\d{2}$/,
     poNumber: /-(\d{10,16}) : \d{4}-\d{2}-\d{2}$/,
@@ -106,7 +106,7 @@ export const channelConfigs: ChannelConfig[] = [
     // last 10 pages = terms) -> pdf pipeline. Replies from Reliance staff (@ril.com, "Re: PO. INTM: …") don't match.
     // Not in the OCR repo's channels.json yet, so run_po.py uses its defaults (no "expects" check).
     channel: CHANNELS.RELIANCE,
-    ocrChannel: 'reliance',
+    ocrChannel: OCR_CHANNELS[CHANNELS.RELIANCE],
     senders: ['noreply@ril.com'],
     subject: /^PO\. INTM:\s*\d{10}\s*\.PDF Reliance Retail Limited$/i,
     poNumber: /INTM:\s*(\d{10})/,
@@ -122,7 +122,7 @@ export const channelConfigs: ChannelConfig[] = [
     // The PO prefix can hold digits: CI3PO…, FC5PO…, JN2PO… (3 of 27 prefixes; 21 of 144 POs from 15 Sep to 6 Oct).
     // A "Re:" / "Fw:" / "Fwd:" subject is a reply, never a PO.
     channel: CHANNELS.SCOOTSY,
-    ocrChannel: 'scootsy',
+    ocrChannel: OCR_CHANNELS[CHANNELS.SCOOTSY],
     senders: ['no-reply.procurement@scootsy.com'],
     subject: /^(?!\s*(re|fw|fwd)\s*:).+?-[A-Z0-9]{2,6}PO\d+-.+$/i,
     poNumber: /-([A-Z0-9]{2,6}PO\d+)-/,
@@ -137,7 +137,7 @@ export const channelConfigs: ChannelConfig[] = [
     // The same sender also sends "Purplle OPN PO … Dt …" (a list of OPEN POs, same EXECL_ATTACHED.XLS), "Purplle GRN … Dt …"
     // and "Purplle RTV DN for RTV PO …": none of them is a new PO.
     channel: CHANNELS.PURPLLE,
-    ocrChannel: 'purplle',
+    ocrChannel: OCR_CHANNELS[CHANNELS.PURPLLE],
     senders: ['it0002@purplle.com'],
     subject: /^Purplle (?!OPN PO\b|GRN\b|RTV\b).+ Dt \d{2}\/\d{2}\/\d{2}$/i,
     // No PO number in the subject (one email = all POs of the day): the folder is <date>_<id>.

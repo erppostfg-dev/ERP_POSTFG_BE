@@ -6,6 +6,8 @@ import { channelHandlers } from './channels';
 import { readBodyText } from './common/email-sources';
 import { hasRawOutput, readRawOcr } from './common/raw-reader';
 import { saveProcessed, saveProcessedMany } from './common/processed-store';
+import { ErrorCode, ERROR_CODES, errorMessage, FILES, PoWarning, RESULT_STATUS, ResultStatus } from '../../constants';
+import { AppError } from '../../utils/AppError';
 
 /*
  * One entry for processing a PO after the OCR: finds the PO's channel and sends it down that channel's route
@@ -16,12 +18,14 @@ import { saveProcessed, saveProcessedMany } from './common/processed-store';
 
 export interface ProcessResult {
   folder: string;
-  status: 'ok' | 'skipped' | 'failed';
+  status: ResultStatus;
+  /** Why it was skipped or failed: a code from constants/errors.ts (INTERNAL for an unexpected error) and its message. */
+  code?: ErrorCode;
   reason?: string;
   channel?: string;
   poNumber?: string;
   lines?: number;
-  warnings?: string[];
+  warnings?: PoWarning[];
   s3Folder?: string;
   /** For an email with several POs (Purplle): one entry per PO, saved under POs/<PO number>/processed.json. */
   pos?: { poNumber: string; poType: string; lines: number; needsReview: boolean; missingFields: string[] }[];
@@ -30,14 +34,20 @@ export interface ProcessResult {
 export const processPo = async (folder: string): Promise<ProcessResult> => {
   const dir = path.resolve(folder);
   try {
-    const meta = JSON.parse(await fs.readFile(path.join(dir, 'metadata.json'), 'utf8')) as EmailMetadata;
+    const meta = JSON.parse(await fs.readFile(path.join(dir, FILES.METADATA), 'utf8')) as EmailMetadata;
     const detected = detectChannel(emailInfo(meta));
-    if (!('config' in detected)) return { folder: dir, status: 'skipped', reason: detected.reason };
+    if (!('config' in detected)) return { folder: dir, status: RESULT_STATUS.SKIPPED, code: detected.code, reason: detected.reason };
 
     const channel = detected.config.channel;
     const handler = channelHandlers[channel];
-    if (!handler) return { folder: dir, status: 'skipped', channel, reason: `no processing route for ${channel} yet` };
-    if (!(await hasRawOutput(dir))) return { folder: dir, status: 'skipped', channel, reason: 'no raw OCR output yet' };
+    if (!handler) {
+      const code = ERROR_CODES.NO_PROCESSING_ROUTE;
+      return { folder: dir, status: RESULT_STATUS.SKIPPED, channel, code, reason: errorMessage(code, channel) };
+    }
+    if (!(await hasRawOutput(dir))) {
+      const code = ERROR_CODES.NO_RAW_OUTPUT;
+      return { folder: dir, status: RESULT_STATUS.SKIPPED, channel, code, reason: errorMessage(code) };
+    }
 
     const out = await handler.process({
       folder: dir,
@@ -53,11 +63,11 @@ export const processPo = async (folder: string): Promise<ProcessResult> => {
       const s3Folder = await saveProcessedMany(dir, out);
       return {
         folder: dir,
-        status: 'ok',
+        status: RESULT_STATUS.OK,
         channel,
         poNumber: `${out.length} POs`,
         lines: out.reduce((n, po) => n + po.line_items.length, 0),
-        warnings: out.flatMap((po) => po.warnings.map((w) => `${po.po_number}: ${w}`)),
+        warnings: out.flatMap((po) => po.warnings.map((w) => ({ ...w, message: `${po.po_number}: ${w.message}` }))),
         s3Folder,
         pos: out.map((po) => ({
           poNumber: po.po_number,
@@ -73,7 +83,7 @@ export const processPo = async (folder: string): Promise<ProcessResult> => {
     const s3Folder = await saveProcessed(dir, po);
     return {
       folder: dir,
-      status: 'ok',
+      status: RESULT_STATUS.OK,
       channel,
       poNumber: po.po_number,
       lines: po.line_items.length,
@@ -81,6 +91,8 @@ export const processPo = async (folder: string): Promise<ProcessResult> => {
       s3Folder,
     };
   } catch (err) {
-    return { folder: dir, status: 'failed', reason: err instanceof Error ? err.message : String(err) };
+    // A known error keeps its code; anything else (unreadable file, S3 down ...) is INTERNAL with its message.
+    const code = err instanceof AppError ? err.code : ERROR_CODES.INTERNAL;
+    return { folder: dir, status: RESULT_STATUS.FAILED, code, reason: err instanceof Error ? err.message : String(err) };
   }
 };

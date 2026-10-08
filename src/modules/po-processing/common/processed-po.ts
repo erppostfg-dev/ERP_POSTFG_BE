@@ -1,3 +1,5 @@
+import { PoWarning } from '../../../constants';
+
 /**
  * processed.json: the common format every channel's raw OCR output is turned into.
  * The field names are the user's common names, kept exactly as given (including "shipping address" and
@@ -104,8 +106,11 @@ export interface ProcessedPo {
   field_sources: Record<string, string>;
   /** Every raw-vs-body / raw-vs-subject comparison; a mismatch is also a warning. */
   cross_checks: CrossCheck[];
-  /** Values that could not be read (e.g. a date in an unknown format, a missing raw field) and cross-check mismatches. */
-  warnings: string[];
+  /**
+   * Values that could not be read (e.g. a date in an unknown format, a missing raw field) and cross-check mismatches:
+   * { code, message }, codes and messages in constants/warnings.ts.
+   */
+  warnings: PoWarning[];
   processed_at: string;
 
   /*

@@ -1,4 +1,4 @@
-import { CHANNELS } from '../../../../constants/channels';
+import { CHANNELS, poWarning, WARNING_CODES } from '../../../../constants';
 import { applyMapping, emptyLine, leftover, markRawSources } from '../../common/apply-mapping';
 import { noDiscountAmounts } from '../../common/amounts';
 import { applyEmailSources } from '../../common/email-sources';
@@ -36,7 +36,7 @@ export const bigbasketHandler: ChannelHandler = {
     const prefix = po.po_number.slice(0, 3).toUpperCase();
     po.po_type = BIGBASKET_PO_TYPES[prefix] ?? '';
     po.field_sources.po_type = po.po_type ? 'calculated' : '';
-    if (po.po_number && !po.po_type) po.warnings.push(`po_type: PO number prefix "${prefix}" is not a known BigBasket type`);
+    if (po.po_number && !po.po_type) po.warnings.push(poWarning(WARNING_CODES.PO_TYPE_UNKNOWN, prefix, CHANNELS.BIGBASKET));
 
     // 3. Email body and subject: cross-check, and fill what the raw output lacks.
     applyEmailSources(po, ctx.body, ctx.subject, BIGBASKET_EMAIL);

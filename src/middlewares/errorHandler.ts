@@ -1,9 +1,10 @@
 import { NextFunction, Request, Response } from 'express';
 import { MulterError } from 'multer';
-import { ApiError } from '../utils/ApiError';
+import { ERROR_CODES, errorMessage, ERRORS } from '../constants';
+import { AppError, appError } from '../utils/AppError';
 
 export const notFoundHandler = (req: Request, _res: Response, next: NextFunction): void => {
-  next(new ApiError(404, `Route not found: ${req.method} ${req.originalUrl}`));
+  next(appError(ERROR_CODES.ROUTE_NOT_FOUND, req.method, req.originalUrl));
 };
 
 // Every error is { "error": { "code", "message", "details"? } }; a 500 never shows internals.
@@ -14,21 +15,20 @@ export const errorHandler = (
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   _next: NextFunction,
 ): void => {
-  const apiError =
-    err instanceof ApiError
+  const appErr =
+    err instanceof AppError
       ? err
       : err instanceof MulterError
-        ? new ApiError(400, `Upload rejected: ${err.message}`, { field: err.field }, 'BAD_REQUEST')
+        ? appError(ERROR_CODES.UPLOAD_REJECTED, err.message).withDetails({ field: err.field })
         : undefined;
 
-  if (!apiError) console.error(err);
+  if (!appErr) console.error(err);
 
-  const statusCode = apiError?.statusCode ?? 500;
-  res.status(statusCode).json({
+  res.status(appErr?.statusCode ?? ERRORS.INTERNAL.status).json({
     error: {
-      code: apiError?.code ?? 'INTERNAL',
-      message: apiError?.message ?? 'Internal server error',
-      ...(apiError?.details !== undefined ? { details: apiError.details } : {}),
+      code: appErr?.code ?? ERROR_CODES.INTERNAL,
+      message: appErr?.message ?? errorMessage(ERROR_CODES.INTERNAL),
+      ...(appErr?.details !== undefined ? { details: appErr.details } : {}),
     },
   });
 };

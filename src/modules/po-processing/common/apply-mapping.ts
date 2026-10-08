@@ -1,3 +1,4 @@
+import { PoWarning, poWarning, WARNING_CODES } from '../../../constants';
 import { ProcessedLine, ProcessedPo } from './processed-po';
 import { text, toDate, toNumber } from './parse';
 
@@ -112,7 +113,7 @@ export const findKey = (values: Record<string, string>, raw: string | string[]):
 
 const rawLabel = (raw: string | string[]): string => (Array.isArray(raw) ? raw.map((r) => `"${r}"`).join(' / ') : `"${raw}"`);
 
-const read = (kind: FieldKind, value: string, label: string, warnings: string[]): string | number => {
+const read = (kind: FieldKind, value: string, label: string, warnings: PoWarning[]): string | number => {
   if (kind === 'number') return toNumber(value, label, warnings);
   if (kind === 'date') return toDate(value, label, warnings);
   return text(value);
@@ -126,14 +127,14 @@ export const applyMapping = <K extends string>(
   target: Record<K, unknown>,
   values: Record<string, string>,
   maps: FieldMap<K>[],
-  warnings: string[],
+  warnings: PoWarning[],
   where: string,
 ): Set<string> => {
   const used = new Set<string>();
   for (const m of maps) {
     const key = findKey(values, m.raw);
     if (key === undefined) {
-      warnings.push(`${where}: raw field ${rawLabel(m.raw)} (for ${m.common}) is not in the OCR output`);
+      warnings.push(poWarning(WARNING_CODES.RAW_FIELD_MISSING, where, rawLabel(m.raw), m.common));
       continue;
     }
     used.add(key);

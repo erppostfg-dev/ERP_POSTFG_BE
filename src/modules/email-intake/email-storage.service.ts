@@ -2,12 +2,13 @@ import crypto from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
 import { env } from '../../config/env';
+import { FILES, FOLDERS, Provider } from '../../constants';
 
 export interface InboundEmail {
   /** Top folder under EMAIL_STORAGE_DIR: the Gmail label, or "manual". */
   group: string;
   messageId: string;
-  provider: 'gmail-pubsub' | 'manual';
+  provider: Provider;
   gmailId?: string;
   labels?: string[];
   from?: string;
@@ -30,7 +31,7 @@ const safeName = (name: string): string => name.replace(/[<>:"/\\|?*\x00-\x1f]/g
 const messageKey = (messageId: string): string => crypto.createHash('sha1').update(messageId).digest('hex').slice(0, 16);
 
 /** Emails of a group that are not POs are moved to <group>-not-po/ (see email-sorter.service.ts). */
-export const NOT_PO_SUFFIX = '-not-po';
+export const NOT_PO_SUFFIX = FOLDERS.NOT_PO_SUFFIX;
 
 /** <EMAIL_STORAGE_DIR>/<group>/ */
 export const groupDirFor = (group: string): string => path.resolve(env.storage.emailDir, safeName(group.toLowerCase()));
@@ -58,7 +59,7 @@ export const storeInboundEmail = async (email: InboundEmail): Promise<StoredEmai
   const existing = await findStored(groupDir, key);
   if (existing) {
     const folder = existing;
-    const meta = JSON.parse(await fs.readFile(path.join(folder, 'metadata.json'), 'utf8')) as {
+    const meta = JSON.parse(await fs.readFile(path.join(folder, FILES.METADATA), 'utf8')) as {
       files?: { filename: string; size: number }[];
     };
     return { folder, duplicate: true, files: meta.files ?? [] };
@@ -74,12 +75,12 @@ export const storeInboundEmail = async (email: InboundEmail): Promise<StoredEmai
     await fs.writeFile(path.join(folder, filename), f.content);
     files.push({ filename, size: f.content.length });
   }
-  if (email.bodyText) await fs.writeFile(path.join(folder, 'body.txt'), email.bodyText, 'utf8');
-  if (email.bodyHtml) await fs.writeFile(path.join(folder, 'body.html'), email.bodyHtml, 'utf8');
+  if (email.bodyText) await fs.writeFile(path.join(folder, FILES.BODY_TEXT), email.bodyText, 'utf8');
+  if (email.bodyHtml) await fs.writeFile(path.join(folder, FILES.BODY_HTML), email.bodyHtml, 'utf8');
 
   const { files: _content, bodyText: _text, bodyHtml: _html, ...meta } = email;
   await fs.writeFile(
-    path.join(folder, 'metadata.json'),
+    path.join(folder, FILES.METADATA),
     JSON.stringify({ ...meta, files, storedAt: new Date().toISOString() }, null, 2),
     'utf8',
   );

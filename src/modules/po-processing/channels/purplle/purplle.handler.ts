@@ -1,4 +1,4 @@
-import { CHANNELS } from '../../../../constants/channels';
+import { CHANNELS, poWarning, WARNING_CODES } from '../../../../constants';
 import { noDiscountAmounts } from '../../common/amounts';
 import { applyMapping, emptyLine, findKey, leftover, markRawSources } from '../../common/apply-mapping';
 import { pincodeFrom, text } from '../../common/parse';
@@ -48,7 +48,7 @@ const processOne = (ctx: PoContext, rawLines: Record<string, string>[]): Process
   // The PO details must be the same on every line of the PO.
   for (const col of fromLine) {
     const values = new Set(rawLines.map((l) => text(l[col])));
-    if (values.size > 1) po.warnings.push(`header: "${col}" differs between the lines of this PO (${[...values].join(' | ')})`);
+    if (values.size > 1) po.warnings.push(poWarning(WARNING_CODES.HEADER_DIFFERS_BETWEEN_LINES, col, [...values].join(' | ')));
   }
 
   // 2. No revision signal in Purplle's summary.
@@ -104,7 +104,7 @@ const crossCheckSummary = (po: ProcessedPo, body: string): void => {
   const num = '([\\d,]+(?:\\.\\d+)?)';
   const m = new RegExp(`\\b${po.po_number}\\s+${num}\\s+${num}`).exec(body);
   if (!m) {
-    po.warnings.push(`PO ${po.po_number} is not in the email body's PO Summary`);
+    po.warnings.push(poWarning(WARNING_CODES.PO_NOT_IN_BODY_SUMMARY, po.po_number));
     return;
   }
   const qty = Number(m[1].replace(/,/g, ''));
@@ -113,11 +113,15 @@ const crossCheckSummary = (po: ProcessedPo, body: string): void => {
   if (po.total_qty !== '') {
     const ok = po.total_qty === qty;
     po.cross_checks.push({ field: 'total_qty', against: 'body', raw: po.total_qty, value: qty, result: ok ? 'match' : 'mismatch' });
-    if (!ok) po.warnings.push(`total_qty: SUM(Qty) ${po.total_qty} differs from the body's PO Qty ${qty}`);
+    if (!ok) po.warnings.push(poWarning(WARNING_CODES.TOTAL_QTY_MISMATCH, 'SUM(Qty)', po.total_qty, "the body's PO Qty", qty));
   }
   if (po.po_value !== '') {
     const ok = Math.abs(po.po_value - value) <= PURPLLE_VALUE_TOLERANCE;
     po.cross_checks.push({ field: 'po_value', against: 'body', raw: po.po_value, value, result: ok ? 'match' : 'mismatch' });
-    if (!ok) po.warnings.push(`po_value: SUM(Qty x Price) ${po.po_value} differs from the body's PO Value ${value} by more than ${PURPLLE_VALUE_TOLERANCE}`);
+    if (!ok) {
+      po.warnings.push(
+        poWarning(WARNING_CODES.PO_VALUE_MISMATCH, 'SUM(Qty x Price)', po.po_value, "the body's PO Value", value, PURPLLE_VALUE_TOLERANCE),
+      );
+    }
   }
 };

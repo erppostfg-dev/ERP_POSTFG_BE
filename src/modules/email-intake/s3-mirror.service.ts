@@ -3,6 +3,8 @@ import fs from 'fs/promises';
 import path from 'path';
 import { DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { env } from '../../config/env';
+import { ERROR_CODES, FILES, OWN_FILES } from '../../constants';
+import { appError } from '../../utils/AppError';
 import { emailInfo } from '../ocr/channel-detector';
 import { EmailMetadata, plannedS3Folder } from './s3-layout';
 
@@ -32,16 +34,14 @@ const CONTENT_TYPES: Record<string, string> = {
   '.jpg': 'image/jpeg',
 };
 
-const METADATA = 'metadata.json';
-const DUPLICATE_FILE = 'duplicate.json';
-const DUPLICATES_CSV = 'duplicates.csv';
-/** Files that describe the email or our processing, not the attachments (left out of the re-send check). */
-const OWN_FILES = /^(metadata\.json|body\.(txt|html)|reason\.json|duplicate\.json|links\.json|ocr-.*)$/;
+const METADATA = FILES.METADATA;
+const DUPLICATE_FILE = FILES.DUPLICATE;
+const DUPLICATES_CSV = FILES.DUPLICATES_REPORT;
 
 /** S3 key of a file kept directly in a label folder (report.csv, duplicates.csv). */
 const labelFileKey = (localFile: string): string => {
   const rel = path.relative(path.resolve(env.storage.emailDir), path.resolve(localFile));
-  if (rel.startsWith('..') || path.isAbsolute(rel)) throw new Error(`${localFile} is not under ${env.storage.emailDir}`);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) throw appError(ERROR_CODES.PATH_OUTSIDE_STORAGE, localFile, env.storage.emailDir);
   return `${env.s3.prefix}${rel.split(path.sep).join('/')}`;
 };
 

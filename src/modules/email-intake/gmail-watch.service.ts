@@ -1,6 +1,8 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { env } from '../../config/env';
+import { ERROR_CODES } from '../../constants';
+import { appError } from '../../utils/AppError';
 import { getGmail } from './gmail.client';
 import { LabelRoute, labelRoutes } from './label-routes';
 
@@ -49,7 +51,7 @@ export const resolveRoutes = async (): Promise<ResolvedRoute[]> => {
   return labelRoutes.map((route) => {
     const labelId = byName.get(route.label.toLowerCase());
     if (!labelId) {
-      throw new Error(`Gmail label "${route.label}" not found in ${env.gmail.mailbox}. Create it or fix label-routes.ts.`);
+      throw appError(ERROR_CODES.GMAIL_LABEL_NOT_FOUND, route.label, env.gmail.mailbox);
     }
     return { ...route, labelId };
   });
@@ -58,7 +60,7 @@ export const resolveRoutes = async (): Promise<ResolvedRoute[]> => {
 /** Tells Gmail to publish changes to these labels to the Pub/Sub topic. */
 export const startWatch = async (routes: ResolvedRoute[]): Promise<void> => {
   const { projectId, topic } = env.pubsub;
-  if (!projectId || !topic) throw new Error('GCP_PROJECT_ID and PUBSUB_TOPIC are required for the Gmail watch');
+  if (!projectId || !topic) throw appError(ERROR_CODES.GMAIL_WATCH_CONFIG_MISSING);
 
   const res = await getGmail().users.watch({
     userId: 'me',

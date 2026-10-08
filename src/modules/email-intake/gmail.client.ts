@@ -1,5 +1,7 @@
 import { gmail_v1, google } from 'googleapis';
 import { env } from '../../config/env';
+import { ERROR_CODES } from '../../constants';
+import { appError } from '../../utils/AppError';
 
 export const GMAIL_SCOPES = ['https://www.googleapis.com/auth/gmail.readonly'];
 // Lets the same login pull from the Pub/Sub subscription.
@@ -18,7 +20,7 @@ export const getAuthClient = (): AuthClient => {
 
   if (cfg.authMode === 'service_account') {
     if (!cfg.serviceAccountKeyFile) {
-      throw new Error('GMAIL_SERVICE_ACCOUNT_KEY_FILE is required when GMAIL_AUTH_MODE=service_account');
+      throw appError(ERROR_CODES.GMAIL_SERVICE_ACCOUNT_KEY_MISSING);
     }
     // Domain-wide delegation: the service account acts as the mailbox user.
     authClient = new google.auth.JWT({
@@ -30,9 +32,7 @@ export const getAuthClient = (): AuthClient => {
   }
 
   if (!cfg.oauthClientId || !cfg.oauthClientSecret || !cfg.oauthRefreshToken) {
-    throw new Error(
-      'GMAIL_OAUTH_CLIENT_ID, GMAIL_OAUTH_CLIENT_SECRET and GMAIL_OAUTH_REFRESH_TOKEN are required when GMAIL_AUTH_MODE=oauth',
-    );
+    throw appError(ERROR_CODES.GMAIL_OAUTH_CONFIG_MISSING);
   }
   const oauth = new google.auth.OAuth2(cfg.oauthClientId, cfg.oauthClientSecret);
   oauth.setCredentials({ refresh_token: cfg.oauthRefreshToken });

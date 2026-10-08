@@ -1,4 +1,4 @@
-import { CHANNELS } from '../../../../constants/channels';
+import { CHANNELS, poWarning, WARNING_CODES } from '../../../../constants';
 import { noDiscountAmounts } from '../../common/amounts';
 import { applyMapping, emptyLine, leftover, markRawSources } from '../../common/apply-mapping';
 import { applyEmailSources } from '../../common/email-sources';
@@ -36,7 +36,7 @@ export const scootsyHandler: ChannelHandler = {
     if (rawFacility && po.delivery_facility_code) {
       const ok = rawFacility.toLowerCase() === po.delivery_facility_code.toLowerCase();
       po.cross_checks.push({ field: 'delivery_facility_code', against: 'subject', raw: rawFacility, value: po.delivery_facility_code, result: ok ? 'match' : 'mismatch' });
-      if (!ok) po.warnings.push(`delivery_facility_code: raw Shipping Name "${rawFacility}" differs from the subject "${po.delivery_facility_code}"`);
+      if (!ok) po.warnings.push(poWarning(WARNING_CODES.FACILITY_MISMATCH, rawFacility, po.delivery_facility_code));
     }
 
     // 4. No revision signal seen for Scootsy.

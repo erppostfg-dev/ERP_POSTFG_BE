@@ -1,3 +1,5 @@
+import { ENDPOINTS, LABELS } from '../../constants';
+
 /**
  * Gmail label -> API endpoint.
  *
@@ -12,4 +14,4 @@ export interface LabelRoute {
   endpoint: string;
 }
 
-export const labelRoutes: LabelRoute[] = [{ label: 'Po-Intake', endpoint: '/po-intake/email' }];
+export const labelRoutes: LabelRoute[] = [{ label: LABELS.PO_INTAKE, endpoint: ENDPOINTS.PO_INTAKE_EMAIL }];

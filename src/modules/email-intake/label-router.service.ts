@@ -1,5 +1,7 @@
 import { gmail_v1 } from 'googleapis';
 import { env } from '../../config/env';
+import { ERROR_CODES, PROVIDERS } from '../../constants';
+import { appError } from '../../utils/AppError';
 import { getGmail } from './gmail.client';
 import { downloadAttachments, originalSender, readParts, toHeaderMap } from './gmail-message';
 import { readState, ResolvedRoute, writeState } from './gmail-watch.service';
@@ -83,7 +85,7 @@ export const forwardMessage = async (gmail: gmail_v1.Gmail, gmailId: string, rou
   form.append('messageId', headers['message-id'] ?? `gmail-${gmailId}`);
   if (/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(from)) form.append('from', from);
   form.append('subject', subject);
-  form.append('provider', 'gmail-pubsub');
+  form.append('provider', PROVIDERS.GMAIL_PUBSUB);
   form.append('gmailId', gmailId);
   if (full.data.internalDate) form.append('receivedAt', new Date(Number(full.data.internalDate)).toISOString());
   if (body.text) form.append('bodyText', body.text);
@@ -97,7 +99,7 @@ export const forwardMessage = async (gmail: gmail_v1.Gmail, gmailId: string, rou
   });
   const text = await res.text();
   // 5xx: throw so the email is retried. 4xx will not get better on a retry: log it and move on.
-  if (res.status >= 500) throw new Error(`POST ${url} -> ${res.status}: ${text}`);
+  if (res.status >= 500) throw appError(ERROR_CODES.ROUTE_FORWARD_FAILED, url, res.status, text);
   if (!res.ok) {
     console.error(`[route] "${subject}" rejected by ${url}: ${res.status} ${text}`);
     return true;

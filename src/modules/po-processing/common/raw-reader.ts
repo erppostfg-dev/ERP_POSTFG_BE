@@ -1,5 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { ERROR_CODES, FILES } from '../../../constants';
+import { appError } from '../../../utils/AppError';
 
 /*
  * Reads a PO's raw OCR output into plain field/value maps, the same for every channel.
@@ -15,13 +17,13 @@ import path from 'path';
  *      #,Item Code,HSN Code,...         <- the line-item table: a header row, then one row per line
  */
 
-export const RAW_OUTPUT_FILE = 'ocr-output.csv';
-export const RAW_RESULT_FILE = 'ocr-output_result.json';
+export const RAW_OUTPUT_FILE = FILES.OCR_OUTPUT_CSV;
+export const RAW_RESULT_FILE = FILES.OCR_OUTPUT_RESULT;
 /**
  * Where the raw JSON may be, first match wins. The final file name is still to be agreed with the OCR team
  * (ocr-result.json is also the name of our own dev OCR summary, which has another shape and is skipped).
  */
-export const RAW_JSON_FILES = ['ocr-raw.json', 'ocr-result.json'];
+export const RAW_JSON_FILES = [FILES.OCR_RAW_JSON, FILES.OCR_RESULT];
 
 /** The OCR team's raw JSON (see above). */
 interface RawJson {
@@ -137,7 +139,7 @@ const readRawCsv = async (folder: string): Promise<RawOcr> => {
   // Header block: from the "Field,Value,..." row to the first blank row.
   const header: Record<string, string> = {};
   let i = rows.findIndex((r) => r[0]?.trim() === 'Field');
-  if (i < 0) throw new Error(`${RAW_OUTPUT_FILE}: no "Field,Value" header block`);
+  if (i < 0) throw appError(ERROR_CODES.RAW_OUTPUT_INVALID, RAW_OUTPUT_FILE);
   for (i++; i < rows.length && !isBlank(rows[i]); i++) {
     const [field, value = ''] = rows[i];
     if (field?.trim()) header[field.trim()] = value;

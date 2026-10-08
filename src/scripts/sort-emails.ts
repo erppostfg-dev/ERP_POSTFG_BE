@@ -13,6 +13,8 @@ import path from 'path';
 import { recheckNotPo, sortStoredEmail, writeNotPoReport } from '../modules/email-intake/email-sorter.service';
 import { groupDirFor, NOT_PO_SUFFIX } from '../modules/email-intake/email-storage.service';
 import { moveEmailInS3, uploadFileToS3 } from '../modules/email-intake/s3-mirror.service';
+import { ERROR_CODES, FILES } from '../constants';
+import { appError } from '../utils/AppError';
 
 const arg = (name: string): string | undefined => {
   const i = process.argv.indexOf(`--${name}`);
@@ -21,7 +23,7 @@ const arg = (name: string): string | undefined => {
 
 const main = async (): Promise<void> => {
   const label = arg('label');
-  if (!label) throw new Error('Give --label <label folder>, e.g. --label po-intake');
+  if (!label) throw appError(ERROR_CODES.CLI_USAGE, 'Give --label <label folder>, e.g. --label po-intake');
   const groupDir = groupDirFor(label);
 
   const notPoDir = `${groupDir}${NOT_PO_SUFFIX}`;
@@ -47,10 +49,10 @@ const main = async (): Promise<void> => {
   }
 
   const total = await writeNotPoReport(notPoDir);
-  await uploadFileToS3(path.join(notPoDir, 'report.csv'));
+  await uploadFileToS3(path.join(notPoDir, FILES.NOT_PO_REPORT));
   console.log(`\nPOs in ${label}:`, perChannel);
   console.log(`moved now: ${notPo}, moved back: ${back.length}, total in ${path.basename(notPoDir)}: ${total}`);
-  console.log(`report: ${path.join(notPoDir, 'report.csv')}`);
+  console.log(`report: ${path.join(notPoDir, FILES.NOT_PO_REPORT)}`);
 };
 
 main().catch((err) => {

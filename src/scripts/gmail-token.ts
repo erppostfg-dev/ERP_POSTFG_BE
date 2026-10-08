@@ -11,6 +11,8 @@ import http from 'http';
 import { AddressInfo } from 'net';
 import { google } from 'googleapis';
 import { env } from '../config/env';
+import { ERROR_CODES } from '../constants';
+import { appError } from '../utils/AppError';
 import { GMAIL_SCOPES, PUBSUB_SCOPES } from '../modules/email-intake/gmail.client';
 
 // Gmail read + Pub/Sub pull, so one refresh token serves the whole email listener.
@@ -25,7 +27,7 @@ const openBrowser = (url: string): void => {
 const main = async (): Promise<void> => {
   const { oauthClientId, oauthClientSecret, mailbox } = env.gmail;
   if (!oauthClientId || !oauthClientSecret) {
-    throw new Error('Set GMAIL_OAUTH_CLIENT_ID and GMAIL_OAUTH_CLIENT_SECRET in .env first.');
+    throw appError(ERROR_CODES.GMAIL_OAUTH_CLIENT_MISSING);
   }
 
   // Desktop-app clients accept any loopback port, so let the OS pick a free one.
@@ -63,7 +65,7 @@ const main = async (): Promise<void> => {
 
   const { tokens } = await oauth.getToken(code);
   if (!tokens.refresh_token) {
-    throw new Error('No refresh token returned. Remove the app at https://myaccount.google.com/permissions and run again.');
+    throw appError(ERROR_CODES.GMAIL_NO_REFRESH_TOKEN);
   }
 
   // Check which mailbox the token belongs to.

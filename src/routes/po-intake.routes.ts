@@ -7,7 +7,8 @@ import { sortStoredEmail, SortResult } from '../modules/email-intake/email-sorte
 import { storeInboundEmail } from '../modules/email-intake/email-storage.service';
 import { mirrorLater, syncEmailToS3, uploadFileToS3 } from '../modules/email-intake/s3-mirror.service';
 import { queueExtractPo } from '../modules/ocr/extract-po.service';
-import { ApiError } from '../utils/ApiError';
+import { ERROR_CODES, errorMessage, FILES, FOLDERS, INTAKE_STATUS, PROVIDERS } from '../constants';
+import { appError } from '../utils/AppError';
 
 const router = Router();
 
@@ -22,13 +23,13 @@ const upload = multer({
 /** X-Webhook-Secret must equal WEBHOOK_SECRET (constant-time compare). */
 const requireWebhookSecret = (req: Request, _res: Response, next: NextFunction): void => {
   const expected = env.intake.webhookSecret;
-  if (!expected) return next(new ApiError(500, 'WEBHOOK_SECRET is not set on the server', undefined, 'INTERNAL'));
+  if (!expected) return next(appError(ERROR_CODES.WEBHOOK_SECRET_NOT_SET));
 
   const given = req.header('X-Webhook-Secret') ?? '';
   const a = Buffer.from(given);
   const b = Buffer.from(expected);
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-    return next(new ApiError(401, 'Invalid webhook secret'));
+    return next(appError(ERROR_CODES.WEBHOOK_SECRET_INVALID));
   }
   next();
 };
@@ -53,20 +54,26 @@ router.post('/email', requireWebhookSecret, upload.array('files', MAX_FILES), as
     const body = req.body as Body;
     const files = (req.files as Express.Multer.File[] | undefined) ?? [];
 
-    if (!files.length && !body.label) throw new ApiError(400, 'No files uploaded; send them in the "files" field');
+    if (!files.length && !body.label) throw appError(ERROR_CODES.NO_FILES_UPLOADED);
 
-    const problems: { field: string; message: string }[] = [];
-    if (body.from && !isEmail(body.from)) problems.push({ field: 'from', message: 'from must be an email' });
-    if (body.receivedAt && Number.isNaN(Date.parse(body.receivedAt))) {
-      problems.push({ field: 'receivedAt', message: 'receivedAt must be an ISO date' });
+    const problems: { field: string; code: string; message: string }[] = [];
+    if (body.from && !isEmail(body.from)) {
+      problems.push({ field: 'from', code: ERROR_CODES.FIELD_NOT_EMAIL, message: errorMessage(ERROR_CODES.FIELD_NOT_EMAIL, 'from') });
     }
-    if (problems.length) throw new ApiError(400, 'Validation failed', problems, 'VALIDATION_FAILED');
+    if (body.receivedAt && Number.isNaN(Date.parse(body.receivedAt))) {
+      problems.push({
+        field: 'receivedAt',
+        code: ERROR_CODES.FIELD_NOT_ISO_DATE,
+        message: errorMessage(ERROR_CODES.FIELD_NOT_ISO_DATE, 'receivedAt'),
+      });
+    }
+    if (problems.length) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails(problems);
 
-    const messageId = body.messageId?.trim() || `${body.provider ?? 'manual'}-${crypto.randomUUID()}`;
+    const messageId = body.messageId?.trim() || `${body.provider ?? PROVIDERS.MANUAL}-${crypto.randomUUID()}`;
     const stored = await storeInboundEmail({
-      group: body.label ?? 'manual',
+      group: body.label ?? FOLDERS.MANUAL,
       messageId,
-      provider: body.provider === 'gmail-pubsub' ? 'gmail-pubsub' : 'manual',
+      provider: body.provider === PROVIDERS.GMAIL_PUBSUB ? PROVIDERS.GMAIL_PUBSUB : PROVIDERS.MANUAL,
       gmailId: body.gmailId,
       labels: body.label ? [body.label] : undefined,
       from: body.from,
@@ -78,7 +85,7 @@ router.post('/email', requireWebhookSecret, upload.array('files', MAX_FILES), as
     });
 
     console.log(
-      `[po-intake] ${stored.duplicate ? 'repeat of' : 'stored'} ${body.label ?? 'manual'} "${body.subject ?? ''}" -> ${stored.folder}`,
+      `[po-intake] ${stored.duplicate ? 'repeat of' : 'stored'} ${body.label ?? FOLDERS.MANUAL} "${body.subject ?? ''}" -> ${stored.folder}`,
     );
 
     // Not a PO (reply, notice, unknown sender): moved to <label>-not-po/ with a reason, and never sent to OCR.
@@ -97,7 +104,9 @@ router.post('/email', requireWebhookSecret, upload.array('files', MAX_FILES), as
         const r = await syncEmailToS3(sortedFolder);
         console.log(`[s3] ${r.uploaded} file(s) uploaded to ${r.s3Folder}/`);
       });
-      if (sort && !sort.isPo) mirrorLater('upload report.csv', () => uploadFileToS3(path.join(path.dirname(sortedFolder), 'report.csv')));
+      if (sort && !sort.isPo) {
+        mirrorLater(`upload ${FILES.NOT_PO_REPORT}`, () => uploadFileToS3(path.join(path.dirname(sortedFolder), FILES.NOT_PO_REPORT)));
+      }
     }
 
     // Testing: straight to OCR. Later: upload to S3 and add a BullMQ job instead.
@@ -108,16 +117,16 @@ router.post('/email', requireWebhookSecret, upload.array('files', MAX_FILES), as
     res.status(202).json({
       data: {
         messageId,
-        provider: body.provider ?? 'manual',
+        provider: body.provider ?? PROVIDERS.MANUAL,
         label: body.label ?? null,
         from: body.from ?? null,
         subject: body.subject ?? null,
         duplicate: stored.duplicate,
-        status: stored.duplicate ? 'duplicate' : sort && !sort.isPo ? 'not_po' : 'stored',
+        status: stored.duplicate ? INTAKE_STATUS.DUPLICATE : sort && !sort.isPo ? INTAKE_STATUS.NOT_PO : INTAKE_STATUS.STORED,
         channel: sort?.isPo ? sort.channel : null,
         notPoReason: sort && !sort.isPo ? sort.reason : null,
         folder,
-        attachments: stored.files.map((f) => ({ filename: f.filename, size: f.size, status: 'stored' })),
+        attachments: stored.files.map((f) => ({ filename: f.filename, size: f.size, status: INTAKE_STATUS.STORED })),
       },
     });
   } catch (err) {

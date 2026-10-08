@@ -1,5 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { ERROR_CODES, errorMessage, FILES } from '../../constants';
+import { appError } from '../../utils/AppError';
 import { ChannelConfig } from './channels.config';
 
 export interface DownloadedLink {
@@ -45,24 +47,24 @@ const fetchFile = async (start: string, allowedHosts: string[]): Promise<{ buf: 
   let url = new URL(start);
   for (let hop = 0; hop < MAX_HOPS; hop++) {
     if (url.protocol !== 'https:' || !allowedHosts.includes(url.host)) {
-      throw new Error(`host not allowed: ${url.protocol}//${url.host}`);
+      throw appError(ERROR_CODES.LINK_HOST_NOT_ALLOWED, url.protocol, url.host);
     }
     const res = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(TIMEOUT_MS) });
     if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {
       url = new URL(res.headers.get('location') as string, url);
       continue;
     }
-    if (!res.ok) throw new Error(`HTTP ${res.status} from ${url.host}`);
+    if (!res.ok) throw appError(ERROR_CODES.LINK_HTTP_ERROR, res.status, url.host);
 
     const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length > MAX_BYTES) throw new Error(`file over ${MAX_BYTES} bytes`);
+    if (buf.length > MAX_BYTES) throw appError(ERROR_CODES.LINK_FILE_TOO_LARGE, MAX_BYTES);
     if (fileKind(buf)) return { buf, url };
 
     const next = /window\.location(?:\.href)?\s*=\s*["']([^"']+)["']/.exec(buf.subarray(0, 20_000).toString('utf8'));
-    if (!next) throw new Error(`no file and no redirect from ${url.host} (link expired?)`);
+    if (!next) throw appError(ERROR_CODES.LINK_NO_FILE, url.host);
     url = new URL(decodeEntities(next[1]), url);
   }
-  throw new Error(`too many redirects`);
+  throw appError(ERROR_CODES.LINK_TOO_MANY_REDIRECTS);
 };
 
 /**
@@ -77,13 +79,13 @@ export const downloadLinkedFiles = async (
   const links = config.links;
   if (!links) return { downloaded: [], missingRequired: [] };
 
-  const record = path.join(dir, 'links.json');
+  const record = path.join(dir, FILES.LINKS);
   const previous: DownloadedLink[] = await fs
     .readFile(record, 'utf8')
     .then((s) => JSON.parse(s) as DownloadedLink[])
     .catch(() => []);
 
-  const html = await fs.readFile(path.join(dir, 'body.html'), 'utf8').catch(() => '');
+  const html = await fs.readFile(path.join(dir, FILES.BODY_HTML), 'utf8').catch(() => '');
   const found = anchors(html);
   const downloaded: DownloadedLink[] = [];
 
@@ -95,7 +97,7 @@ export const downloadLinkedFiles = async (
     }
     const link = found.find((a) => item.text.test(a.text));
     if (!link) {
-      downloaded.push({ name: item.name, error: `no link with text ${item.text}` });
+      downloaded.push({ name: item.name, error: errorMessage(ERROR_CODES.LINK_NOT_FOUND, String(item.text)) });
       continue;
     }
     try {
@@ -112,6 +114,6 @@ export const downloadLinkedFiles = async (
   await fs.writeFile(record, JSON.stringify(downloaded, null, 2), 'utf8');
   const missingRequired = links.items
     .filter((i) => i.required && !downloaded.find((d) => d.name === i.name && d.filename))
-    .map((i) => `${i.name}: ${downloaded.find((d) => d.name === i.name)?.error ?? 'not downloaded'}`);
+    .map((i) => `${i.name}: ${downloaded.find((d) => d.name === i.name)?.error ?? errorMessage(ERROR_CODES.LINK_NOT_DOWNLOADED)}`);
   return { downloaded, missingRequired };
 };

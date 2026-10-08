@@ -1,4 +1,4 @@
-import { CHANNELS } from '../../../../constants/channels';
+import { CHANNELS, PoWarning, poWarning, WARNING_CODES } from '../../../../constants';
 import { noDiscountAmounts } from '../../common/amounts';
 import { applyMapping, emptyLine, findKey, leftover, markRawSources } from '../../common/apply-mapping';
 import { applyEmailSources } from '../../common/email-sources';
@@ -78,16 +78,22 @@ export const relianceHandler: ChannelHandler = {
     const qtys = po.line_items.map((l) => l.qty);
     if (po.total_qty !== '' && qtys.every((q) => typeof q === 'number')) {
       const sum = (qtys as number[]).reduce((a, q) => a + q, 0);
-      if (Math.abs(sum - po.total_qty) > 0.001) po.warnings.push(`total_qty: Grand Total of Qty ${po.total_qty} differs from SUM(Quantity) ${sum}`);
+      if (Math.abs(sum - po.total_qty) > 0.001) {
+        po.warnings.push(poWarning(WARNING_CODES.TOTAL_QTY_MISMATCH, 'Grand Total of Qty', po.total_qty, 'SUM(Quantity)', sum));
+      }
     }
     const totalBasic = toNumber(ctx.raw.header[findKey(ctx.raw.header, RELIANCE_TOTAL_BASIC) ?? ''], RELIANCE_TOTAL_BASIC, po.warnings);
     if (baseOk && typeof totalBasic === 'number' && Math.abs(round2(baseSum) - totalBasic) > RELIANCE_TOTAL_TOLERANCE) {
-      po.warnings.push(`${RELIANCE_TOTAL_BASIC} ${totalBasic} differs from SUM(${RELIANCE_BASE_VALUE}) ${round2(baseSum)}`);
+      po.warnings.push(
+        poWarning(WARNING_CODES.BASE_VALUE_MISMATCH, RELIANCE_TOTAL_BASIC, totalBasic, `SUM(${RELIANCE_BASE_VALUE})`, round2(baseSum)),
+      );
     }
     const totals = po.line_items.map((l) => l.line_total);
     if (po.po_value !== '' && totals.every((t) => typeof t === 'number')) {
       const sum = round2((totals as number[]).reduce((a, t) => a + t, 0));
-      if (Math.abs(sum - po.po_value) > RELIANCE_TOTAL_TOLERANCE) po.warnings.push(`po_value: Total Order Value ${po.po_value} differs from SUM(line_total) ${sum}`);
+      if (Math.abs(sum - po.po_value) > RELIANCE_TOTAL_TOLERANCE) {
+        po.warnings.push(poWarning(WARNING_CODES.PO_VALUE_MISMATCH, 'Total Order Value', po.po_value, 'SUM(line_total)', sum));
+      }
     }
 
     // 6. Reliance POs have no discount: cart_discount 0, net_amount = po_value (calculated).
@@ -101,7 +107,7 @@ export const relianceHandler: ChannelHandler = {
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 
 /** IGST % when charged (inter-state PO), otherwise CGST % + SGST %. */
-const lineGst = (raw: Record<string, string>, used: Set<string>, where: string, warnings: string[]): Num => {
+const lineGst = (raw: Record<string, string>, used: Set<string>, where: string, warnings: PoWarning[]): Num => {
   const igstKey = findKey(raw, RELIANCE_RATES.igst);
   if (igstKey !== undefined) {
     used.add(igstKey);
@@ -110,7 +116,8 @@ const lineGst = (raw: Record<string, string>, used: Set<string>, where: string, 
   const cgstKey = findKey(raw, RELIANCE_RATES.cgst);
   const sgstKey = findKey(raw, RELIANCE_RATES.sgst);
   if (cgstKey === undefined || sgstKey === undefined) {
-    warnings.push(`${where}: no GST rate columns (${RELIANCE_RATES.cgst} + ${RELIANCE_RATES.sgst}, or ${RELIANCE_RATES.igst})`);
+    const columns = `"${RELIANCE_RATES.cgst}" + "${RELIANCE_RATES.sgst}" or "${RELIANCE_RATES.igst}"`;
+    warnings.push(poWarning(WARNING_CODES.GST_COLUMNS_MISSING, where, columns));
     return '';
   }
   used.add(cgstKey).add(sgstKey);
@@ -127,11 +134,11 @@ const checkRepeat = (
   read: (v: string) => string,
   used: Set<string>,
   where: string,
-  warnings: string[],
+  warnings: PoWarning[],
 ): void => {
   const key = findKey(raw, column);
   if (key === undefined || !headerValue) return;
   const value = read(raw[key]);
   if (value.toLowerCase() === headerValue.toLowerCase()) used.add(key);
-  else warnings.push(`${where}: ${column} "${raw[key]}" differs from the header's "${headerValue}"`);
+  else warnings.push(poWarning(WARNING_CODES.LINE_DIFFERS_FROM_HEADER, where, column, raw[key], headerValue));
 };

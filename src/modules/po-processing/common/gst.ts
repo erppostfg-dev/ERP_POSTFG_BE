@@ -1,3 +1,4 @@
+import { PoWarning, poWarning, WARNING_CODES } from '../../../constants';
 import { findKey } from './apply-mapping';
 import { toNumber } from './parse';
 import { Num } from './processed-po';
@@ -18,12 +19,12 @@ export const gstRate = (
   cols: GstColumns,
   used: Set<string>,
   where: string,
-  warnings: string[],
+  warnings: PoWarning[],
 ): Num => {
   const keys = { cgst: findKey(raw, cols.cgst), sgst: findKey(raw, cols.sgst), igst: findKey(raw, cols.igst) };
   const missing = (Object.keys(keys) as (keyof GstColumns)[]).filter((k) => keys[k] === undefined).map((k) => `"${cols[k]}"`);
   if (missing.length) {
-    warnings.push(`${where}: GST columns ${missing.join(', ')} are not in the OCR output`);
+    warnings.push(poWarning(WARNING_CODES.GST_COLUMNS_MISSING, where, missing.join(', ')));
     return '';
   }
   Object.values(keys).forEach((k) => used.add(k as string));

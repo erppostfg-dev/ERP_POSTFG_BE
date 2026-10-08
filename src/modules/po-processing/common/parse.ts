@@ -1,3 +1,4 @@
+import { PoWarning, poWarning, WARNING_CODES } from '../../../constants';
 import { Num } from './processed-po';
 
 /*
@@ -12,12 +13,12 @@ const MONTHS: Record<string, number> = {
 export const text = (value: string | undefined): string => (value ?? '').replace(/\s+/g, ' ').trim();
 
 /** "1,678,798.25" -> 1678798.25; "" -> "". */
-export const toNumber = (value: string | undefined, label: string, warnings: string[]): Num => {
+export const toNumber = (value: string | undefined, label: string, warnings: PoWarning[]): Num => {
   const raw = text(value);
   if (!raw) return '';
   const n = Number(raw.replace(/[,\s₹]/g, '').replace(/^INR/i, ''));
   if (Number.isFinite(n)) return n;
-  warnings.push(`${label}: "${raw}" is not a number`);
+  warnings.push(poWarning(WARNING_CODES.NOT_A_NUMBER, label, raw));
   return '';
 };
 
@@ -30,7 +31,7 @@ const iso = (y: number, m: number, d: number): string | undefined =>
  * "Sept. 21, 2026, 11:39 a.m." / "Oct 5, 2026" (Blinkit, Scootsy), "05/Oct/2026" / "05-Oct-2026" (BigBasket),
  * "2026-10-05", "25.09.2026" / "25/09/2026" / "25-09-2026" (day first).
  */
-export const toDate = (value: string | undefined, label: string, warnings: string[]): string => {
+export const toDate = (value: string | undefined, label: string, warnings: PoWarning[]): string => {
   const raw = text(value);
   if (!raw) return '';
   let m = /^([A-Za-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{4})/.exec(raw);
@@ -55,7 +56,7 @@ export const toDate = (value: string | undefined, label: string, warnings: strin
     const out = iso(Number(m[3]), Number(m[2]), Number(m[1]));
     if (out) return out;
   }
-  warnings.push(`${label}: "${raw}" is not a date this layer can read`);
+  warnings.push(poWarning(WARNING_CODES.NOT_A_DATE, label, raw));
   return '';
 };
 

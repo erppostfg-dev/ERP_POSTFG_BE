@@ -1,11 +1,12 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { FILES } from '../../constants';
 import { detectChannel, emailInfo, NotPoCode, StoredMetadata } from '../ocr/channel-detector';
 import { NOT_PO_SUFFIX } from './email-storage.service';
 import { EmailMetadata, plannedS3Folder } from './s3-layout';
 
-const REASON_FILE = 'reason.json';
-const REPORT_FILE = 'report.csv';
+const REASON_FILE = FILES.NOT_PO_REASON;
+const REPORT_FILE = FILES.NOT_PO_REPORT;
 
 export interface NotPoReason {
   code: NotPoCode;
@@ -22,7 +23,7 @@ export type SortResult =
   | { isPo: false; code: NotPoCode; reason: string; folder: string };
 
 const readMeta = async (folder: string): Promise<StoredMetadata & { receivedAt?: string }> =>
-  JSON.parse(await fs.readFile(path.join(folder, 'metadata.json'), 'utf8')) as StoredMetadata & { receivedAt?: string };
+  JSON.parse(await fs.readFile(path.join(folder, FILES.METADATA), 'utf8')) as StoredMetadata & { receivedAt?: string };
 
 const csvCell = (v: string | undefined): string => `"${(v ?? '').replace(/"/g, '""')}"`;
 
@@ -37,7 +38,7 @@ export const writeNotPoReport = async (notPoDir: string): Promise<number> => {
     try {
       const dir = path.join(notPoDir, d.name);
       const r = JSON.parse(await fs.readFile(path.join(dir, REASON_FILE), 'utf8')) as NotPoReason;
-      const meta = JSON.parse(await fs.readFile(path.join(dir, 'metadata.json'), 'utf8')) as EmailMetadata;
+      const meta = JSON.parse(await fs.readFile(path.join(dir, FILES.METADATA), 'utf8')) as EmailMetadata;
       rows.push({ ...r, folder: d.name, s3Folder: `${meta.s3Folder ?? plannedS3Folder(dir, meta)}/` });
     } catch {
       // a folder without reason.json is not ours

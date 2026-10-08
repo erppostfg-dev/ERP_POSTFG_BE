@@ -6,6 +6,8 @@
  *   npm run s3:sync -- --label po-intake      (storage/emails/po-intake/ and po-intake-not-po/)
  */
 import { env } from '../config/env';
+import { ERROR_CODES } from '../constants';
+import { appError } from '../utils/AppError';
 import { groupDirFor, NOT_PO_SUFFIX } from '../modules/email-intake/email-storage.service';
 import { syncLabelToS3 } from '../modules/email-intake/s3-mirror.service';
 
@@ -16,8 +18,8 @@ const arg = (name: string): string | undefined => {
 
 const main = async (): Promise<void> => {
   const label = arg('label');
-  if (!label) throw new Error('Give --label <label folder>, e.g. --label po-intake');
-  if (!env.s3.enabled) throw new Error('S3_ENABLED is not true in .env');
+  if (!label) throw appError(ERROR_CODES.CLI_USAGE, 'Give --label <label folder>, e.g. --label po-intake');
+  if (!env.s3.enabled) throw appError(ERROR_CODES.S3_DISABLED);
 
   for (const dir of [groupDirFor(label), `${groupDirFor(label)}${NOT_PO_SUFFIX}`]) {
     const r = await syncLabelToS3(dir);

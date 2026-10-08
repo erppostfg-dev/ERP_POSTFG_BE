@@ -1,11 +1,13 @@
 import dotenv from 'dotenv';
+import { ERROR_CODES } from '../constants/errors';
+import { appError } from '../utils/AppError';
 
 dotenv.config();
 
 const required = (key: string, fallback?: string): string => {
   const value = process.env[key] ?? fallback;
   if (value === undefined) {
-    throw new Error(`Missing required environment variable: ${key}`);
+    throw appError(ERROR_CODES.ENV_MISSING, key);
   }
   return value;
 };

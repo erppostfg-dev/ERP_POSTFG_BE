@@ -6,6 +6,8 @@
  *   npm run email:route -- --label Po-Intake            (every email in the label)
  *   npm run email:route -- --label Po-Intake --max 5    (newest 5 only)
  */
+import { ERROR_CODES } from '../constants';
+import { appError } from '../utils/AppError';
 import { getGmail } from '../modules/email-intake/gmail.client';
 import { resolveRoutes } from '../modules/email-intake/gmail-watch.service';
 import { forwardMessage } from '../modules/email-intake/label-router.service';
@@ -19,7 +21,7 @@ const main = async (): Promise<void> => {
   const routes = await resolveRoutes();
   const label = arg('label') ?? routes[0]?.label;
   const route = routes.find((r) => r.label.toLowerCase() === label?.toLowerCase());
-  if (!route) throw new Error(`No route for label "${label}". Routes: ${routes.map((r) => r.label).join(', ')}`);
+  if (!route) throw appError(ERROR_CODES.CLI_LABEL_ROUTE_NOT_FOUND, String(label), routes.map((r) => r.label).join(', '));
 
   const max = arg('max') ? Number(arg('max')) : Infinity;
   const gmail = getGmail();

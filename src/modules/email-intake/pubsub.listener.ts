@@ -1,6 +1,8 @@
 import { Message, PubSub, Subscription } from '@google-cloud/pubsub';
 import { google } from 'googleapis';
 import { env } from '../../config/env';
+import { ERROR_CODES } from '../../constants';
+import { appError } from '../../utils/AppError';
 import { getAuthClient } from './gmail.client';
 import { keepWatching, resolveRoutes } from './gmail-watch.service';
 import { groupDirFor, NOT_PO_SUFFIX } from './email-storage.service';
@@ -22,7 +24,7 @@ const pubsubClient = (): PubSub => {
  */
 export const startEmailListener = async (): Promise<{ stop: () => Promise<void> }> => {
   const { subscription: subscriptionId } = env.pubsub;
-  if (!subscriptionId) throw new Error('PUBSUB_SUBSCRIPTION is required');
+  if (!subscriptionId) throw appError(ERROR_CODES.PUBSUB_SUBSCRIPTION_MISSING);
 
   const routes = await resolveRoutes();
   const renewTimer = await keepWatching(routes);
