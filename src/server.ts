@@ -3,6 +3,8 @@ import app from './app';
 import { AppDataSource } from './config/data-source';
 import { env } from './config/env';
 import { startEmailListener } from './modules/email-intake/pubsub.listener';
+import { queueExtractPo } from './modules/ocr/extract-po.service';
+import { applyResume, planResume } from './modules/po-pipeline/resume.service';
 
 const start = async (): Promise<void> => {
   if (env.db.enabled) {
@@ -35,6 +37,21 @@ const start = async (): Promise<void> => {
     }
   } else {
     console.log('Email listener disabled (PUBSUB_ENABLED=false)');
+  }
+
+  // Resume unfinished POs from po_uploads (PIPELINE_RESUME=true, database connected), within PIPELINE_LIMIT.
+  // The OCR is queued only when OCR_ENABLED; otherwise those emails stay queued for the next start.
+  if (env.pipeline.resumeOnStart && AppDataSource.isInitialized) {
+    void (async () => {
+      const items = await planResume(AppDataSource);
+      console.log(`[resume] ${items.length} unfinished email(s) in po_uploads`);
+      await applyResume(AppDataSource, items, {
+        runOcr: async (folder) => {
+          if (env.ocr.enabled) queueExtractPo(folder);
+          else console.log(`[resume] OCR_ENABLED=false: ${folder} stays queued`);
+        },
+      });
+    })().catch((err) => console.error('[resume] failed:', err instanceof Error ? err.message : err));
   }
 
   const shutdown = async (signal: string): Promise<void> => {

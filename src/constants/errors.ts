@@ -56,6 +56,11 @@ export const ERRORS = {
   // --- Storage / S3 -----------------------------------------------------------------------------------------------
   PATH_OUTSIDE_STORAGE: define(500, (file: string, storageDir: string) => `${file} is not under ${storageDir}`),
 
+  // --- PO chain (po_uploads.error_details, resume) ----------------------------------------------------------------
+  UNIWARE_CSV_MISSING: define(500, (csvPath: string) => `Uniware CSV ${csvPath} not found after the PO rows were saved; the sale order code must be checked by hand`),
+  EMAIL_FOLDER_NOT_FOUND: define(500, (messageId: string) => `No stored email folder for message ${messageId}`),
+  TOO_MANY_OCR_ATTEMPTS: define(500, (attempts: number, max: number) => `OCR already tried ${attempts} times (max ${max})`),
+
   // --- Channel detection: why an email is not a PO (reason.json / report.csv) ------------------------------------
   NO_SENDER: define(422, () => 'email has no sender'),
   UNKNOWN_SENDER: define(422, (from: string) => `no channel configured for sender ${from}`),

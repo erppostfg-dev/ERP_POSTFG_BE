@@ -111,10 +111,11 @@ router.post('/email', requireWebhookSecret, upload.array('files', MAX_FILES), as
     }
 
     // A PO email gets its po_uploads row (when the database is connected) before the OCR can update it.
-    if (!stored.duplicate && sort?.isPo) await emailStored(folder);
+    // Over PIPELINE_LIMIT it is only stored as files: no row and no OCR.
+    const inChain = !stored.duplicate && sort?.isPo ? await emailStored(folder) : true;
 
     // Testing: straight to OCR. Later: upload to S3 and add a BullMQ job instead.
-    if (env.ocr.enabled && !stored.duplicate && sort?.isPo !== false && !queueExtractPo(folder)) {
+    if (env.ocr.enabled && inChain && !stored.duplicate && sort?.isPo !== false && !queueExtractPo(folder)) {
       console.log(`[extractPo] OCR_RUN_LIMIT ${env.ocr.runLimit} reached; ${path.basename(folder)} waits for the next start`);
     }
 

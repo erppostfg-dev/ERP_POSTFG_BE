@@ -3,6 +3,8 @@ import path from 'path';
 import { DataSource, EntityManager } from 'typeorm';
 import {
   BRAND_NAMES,
+  ERROR_CODES,
+  errorMessage,
   FILES,
   NEW_PO_STATUS,
   PIPELINE_STEP,
@@ -18,6 +20,7 @@ import { EmailMetadata } from '../email-intake/s3-layout';
 import { syncEmailToS3 } from '../email-intake/s3-mirror.service';
 import { s3UrlFor } from '../po-processing/common/processed-store';
 import { todayIst, ValidatedLine } from '../po-validation/validate-po';
+import { appError } from '../../utils/AppError';
 import { EmailPlan, RowPlan } from './po-uploads.service';
 
 /*
@@ -186,7 +189,9 @@ export const applySave = async (db: DataSource, folder: string, plans: SavePlan[
     const r: SaveResult = { poNumber: p.row.poNumber, uploadId: upload.id };
     let code = '';
     try {
-      // 1. PO rows + sale order code, in one transaction.
+      // 1. PO rows + sale order code, in one transaction. The CSV is written to disk inside it (before the commit), so
+      //    a stop after the commit leaves the CSV with its sale order code for resume to upload (finishCsv).
+      const csvFile = path.join(folder, p.csvRelPath);
       await db.transaction(async (m) => {
         const serial = await takeSerial(m, p.master.entryDate as string);
         code = saleOrderCode(p.master.entryDate as string, serial);
@@ -195,12 +200,11 @@ export const applySave = async (db: DataSource, folder: string, plans: SavePlan[
         await details.save(p.details.map((d) => details.create({ ...d, shipmentOrderId: masterRow.uid })));
         await m.getRepository(PoUpload).save({ ...upload, poUid: masterRow.uid });
         r.poUid = masterRow.uid;
+        await fs.writeFile(csvFile, uniwareCsv(p, code), 'utf8');
       });
       r.code = code;
 
-      // 2. Uniware CSV next to processed.json, then the email folder is synced to S3.
-      const csvFile = path.join(folder, p.csvRelPath);
-      await fs.writeFile(csvFile, uniwareCsv(p, code), 'utf8');
+      // 2. The email folder (with the CSV next to processed.json) is synced to S3.
       await syncEmailToS3(folder);
       r.csvUrl = s3UrlFor(folder, meta, p.csvRelPath);
 
@@ -218,4 +222,26 @@ export const applySave = async (db: DataSource, folder: string, plans: SavePlan[
     results.push(r);
   }
   return results;
+};
+
+/**
+ * Resume: a PO whose rows were saved (po_uid set, status processing) but whose CSV never reached S3. The CSV was written
+ * in the save transaction: upload the folder and complete the row. No CSV on disk -> failed (the sale order code is
+ * unknown, a person must look). Returns the CSV's S3 URL, or throws.
+ */
+export const finishCsv = async (db: DataSource, folder: string, upload: PoUpload, relPath: string): Promise<string> => {
+  const meta = JSON.parse(await fs.readFile(path.join(folder, FILES.METADATA), 'utf8')) as EmailMetadata;
+  const master = upload.poUid ? await db.getRepository(MasterPurchaseOrder).findOneBy({ uid: upload.poUid }) : null;
+  const csvRelPath = path.posix.join(path.posix.dirname(relPath), UNIWARE_CSV.FILE_NAME(upload.poNumber ?? '', master?.entryDate ?? ''));
+  const exists = await fs.access(path.join(folder, csvRelPath)).then(() => true, () => false);
+  const uploads = db.getRepository(PoUpload);
+  if (!exists) {
+    const message = errorMessage(ERROR_CODES.UNIWARE_CSV_MISSING, csvRelPath);
+    await uploads.save({ ...upload, status: UPLOAD_STATUS.FAILED, errorDetails: { step: PIPELINE_STEP.UNIWARE_CSV, message } });
+    throw appError(ERROR_CODES.UNIWARE_CSV_MISSING, csvRelPath);
+  }
+  await syncEmailToS3(folder);
+  const csvUrl = s3UrlFor(folder, meta, csvRelPath);
+  await uploads.save({ ...upload, uniwareCsvUrl: csvUrl, status: UPLOAD_STATUS.COMPLETED, completedAt: new Date(), errorDetails: null });
+  return csvUrl;
 };

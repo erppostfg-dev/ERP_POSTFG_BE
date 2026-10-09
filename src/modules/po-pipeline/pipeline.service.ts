@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { AppDataSource } from '../../config/data-source';
+import { env } from '../../config/env';
 import { ChannelName, FILES, PIPELINE_STEP, RESULT_STATUS, UPLOAD_OCR_STATUS, UPLOAD_STATUS } from '../../constants';
 import { PoUpload } from '../../entities';
 import { detectChannel, emailInfo, StoredMetadata } from '../ocr/channel-detector';
@@ -44,11 +45,35 @@ const safely = async (folder: string, step: string, fn: () => Promise<void>): Pr
   }
 };
 
-/** A PO email was stored (intake): its po_uploads row, if it has none yet. */
-export const emailStored = (folder: string): Promise<void> =>
-  safely(folder, 'emailStored', async () => {
+/*
+ * PIPELINE_LIMIT (testing): at most N emails per process start go into the chain, new intake and resume together.
+ * 0 = no limit (production). An email over the limit is only stored as files: no po_uploads row, no OCR.
+ */
+let taken = 0;
+const limitReached = (): boolean => env.pipeline.limit > 0 && taken >= env.pipeline.limit;
+/** Takes one place in the chain; false when PIPELINE_LIMIT is reached. */
+export const takeSlot = (): boolean => {
+  if (limitReached()) return false;
+  taken++;
+  return true;
+};
+
+/**
+ * A PO email was stored (intake): its po_uploads row, if it has none yet. Returns whether the email goes on into the
+ * chain (so the caller starts the OCR): false when PIPELINE_LIMIT is reached; true when the database is not connected
+ * (no chain, the old behaviour).
+ */
+export const emailStored = async (folder: string): Promise<boolean> => {
+  if (!on()) return true;
+  let allowed = true;
+  await safely(folder, 'emailStored', async () => {
     const { meta, messageId } = await messageIdOf(folder);
     if (!messageId || (await rowsOf(messageId)).length) return;
+    if (!takeSlot()) {
+      allowed = false;
+      log(folder, `PIPELINE_LIMIT ${env.pipeline.limit} reached: stored as files only (no po_uploads row, no OCR)`);
+      return;
+    }
     const detected = detectChannel(emailInfo(meta));
     const channel = 'config' in detected ? detected.config.channel : null;
     const master = channel ? await new MasterDataReader(AppDataSource).forChannel(channel as ChannelName) : null;
@@ -56,6 +81,8 @@ export const emailStored = (folder: string): Promise<void> =>
     const row = await repo.save(repo.create({ ...(await emailValues(folder, master?.channel.displayName ?? null)), status: UPLOAD_STATUS.QUEUED }));
     log(folder, `po_uploads ${row.id} queued`);
   });
+  return allowed;
+};
 
 /** The OCR started on this email. */
 export const ocrStarted = (folder: string): Promise<void> =>

@@ -71,6 +71,14 @@ export const env = {
     timeoutMs: Number(process.env.OCR_TIMEOUT_MS ?? 10 * 60 * 1000),
     concurrency: Number(process.env.OCR_CONCURRENCY ?? 2),
   },
+  // The chain after intake (po_uploads -> OCR -> processed.json -> validation -> DB -> Uniware CSV).
+  pipeline: {
+    // Most emails taken into the chain per process start (new intake + resume); 0 = no limit (production).
+    // Emails over the limit are only stored as files (no po_uploads row, no OCR); po:pipeline / po:one take them later.
+    limit: Number(process.env.PIPELINE_LIMIT ?? 0),
+    // true: at server start, unfinished po_uploads rows are resumed (queued / extracting / processing).
+    resumeOnStart: flag('PIPELINE_RESUME'),
+  },
   storage: {
     emailDir: process.env.EMAIL_STORAGE_DIR ?? 'storage/emails',
     gmailStateFile: process.env.GMAIL_STATE_FILE ?? 'storage/gmail-state.json',
