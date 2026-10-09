@@ -56,6 +56,22 @@ export const ERRORS = {
   // --- Storage / S3 -----------------------------------------------------------------------------------------------
   PATH_OUTSIDE_STORAGE: define(500, (file: string, storageDir: string) => `${file} is not under ${storageDir}`),
 
+  // --- Login and page access -------------------------------------------------------------------------------------
+  AUTH_NOT_CONFIGURED: define(500, (keys: string) => `Login is not configured: set ${keys} in .env`),
+  UNAUTHENTICATED: define(401, () => 'Sign in to continue'),
+  OAUTH_STATE_INVALID: define(400, () => 'The sign-in link expired or was not started here; sign in again'),
+  GOOGLE_TOKEN_INVALID: define(401, () => 'Google sign-in could not be verified'),
+  NOT_ALLOWED_DOMAIN: define(403, (domain: string) => `Only ${domain} accounts can sign in`),
+  USER_NOT_FOUND: define(403, (email: string) => `${email} has no access to POST_FG yet; ask an admin`),
+  USER_INACTIVE: define(403, (email: string) => `${email} is switched off; ask an admin`),
+  FORBIDDEN_PAGE: define(
+    403,
+    (page: string, needed: string, have: string) =>
+      have === 'viewer'
+        ? `Access denied: you have view-only access to ${page}. Ask an admin for ${needed} access to make changes.`
+        : `Access denied: you have no access to ${page}. Ask an admin for ${needed} access.`,
+  ),
+
   // --- PO chain (po_uploads.error_details, resume) ----------------------------------------------------------------
   UNIWARE_CSV_MISSING: define(500, (csvPath: string) => `Uniware CSV ${csvPath} not found after the PO rows were saved; the sale order code must be checked by hand`),
   EMAIL_FOLDER_NOT_FOUND: define(500, (messageId: string) => `No stored email folder for message ${messageId}`),

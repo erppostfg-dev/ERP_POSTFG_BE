@@ -2,6 +2,7 @@
  * All constants in one place: import from 'constants' (this file) rather than writing names, codes or messages
  * inline. Add a new value to its file here, never as a literal in the code.
  */
+export * from './auth';
 export * from './channels';
 export * from './dates';
 export * from './db';

@@ -71,6 +71,22 @@ export const env = {
     timeoutMs: Number(process.env.OCR_TIMEOUT_MS ?? 10 * 60 * 1000),
     concurrency: Number(process.env.OCR_CONCURRENCY ?? 2),
   },
+  // Login: Google sign-in for the website (a Web application OAuth client; not the Gmail client above).
+  auth: {
+    googleClientId: process.env.GOOGLE_CLIENT_ID,
+    googleClientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    // Signs the session cookie (JWT, HS256).
+    secret: process.env.AUTH_SECRET,
+    // Google sends the user back here; must be an Authorized redirect URI on the OAuth client.
+    callbackUrl: process.env.AUTH_CALLBACK_URL ?? `http://localhost:${port}${apiPrefix}/auth/google/callback`,
+    // Where the browser goes after login (?error=<CODE> when refused).
+    redirectUrl: process.env.AUTH_REDIRECT_URL ?? `http://localhost:${port}${apiPrefix}/auth/me`,
+    // The frontend's origin: CORS with credentials is allowed only for it.
+    frontendOrigin: process.env.FRONTEND_ORIGIN ?? 'http://localhost:5173',
+    allowedEmailDomain: (process.env.ALLOWED_EMAIL_DOMAIN ?? 'mcaffeine.com').toLowerCase(),
+    sessionDays: Number(process.env.SESSION_DAYS ?? 7),
+    cookieSecure: flag('COOKIE_SECURE'),
+  },
   // The chain after intake (po_uploads -> OCR -> processed.json -> validation -> DB -> Uniware CSV).
   pipeline: {
     // Most emails taken into the chain per process start (new intake + resume); 0 = no limit (production).

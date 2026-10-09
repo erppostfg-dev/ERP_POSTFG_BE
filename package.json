@@ -18,6 +18,7 @@
     "migration:create": "typeorm-ts-node-commonjs migration:create",
     "migration:run": "npm run typeorm -- migration:run -d src/config/data-source.ts",
     "migration:revert": "npm run typeorm -- migration:revert -d src/config/data-source.ts",
+    "migration:show": "npm run typeorm -- migration:show -d src/config/data-source.ts",
     "ocr:run": "ts-node --transpile-only src/scripts/ocr-run.ts",
     "po:process": "ts-node --transpile-only src/scripts/po-process.ts",
     "po:validate": "ts-node --transpile-only src/scripts/po-validate.ts",
@@ -25,22 +26,27 @@
     "po:save": "ts-node --transpile-only src/scripts/po-save.ts",
     "po:pipeline": "ts-node --transpile-only src/scripts/po-pipeline.ts",
     "po:one": "ts-node --transpile-only src/scripts/po-one.ts",
-    "po:resume": "ts-node --transpile-only src/scripts/po-resume.ts"
+    "po:resume": "ts-node --transpile-only src/scripts/po-resume.ts",
+    "auth:seed": "ts-node --transpile-only src/scripts/auth-seed.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1146.0",
     "@google-cloud/pubsub": "^6.1.0",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.2",
+    "google-auth-library": "^11.2.0",
     "googleapis": "^182.0.0",
     "helmet": "^8.0.0",
+    "jose": "^6.2.12",
     "multer": "^2.4.0",
     "mysql2": "^3.11.5",
     "reflect-metadata": "^0.2.2",
     "typeorm": "^0.3.20"
   },
   "devDependencies": {
+    "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/multer": "^2.3.0",
