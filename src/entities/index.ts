@@ -12,3 +12,4 @@ export * from './po-issue-action.entity';
 export * from './po-issue.entity';
 export * from './po-upload.entity';
 export * from './sale-order-code-counter.entity';
+export * from './auth.entities';

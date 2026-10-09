@@ -23,7 +23,40 @@ export const TABLES = {
   PO_UPLOADS: 'po_uploads',
   PO_ISSUES: 'po_issues',
   PO_ISSUE_ACTIONS: 'po_issue_actions',
+  // Login and page access (2026-10-09, prefg's shape; created by our migration).
+  USERS: 'users',
+  USER_ROLES: 'user_roles',
+  PAGE_PERMISSIONS: 'page_permissions',
+  USER_PAGE_PERMISSIONS: 'user_page_permissions',
+  SESSIONS: 'sessions',
+  SESSION_HISTORY: 'session_history',
+  ACTIVITY_LOG: 'activity_log',
 } as const;
+
+/** TypeORM's own record of which migrations have run. */
+export const MIGRATIONS_TABLE = 'migrations';
+
+/** users.status */
+export const USER_STATUS = { ACTIVE: 'active', INACTIVE: 'inactive' } as const;
+export type UserStatus = (typeof USER_STATUS)[keyof typeof USER_STATUS];
+
+/** page_permissions / user_page_permissions.access_level (most to least: editor > viewer > none). */
+export const ACCESS_LEVEL = { NONE: 'none', VIEWER: 'viewer', EDITOR: 'editor' } as const;
+export type AccessLevel = (typeof ACCESS_LEVEL)[keyof typeof ACCESS_LEVEL];
+
+/** sessions.device_type */
+export const DEVICE_TYPE = { WEB: 'web', MOBILE: 'mobile', TABLET: 'tablet', API: 'api' } as const;
+export type DeviceType = (typeof DEVICE_TYPE)[keyof typeof DEVICE_TYPE];
+
+/** session_history.event */
+export const SESSION_EVENT = {
+  LOGIN: 'login',
+  LOGOUT: 'logout',
+  EXPIRED: 'expired',
+  REVOKED: 'revoked',
+  TOKEN_REFRESHED: 'token_refreshed',
+} as const;
+export type SessionEvent = (typeof SESSION_EVENT)[keyof typeof SESSION_EVENT];
 
 /** po_uploads.source: by email, uploaded by a person on the frontend, or sent by another system through the API. */
 export const UPLOAD_SOURCE = { EMAIL: 'email', MANUAL: 'manual', API: 'api' } as const;

@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import path from 'path';
 import { DataSource, DataSourceOptions } from 'typeorm';
-import { ALLOWED_DATABASES, ERROR_CODES } from '../constants';
+import { ALLOWED_DATABASES, ERROR_CODES, MIGRATIONS_TABLE } from '../constants';
 import { appError } from '../utils/AppError';
 import { DbConsoleLogger } from './db-logger';
 import { env } from './env';
@@ -31,12 +31,13 @@ const options: DataSourceOptions = {
   username: env.db.username,
   password: env.db.password,
   database: env.db.name,
-  // The tables are created and changed by others (Final_Schema/final_schema.sql): the app never alters the schema,
-  // so synchronize is always off (DB_SYNCHRONIZE is ignored) and the app has no migrations.
+  // Every schema change goes through a migration in src/migrations (user, 2026-10-09): `npm run migration:generate`
+  // writes one from the entities, it is reviewed, then `npm run migration:run` applies it and records it in the
+  // migrations table. synchronize is always off, so the schema never changes by itself; migrations never run on start.
   synchronize: false,
   migrationsRun: false,
-  migrations: [],
-  // Every write and transaction is printed (db-logger.ts); reads too with DB_LOGGING=true.
+  migrationsTableName: MIGRATIONS_TABLE,
+  migrations: [path.join(__dirname, '../migrations/*.{ts,js}').replace(/\\/g, '/')],
   logging: ['query', 'error', 'warn'],
   logger: new DbConsoleLogger(env.db.logging),
   timezone: 'Z',

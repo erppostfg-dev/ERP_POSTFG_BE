@@ -42,11 +42,18 @@ export class DbConsoleLogger implements Logger {
     console.warn(`[db] slow (${time} ms): ${short(oneLine(query), MAX_SQL)}`);
   }
 
-  logSchemaBuild(): void {}
+  /** Schema and migration messages are always shown (migration:show / run list their migrations here). */
+  logSchemaBuild(message: string): void {
+    console.log(`[db] ${message}`);
+  }
 
-  logMigration(): void {}
+  logMigration(message: string): void {
+    console.log(`[db] migration: ${message}`);
+  }
 
   log(level: 'log' | 'info' | 'warn', message: unknown): void {
     if (level === 'warn') console.warn(`[db] ${String(message)}`);
+    // migration:show lists "[X] name" / "[ ] name" here; TypeORM's other info (file scans) only with DB_LOGGING=true.
+    else if (/^\s*\[[ X]\]/.test(String(message)) || this.logReads) console.log(`[db] ${String(message)}`);
   }
 }
