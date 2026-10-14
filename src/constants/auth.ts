@@ -50,8 +50,12 @@ export const PAGES: readonly PageEntry[] = [
 /** Page keys the API guards name (so routes never type a slug). */
 export const PAGE = {
   MASTERS: '/masters',
+  PEP_SKUS: '/masters/pep-skus',
   CHANNEL_SKUS: '/masters/channel-skus',
+  CHANNEL_CUSTOMERS: '/masters/channel-customers',
+  WAREHOUSES: '/masters/warehouses',
   OPERATIONS: '/operations',
+  PO_OVERVIEW: '/operations/po-overview',
   PO_REVIEW: '/operations/po-review',
   PLANNING: '/planning',
   APPROVALS: '/approvals',

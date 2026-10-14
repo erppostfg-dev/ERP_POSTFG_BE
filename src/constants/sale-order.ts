@@ -2,6 +2,8 @@
  * Saving a validated PO (step 2): the PO tables as PEPIMS fills them, the sale order code and the Uniware CSV.
  */
 
+import { PO_ACTIVE_STATUS } from './db';
+
 /**
  * Sale order code: sf_<yyyymmdd><serial>, e.g. sf_20261008001 (the format of the user's Uniware samples).
  * The serial comes from sale_order_code_counter: one row per date; a new date starts at 1, the same date adds 1.
@@ -16,7 +18,7 @@ export const saleOrderCode = (date: string, serial: number): string =>
 
 /** master_purchase_orders status values of a new PO, as PEPIMS writes them (mcaff_inv, checked 2026-10-08). */
 export const NEW_PO_STATUS = {
-  ACTIVE: 'Active',
+  ACTIVE: PO_ACTIVE_STATUS.ACTIVE,
   PLANNING: 'Confirmed',
 } as const;
 

@@ -1,0 +1,152 @@
+/*
+ * PO Overview column groups (2026-10-14): which team owns which shipment column, in the workflow order PEPIMS's edit
+ * screen uses (admin = our planning, then warehouse, then logistics; accounts added last, PEPIMS has no accounts
+ * list). The screen shows one tab per team with that team's columns; only a team with edit access may change them.
+ * Field names = master_purchase_orders columns as the shipments API sends them. To change the order or move a column,
+ * change it here (design doc: https://claude.ai/code/artifact/c6865a06-f88b-4fde-b6f5-0b31727feba5).
+ */
+
+/** How the screen shows a value (the frontend grid's column kinds). */
+export const COLUMN_KIND = {
+  TEXT: 'text',
+  MONO: 'mono',
+  DATE: 'date',
+  NUM: 'num',
+  MONEY: 'money',
+  LINK: 'link',
+  STATUS: 'status',
+} as const;
+export type ColumnKind = (typeof COLUMN_KIND)[keyof typeof COLUMN_KIND];
+
+export interface ColumnDef {
+  field: string;
+  label: string;
+  kind: ColumnKind;
+}
+
+export const PO_TEAM = { PLANNING: 'planning', WAREHOUSE: 'warehouse', LOGISTICS: 'logistics', ACCOUNTS: 'accounts' } as const;
+export type PoTeam = (typeof PO_TEAM)[keyof typeof PO_TEAM];
+
+/** Workflow order: the tab's step number = its position here + 1. */
+export const PO_TEAM_ORDER: readonly PoTeam[] = [PO_TEAM.PLANNING, PO_TEAM.WAREHOUSE, PO_TEAM.LOGISTICS, PO_TEAM.ACCOUNTS];
+
+export const PO_TEAM_LABEL: Record<PoTeam, string> = {
+  [PO_TEAM.PLANNING]: 'Planning',
+  [PO_TEAM.WAREHOUSE]: 'Warehouse',
+  [PO_TEAM.LOGISTICS]: 'Logistics',
+  [PO_TEAM.ACCOUNTS]: 'Accounts',
+};
+
+const c = (field: string, label: string, kind: ColumnKind = COLUMN_KIND.TEXT): ColumnDef => ({ field, label, kind });
+const K = COLUMN_KIND;
+
+/** Always on the left of every tab, so a row can be recognised (a team tab drops those it owns itself). */
+export const PO_KEY_COLUMNS: readonly ColumnDef[] = [
+  c('uid', 'UID', K.MONO),
+  c('poNumber', 'PO Number', K.MONO),
+  c('channel', 'Channel'),
+  c('location', 'Location'),
+  c('facility', 'Facility', K.MONO),
+  c('statusFinal', 'Final Status', K.STATUS),
+];
+
+/** Set when the PO is saved or computed: nobody edits them; shown on the Overview tab. */
+export const PO_SYSTEM_COLUMNS: readonly ColumnDef[] = [
+  c('entryDate', 'Entry Date', K.DATE),
+  c('poDate', 'PO Date', K.DATE),
+  c('brandName', 'Brand'),
+  c('totalUnits', 'Total Units', K.NUM),
+  c('lines', 'Lines', K.NUM),
+  c('updatedQty', 'Updated Qty', K.NUM),
+  c('updatedGmv', 'Updated GMV', K.MONEY),
+  c('updatedPoValue', 'Updated PO Value', K.MONEY),
+  c('customerCode', 'Customer Code', K.MONO),
+  c('poEntryCount', 'PO Entry Count', K.NUM),
+  c('tatDays', 'TAT', K.NUM),
+  c('criticalDispatchDate', 'Critical Dispatch Date', K.DATE),
+  c('ratePerKg', 'Rate / kg Used', K.MONEY),
+];
+
+/** Each team's own columns (PEPIMS's role field lists; open points marked in the design doc). */
+export const PO_TEAM_COLUMNS: Record<PoTeam, readonly ColumnDef[]> = {
+  [PO_TEAM.PLANNING]: [
+    c('poNumber', 'PO Number', K.MONO),
+    c('facility', 'Facility', K.MONO),
+    c('channel', 'Channel'),
+    c('location', 'Location'),
+    c('statusPlanning', 'Status (Planning)', K.STATUS),
+    c('statusActive', 'Active / Inactive'),
+    c('remarksPlanning', 'Remarks (Planning)'),
+    c('specialRemarksCOPT', 'Special Remarks (COPT)'),
+    c('newShipmentReference', 'New Shipment Reference', K.MONO),
+    c('channelInwardingRemarks', 'Channel Inwarding Remarks'),
+    c('dispatchDateTentative', 'Dispatch Date - Tentative', K.DATE),
+    c('firstAppointmentDateCOPT', 'First Appointment Date (COPT)', K.DATE),
+    c('appointmentShootedDate', 'Appointment Shooted Date', K.DATE),
+    c('appointmentRequestedDate', 'Appointment Requested Date', K.DATE),
+    c('orderNo1', 'Order No 1', K.MONO),
+    c('orderNo2', 'Order No 2', K.MONO),
+    c('orderNo3', 'Order No 3', K.MONO),
+    c('poNumberInwardCWH', 'PO Number (Inward - CWH)', K.MONO),
+    c('channelType', 'Channel Type'),
+    c('labelsLink', 'PO Expiry Date'),
+    c('deliveryType', 'Delivery Type'),
+  ],
+  [PO_TEAM.WAREHOUSE]: [
+    c('statusWarehouse', 'Status (Warehouse)', K.STATUS),
+    c('remarksWarehouse', 'Remarks (Warehouse)'),
+    c('dispatchRemarksWarehouse', 'Dispatch Remarks (Warehouse)'),
+    c('workingDatePlanner', 'Working Date', K.DATE),
+    c('rtsDate', 'RTS Date', K.DATE),
+    c('dispatchDate', 'Dispatch Date', K.DATE),
+    c('noOfBoxes', 'No of Boxes', K.NUM),
+    c('pickListNo', 'Pick List No', K.MONO),
+    c('workingTypeWarehouse', 'Working Type (Warehouse)'),
+    c('inventoryRemarksWarehouse', 'Inventory Remarks (Warehouse)'),
+    c('b2bWorkingTeamRemarks', 'B2B Working Team Remarks'),
+    c('actualWeight', 'Shipment Weight', K.NUM),
+    c('volumetricWeight', 'Volumetric Weight', K.NUM),
+    c('firstTransporter', '1st Transporter (First Mile)'),
+    c('firstDocketNo', '1st Docket / Vehicle No', K.MONO),
+    c('secondTransporter', '2nd Transporter (Mid Mile)'),
+    c('secondDocketNo', '2nd Docket / Vehicle No', K.MONO),
+    c('thirdTransporter', '3rd Transporter (Last Mile)'),
+    c('thirdDocketNo', '3rd Docket / Vehicle No', K.MONO),
+    c('proofOfDispatch', 'Proof Of Dispatch', K.LINK),
+  ],
+  [PO_TEAM.LOGISTICS]: [
+    c('statusLogistics', 'Status (Logistics)', K.STATUS),
+    c('dispatchRemarksLogistics', 'Dispatch Remarks (Logistics)'),
+    c('currentAppointmentDate', 'Current Appointment Date', K.DATE),
+    c('firstAppointmentDate', 'First Appointment Date', K.DATE),
+    c('secondAppointmentDate', 'Second Appointment Date', K.DATE),
+    c('thirdAppointmentDate', 'Third Appointment Date', K.DATE),
+    c('appointmentLetter', 'Appointment Letter / STN', K.LINK),
+    c('deliveryDate', 'Delivery Date', K.DATE),
+    c('rescheduleLag', 'Reschedule Lag', K.NUM),
+    c('finalRemarks', 'Final Remarks'),
+    c('physicalWeight', 'Chargeable Weight', K.NUM),
+    c('deliveryCharges', 'Delivery Charges', K.MONEY),
+    c('halting', 'Halting', K.MONEY),
+    c('unloadingCharges', 'Unloading Charges', K.MONEY),
+    c('dedicatedVehicle', 'Dedicated Vehicle', K.MONEY),
+    c('otherCharges', 'Other Charges', K.MONEY),
+    c('rpk', 'Rates / kg', K.MONEY),
+    c('proofOfDelivery', 'Proof Of Delivery', K.LINK),
+  ],
+  [PO_TEAM.ACCOUNTS]: [
+    c('invoiceDate', 'Invoice Date', K.DATE),
+    c('invoiceChallanNumber', 'Invoice / Challan Number', K.MONO),
+    c('invoiceValue', 'Invoice Value', K.MONEY),
+    c('invoiceLink', 'Invoice Link', K.LINK),
+    c('cnLink', 'CN Link', K.LINK),
+    c('ewayLink', 'E-Way Link', K.LINK),
+    c('invoiceCheckedBy', 'Invoice Checked By'),
+    c('remarksAccountsTeam', 'Remarks by Accounts Team'),
+    c('tallyCustomerName', 'Tally Customer Name'),
+  ],
+};
+
+/** A person's access to a team's columns. */
+export const COLUMN_ACCESS = { NONE: 'none', VIEW: 'view', EDIT: 'edit' } as const;
+export type ColumnAccess = (typeof COLUMN_ACCESS)[keyof typeof COLUMN_ACCESS];

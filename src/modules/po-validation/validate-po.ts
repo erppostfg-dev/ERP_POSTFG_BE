@@ -29,15 +29,28 @@ import { ChannelMasterData, matchKey } from './master-data';
 
 /** The delivery location found in details_channels: the codes the Uniware CSV and the PO row need. */
 export interface ValidatedLocation {
+  /** details_channels.id -> master_purchase_orders.locationId */
+  locationId: string;
   /** details_channels.channel_location_code -> master_purchase_orders.location */
   locationCode: string;
   /** -> Uniware Customer Code, master_purchase_orders.customerCode */
   customerCode: string;
-  /** -> Uniware Facility Code, master_purchase_orders.facility */
+  /** -> Uniware Facility Code, master_purchase_orders.facility: master_facilities.code when the location links to a
+   *  facility (by facility_id, else by its facility_code or an alias), else details_channels.facility_code as stored. */
   facilityCode: string;
+  /** master_facilities.id -> master_purchase_orders.facilityId; null = the facility is not in master_facilities yet. */
+  facilityId: number | null;
   /** -> Uniware Channel (e.g. ZEPTO_B2B) */
   uniwareChannel: string;
-  matchedBy: 'code' | 'pincode';
+  matchedBy: 'code' | 'pincode' | 'reviewer';
+}
+
+/** A reviewer's choices on resubmit (po-review): they replace the automatic match for this PO only. */
+export interface ReviewOverrides {
+  /** details_channels.id of the delivery location the reviewer picked. */
+  locationId?: string;
+  /** pep_code the reviewer mapped a line to, by String(line_no). */
+  pepCodeByLine?: Map<string, string>;
 }
 
 export interface ValidatedLine {
@@ -85,7 +98,7 @@ const orEmpty = (v: number | null): Num => (v === null ? '' : round2(v));
 /** Today in IST as YYYY-MM-DD (PO dates are Indian dates). */
 export const todayIst = (now = new Date()): string => new Date(now.getTime() + IST_OFFSET_MS).toISOString().slice(0, 10);
 
-const findLocation = (po: ProcessedPo, master: ChannelMasterData, issues: ValidationIssue[]): ValidatedLocation | null => {
+const findLocation = (po: ProcessedPo, master: ChannelMasterData, issues: ValidationIssue[], picked?: string): ValidatedLocation | null => {
   const code = matchKey(po.delivery_facility_code);
   const pin = matchKey(po.delivery_pincode);
   const byCode = CHANNEL_LOCATION_MATCH[po.channel_name as ChannelName] === LOCATION_MATCH.CODE_THEN_PINCODE;
@@ -93,11 +106,15 @@ const findLocation = (po: ProcessedPo, master: ChannelMasterData, issues: Valida
   let rows: DetailsChannel[] = [];
   let matchedBy: ValidatedLocation['matchedBy'] = 'code';
   let by = '';
-  if (byCode && code) {
+  if (picked) {
+    rows = master.locations.filter((l) => String(l.id) === picked);
+    matchedBy = 'reviewer';
+    by = `the reviewer's choice ${picked}`;
+  } else if (byCode && code) {
     rows = master.locations.filter((l) => matchKey(l.channelLocationCode) === code);
     by = `facility code "${po.delivery_facility_code}"`;
   }
-  if (!rows.length && pin) {
+  if (!picked && !rows.length && pin) {
     rows = master.locations.filter((l) => matchKey(l.consigneePinCode) === pin);
     matchedBy = 'pincode';
     by = `${by ? `${by} or ` : ''}pincode ${po.delivery_pincode}`;
@@ -105,7 +122,7 @@ const findLocation = (po: ProcessedPo, master: ChannelMasterData, issues: Valida
 
   const issue = (detail: string) =>
     issues.push(validationIssue(ISSUE_TYPE.LOCATION_NOT_MAPPED, { field: ISSUE_FIELDS.DELIVERY_LOCATION, actual: po.delivery_facility_code || po.delivery_pincode }, detail));
-  if (!code && !pin) return issue(VALIDATION_TEXT.NO_LOCATION_KEY), null;
+  if (!picked && !code && !pin) return issue(VALIDATION_TEXT.NO_LOCATION_KEY), null;
   if (!rows.length) return issue(VALIDATION_TEXT.LOCATION_NONE(by)), null;
   if (rows.length > 1) {
     const codes = rows.map((r) => r.channelLocationCode ?? r.uniwareCustomerCode ?? r.id).join(', ');
@@ -113,16 +130,20 @@ const findLocation = (po: ProcessedPo, master: ChannelMasterData, issues: Valida
   }
 
   const [row] = rows;
+  const facility = (row.facilityId !== null ? master.facilities.byId.get(row.facilityId) : undefined) ?? master.facilities.find(row.facilityCode);
+  const facilityCode = (facility?.code ?? row.facilityCode)?.trim() ?? '';
   const missing = [
     !row.uniwareCustomerCode?.trim() && 'uniware_customer_code',
-    !row.facilityCode?.trim() && 'facility_code',
+    !facilityCode && 'facility_code',
     !row.channelCode?.trim() && 'channel_code',
   ].filter(Boolean);
   if (missing.length) issue(VALIDATION_TEXT.LOCATION_INCOMPLETE(row.channelLocationCode ?? row.id, missing.join(', ')));
   return {
+    locationId: String(row.id),
     locationCode: row.channelLocationCode?.trim() ?? '',
     customerCode: row.uniwareCustomerCode?.trim() ?? '',
-    facilityCode: row.facilityCode?.trim() ?? '',
+    facilityCode,
+    facilityId: facility?.id ?? null,
     uniwareChannel: row.channelCode?.trim() ?? '',
     matchedBy,
   };
@@ -133,6 +154,7 @@ const validateLine = (
   master: ChannelMasterData,
   channel: ChannelName,
   issues: ValidationIssue[],
+  pickedPep?: string,
 ): ValidatedLine => {
   const tolerance = CHANNEL_TOLERANCES[channel];
   const where = `line ${line.line_no} (${line.channel_sku_code || '-'})`;
@@ -159,10 +181,14 @@ const validateLine = (
   };
 
   // SKU: exactly one master_channel_skus row for this channel + channel_code (user, 2026-10-08).
-  const candidates = master.skusByCode.get(matchKey(line.channel_sku_code)) ?? [];
+  // A reviewer's mapping replaces the lookup: the channel's row for that pep_code (one is enough, they share the rate).
+  const byPep = pickedPep ? (master.skusByPep.get(matchKey(pickedPep)) ?? []) : [];
+  const chosen = byPep.find((r) => r.rateAfterMargin !== null) ?? byPep[0];
+  const candidates = pickedPep ? (chosen ? [chosen] : []) : (master.skusByCode.get(matchKey(line.channel_sku_code)) ?? []);
   const skuIssue = (detail: string) =>
     add(validationIssue(ISSUE_TYPE.SKU_NOT_MAPPED, { field: ISSUE_FIELDS.CHANNEL_SKU_CODE, lineNo, actual: line.channel_sku_code }, where, detail));
-  if (!line.channel_sku_code.trim()) skuIssue(VALIDATION_TEXT.SKU_CODE_EMPTY);
+  if (pickedPep && !candidates.length) skuIssue(VALIDATION_TEXT.SKU_NONE(pickedPep));
+  else if (!pickedPep && !line.channel_sku_code.trim()) skuIssue(VALIDATION_TEXT.SKU_CODE_EMPTY);
   else if (!candidates.length) skuIssue(VALIDATION_TEXT.SKU_NONE(line.channel_sku_code));
   else if (candidates.length > 1) skuIssue(VALIDATION_TEXT.SKU_MANY(line.channel_sku_code, candidates.map((c) => c.pepCode).join(', ')));
   const mapped = candidates.length === 1 ? candidates[0] : null;
@@ -214,7 +240,12 @@ const validateLine = (
 };
 
 /** Runs every check on one PO. `master` is null when the channel is not configured. */
-export const validatePo = async (po: ProcessedPo, master: ChannelMasterData | null, now = new Date()): Promise<ValidationResult> => {
+export const validatePo = async (
+  po: ProcessedPo,
+  master: ChannelMasterData | null,
+  now = new Date(),
+  overrides: ReviewOverrides = {},
+): Promise<ValidationResult> => {
   const channel = po.channel_name as ChannelName;
   const issues: ValidationIssue[] = [];
   const result = (location: ValidatedLocation | null, lines: ValidatedLine[], totals: ValidationResult['totals']): ValidationResult => ({
@@ -249,10 +280,10 @@ export const validatePo = async (po: ProcessedPo, master: ChannelMasterData | nu
   if (po.expiry_date && po.expiry_date < today) {
     issues.push(validationIssue(ISSUE_TYPE.PO_EXPIRED, { field: ISSUE_FIELDS.EXPIRY_DATE, actual: po.expiry_date }, po.expiry_date, today));
   }
-  const location = findLocation(po, master, issues);
+  const location = findLocation(po, master, issues, overrides.locationId);
 
   // Line checks.
-  const lines = po.line_items.map((l) => validateLine(l, master, channel, issues));
+  const lines = po.line_items.map((l) => validateLine(l, master, channel, issues, overrides.pepCodeByLine?.get(String(l.line_no))));
 
   // PO total: only when every line is mapped and priced; otherwise the line issues already explain why.
   const tolerance = CHANNEL_TOLERANCES[channel];

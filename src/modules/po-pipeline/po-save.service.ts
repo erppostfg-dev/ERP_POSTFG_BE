@@ -19,7 +19,7 @@ import { DetailsPurchaseOrder, MasterPurchaseOrder, PoUpload, SaleOrderCodeCount
 import { EmailMetadata } from '../email-intake/s3-layout';
 import { syncEmailToS3 } from '../email-intake/s3-mirror.service';
 import { s3UrlFor } from '../po-processing/common/processed-store';
-import { todayIst, ValidatedLine } from '../po-validation/validate-po';
+import { todayIst, ValidatedLine, ValidationResult } from '../po-validation/validate-po';
 import { appError } from '../../utils/AppError';
 import { EmailPlan, RowPlan } from './po-uploads.service';
 
@@ -67,6 +67,59 @@ export const takeSerial = async (m: EntityManager, date: string): Promise<number
   return row.lastSerial + 1;
 };
 
+/**
+ * The master_purchase_orders row and details_purchase_orders rows of a validated PO, as PEPIMS fills them (no ids,
+ * no sale order code yet). Used by step 2 and by the review's resubmit.
+ */
+export const poRows = (
+  v: ValidationResult,
+  o: { today: string; now: Date; poDate: string | null; document: string | null },
+): { master: Partial<MasterPurchaseOrder>; details: Partial<DetailsPurchaseOrder>[] } => {
+  const lines = v.lines;
+  const master: Partial<MasterPurchaseOrder> = {
+    entryDate: o.today,
+    poDate: o.poDate,
+    facility: v.location?.facilityCode ?? null,
+    // Links next to the text (2026-10-14); a result validated before then has no ids (masters:link fills them).
+    facilityId: v.location?.facilityId ?? null,
+    channel: v.channelDisplayName,
+    location: v.location?.locationCode ?? null,
+    locationId: v.location?.locationId ?? null,
+    poNumber: v.poNumber,
+    totalUnits: lines.reduce((s, l) => s + n(l.qty), 0),
+    // PEPIMS: a PO with several brands takes the FIRST line's brand; every line keeps its own.
+    brandName: lines.length ? brand(lines[0].brandName) : null,
+    statusActive: NEW_PO_STATUS.ACTIVE,
+    statusPlanning: NEW_PO_STATUS.PLANNING,
+    customerCode: v.location?.customerCode ?? null,
+    document: o.document,
+    createdAt: o.now,
+    updatedAt: o.now,
+  };
+  const details = lines.map((l: ValidatedLine, i): Partial<DetailsPurchaseOrder> => {
+    const gmv = round2(n(l.qty) * n(l.ourMrp));
+    const poValue = round2(n(l.chargedQty) * n(l.ourRate));
+    return {
+      srNo: String(i + 1),
+      skuName: l.skuName || null,
+      skuCode: l.pepCode,
+      channelSkuCode: l.channelSkuCode,
+      qty: n(l.qty),
+      gmv,
+      poValue,
+      // PEPIMS starts the "updated" columns equal to the PO's values.
+      updatedQty: n(l.qty),
+      updatedGmv: gmv,
+      updatedPoValue: poValue,
+      brandName: brand(l.brandName),
+      poNumber: v.poNumber,
+      createdAt: o.now,
+      updatedAt: o.now,
+    };
+  });
+  return { master, details };
+};
+
 /** What step 2 would write for each PO of an email (rows from planEmail). Reads only. */
 export const planSave = async (db: DataSource, plan: EmailPlan, now = new Date()): Promise<SavePlan[]> => {
   const today = todayIst(now);
@@ -83,47 +136,9 @@ export const planSave = async (db: DataSource, plan: EmailPlan, now = new Date()
       : upload.poUid ? 'PO rows already saved (only the CSV is missing)'
       : '';
 
-    const lines = v.lines;
     const ocr = (upload?.ocrResult ?? row.values.ocrResult ?? {}) as Record<string, unknown>;
-    const master: Partial<MasterPurchaseOrder> = {
-      entryDate: today,
-      poDate: await poDateOf(plan, row),
-      facility: v.location?.facilityCode ?? null,
-      channel: v.channelDisplayName,
-      location: v.location?.locationCode ?? null,
-      poNumber: v.poNumber,
-      totalUnits: lines.reduce((s, l) => s + n(l.qty), 0),
-      // PEPIMS: a PO with several brands takes the FIRST line's brand; every line keeps its own.
-      brandName: lines.length ? brand(lines[0].brandName) : null,
-      statusActive: NEW_PO_STATUS.ACTIVE,
-      statusPlanning: NEW_PO_STATUS.PLANNING,
-      customerCode: v.location?.customerCode ?? null,
-      // processed.json in S3 (decided 2026-10-08: `document` until the PM adds a column for it).
-      document: (ocr.processed_json as string | undefined) ?? null,
-      createdAt: now,
-      updatedAt: now,
-    };
-    const details = lines.map((l: ValidatedLine, i): Partial<DetailsPurchaseOrder> => {
-      const gmv = round2(n(l.qty) * n(l.ourMrp));
-      const poValue = round2(n(l.chargedQty) * n(l.ourRate));
-      return {
-        srNo: String(i + 1),
-        skuName: l.skuName || null,
-        skuCode: l.pepCode,
-        channelSkuCode: l.channelSkuCode,
-        qty: n(l.qty),
-        gmv,
-        poValue,
-        // PEPIMS starts the "updated" columns equal to the PO's values.
-        updatedQty: n(l.qty),
-        updatedGmv: gmv,
-        updatedPoValue: poValue,
-        brandName: brand(l.brandName),
-        poNumber: v.poNumber,
-        createdAt: now,
-        updatedAt: now,
-      };
-    });
+    // processed.json in S3 (decided 2026-10-08: `document` until the PM adds a column for it).
+    const { master, details } = poRows(v, { today, now, poDate: await poDateOf(plan, row), document: (ocr.processed_json as string | undefined) ?? null });
     const csvRelPath = path.posix.join(path.posix.dirname(row.relPath), UNIWARE_CSV.FILE_NAME(v.poNumber, today));
     out.push({ row, upload, skip, master, details, nextCode: saleOrderCode(today, skip ? 0 : serial), csvRelPath });
     if (!skip) serial++;
@@ -147,8 +162,10 @@ const csvCell = (v: string | number): string => {
 };
 
 /** The Uniware CSV of one PO (one row per line), in the column order of UNIWARE_CSV.HEADERS. */
-export const uniwareCsv = (p: SavePlan, code: string): string => {
-  const v = p.row.validation;
+export const uniwareCsv = (p: SavePlan, code: string): string => csvOf(p.row.validation, p.master.poDate ?? null, code);
+
+/** The Uniware CSV of a validated PO with its sale order code. */
+export const csvOf = (v: ValidationResult, poDate: string | null, code: string): string => {
   const loc = v.location;
   const rows = v.lines.map((l) => [
     code,
@@ -164,7 +181,7 @@ export const uniwareCsv = (p: SavePlan, code: string): string => {
     n(l.qty),
     loc?.customerCode ?? '',
     loc?.facilityCode ?? '',
-    p.master.poDate ?? '', // PO Date: the PO's date when the PO has one (user, 2026-10-08), YYYY-MM-DD
+    poDate ?? '', // PO Date: the PO's date when the PO has one (user, 2026-10-08), YYYY-MM-DD
   ]);
   return [UNIWARE_CSV.HEADERS, ...rows].map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
 };

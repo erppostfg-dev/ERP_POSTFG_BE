@@ -27,10 +27,13 @@
     "po:pipeline": "ts-node --transpile-only src/scripts/po-pipeline.ts",
     "po:one": "ts-node --transpile-only src/scripts/po-one.ts",
     "po:resume": "ts-node --transpile-only src/scripts/po-resume.ts",
-    "auth:seed": "ts-node --transpile-only src/scripts/auth-seed.ts"
+    "auth:seed": "ts-node --transpile-only src/scripts/auth-seed.ts",
+    "masters:load": "ts-node --transpile-only src/scripts/masters-load.ts",
+    "masters:link": "ts-node --transpile-only src/scripts/masters-link.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1146.0",
+    "@aws-sdk/s3-request-presigner": "^3.1146.0",
     "@google-cloud/pubsub": "^6.1.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",

@@ -1,7 +1,7 @@
 /*
  * Database: which databases the app may use, the table names, and the fixed value lists (MySQL ENUMs) of the tables.
- * The tables are created and migrated by others (Final_Schema/final_schema.sql); the app only maps them with TypeORM
- * entities (src/entities/) and never changes the schema (synchronize off, no migrations here).
+ * The first tables came from Final_Schema/final_schema.sql (Baseline migration); since 2026-10-09 every schema change is a
+ * TypeORM migration in src/migrations, generated from the entities (src/entities/) and run by the user.
  */
 
 /**
@@ -10,6 +10,22 @@
  * When dedicated logins exist: add 'mcaff_postfg_prod' for production, or remove this check.
  */
 export const ALLOWED_DATABASES: readonly string[] = ['mcaff_postfg_dev'];
+
+/**
+ * PEPIMS's database: masters:load --pepims READS its master tables (inside START TRANSACTION READ ONLY, separate
+ * connection). The app never writes to it and never connects to it otherwise.
+ */
+export const PEPIMS_DATABASE = 'mcaff_inv';
+
+/** PEPIMS's master tables (mcaff_inv), as its Sequelize models name them. */
+export const PEPIMS_TABLES = {
+  FACILITY: 'facility_masters',
+  COURIER_PARTNER: 'courier_partner_masters',
+  COURIER_RATES: 'courier_rate_masters',
+  STATUS: 'status_masters',
+  APPOINTMENT_REMARKS: 'appointment_remark_masters',
+  CHANNEL_LOCATION: 'channel_location_masters',
+} as const;
 
 /** Table names, exactly as in final_schema.sql. Never schema-qualified: queries always go to the connected database. */
 export const TABLES = {
@@ -31,6 +47,14 @@ export const TABLES = {
   SESSIONS: 'sessions',
   SESSION_HISTORY: 'session_history',
   ACTIVITY_LOG: 'activity_log',
+  // PO Overview masters + links (2026-10-14, PEPIMS's master sheets in our shape; created by our migration).
+  MASTER_FACILITIES: 'master_facilities',
+  MASTER_COURIER_PARTNERS: 'master_courier_partners',
+  MASTER_COURIER_RATES: 'master_courier_rates',
+  MASTER_SHIPMENT_STATUSES: 'master_shipment_statuses',
+  MASTER_FINAL_STATUS_MAP: 'master_final_status_map',
+  MASTER_APPOINTMENT_REMARKS: 'master_appointment_remarks',
+  SHIPMENT_LOGS: 'shipment_logs',
 } as const;
 
 /** TypeORM's own record of which migrations have run. */
@@ -116,3 +140,24 @@ export const ISSUE_ACTION = {
   REOPENED: 'reopened',
 } as const;
 export type IssueAction = (typeof ISSUE_ACTION)[keyof typeof ISSUE_ACTION];
+
+/*
+ * PO Overview masters (2026-10-14). ENUM only for the lists the app itself defines; business lists (status values,
+ * transporters, remarks, facilities) are rows of master tables, so ops can change them without a migration.
+ */
+
+/** master_shipment_statuses.stage: the three status columns of master_purchase_orders. */
+export const STATUS_STAGE = { PLANNING: 'planning', WAREHOUSE: 'warehouse', LOGISTICS: 'logistics' } as const;
+export type StatusStage = (typeof STATUS_STAGE)[keyof typeof STATUS_STAGE];
+
+/** <master>.source: where a master row came from (PEPIMS's tables, a Uniware export, or typed in). */
+export const MASTER_SOURCE = { PEPIMS: 'pepims', UNIWARE: 'uniware', MANUAL: 'manual' } as const;
+export type MasterSource = (typeof MASTER_SOURCE)[keyof typeof MASTER_SOURCE];
+
+/** master_appointment_remarks.list: which dropdown the remark belongs to (PEPIMS's three remark lists). */
+export const REMARK_LIST = { APPOINTMENT_CHANGE: 'appointment_change', RTO: 'rto', REJECTION: 'rejection' } as const;
+export type RemarkList = (typeof REMARK_LIST)[keyof typeof REMARK_LIST];
+
+/** master_purchase_orders.statusActive ("Status (Active/Inactive)" in PEPIMS). */
+export const PO_ACTIVE_STATUS = { ACTIVE: 'Active', INACTIVE: 'Inactive' } as const;
+export type PoActiveStatus = (typeof PO_ACTIVE_STATUS)[keyof typeof PO_ACTIVE_STATUS];

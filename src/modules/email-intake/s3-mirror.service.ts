@@ -1,7 +1,9 @@
 import crypto from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
+import { Readable } from 'stream';
 import { DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { env } from '../../config/env';
 import { ERROR_CODES, FILES, OWN_FILES } from '../../constants';
 import { appError } from '../../utils/AppError';
@@ -63,6 +65,72 @@ const listPrefix = async (prefix: string): Promise<Map<string, string>> => {
 const getText = async (key: string): Promise<string | undefined> => {
   try {
     return await (await s3().send(new GetObjectCommand({ Bucket: env.s3.bucket, Key: key }))).Body?.transformToString();
+  } catch (err) {
+    if ((err as { name?: string }).name === 'NoSuchKey') return undefined;
+    throw err;
+  }
+};
+
+/**
+ * A JSON file from S3 by its s3://<bucket>/<key> URL (as po_uploads stores it), or undefined when it isn't there.
+ * The review API reads only from S3: in production nothing is kept on the server's disk.
+ */
+export const readS3Json = async <T>(s3Url: string): Promise<T | undefined> => {
+  const text = await getText(keyOfS3Url(s3Url));
+  return text === undefined ? undefined : (JSON.parse(text) as T);
+};
+
+/** The key of an s3://<our bucket>/<key> URL (S3 must be on, and the bucket ours). */
+const keyOfS3Url = (s3Url: string): string => {
+  if (!env.s3.enabled) throw appError(ERROR_CODES.S3_DISABLED);
+  const match = /^s3:\/\/([^/]+)\/(.+)$/.exec(s3Url);
+  if (!match || match[1] !== env.s3.bucket) throw appError(ERROR_CODES.S3_URL_INVALID, s3Url, env.s3.bucket);
+  return match[2];
+};
+
+/** The s3:// URL of another file in the same S3 folder (e.g. corrected.json next to processed.json). */
+export const siblingS3Url = (s3Url: string, fileName: string): string => `${s3Url.slice(0, s3Url.lastIndexOf('/') + 1)}${fileName}`;
+
+/** Writes a text file to S3 by its s3:// URL (the review writes corrected.json and the Uniware CSV this way). */
+export const writeS3Text = async (s3Url: string, body: string): Promise<void> => {
+  const key = keyOfS3Url(s3Url);
+  await putBody(key, body, key);
+};
+
+/**
+ * A short-lived https link to an S3 file, for the browser (it cannot open s3://). The file is served with its type
+ * from the name: inline (a PDF opens in the tab) or as an attachment (the browser saves it).
+ */
+export const s3DownloadLink = async (s3Url: string, minutes: number, disposition: 'inline' | 'attachment' = 'inline'): Promise<string> => {
+  const key = keyOfS3Url(s3Url);
+  const name = path.posix.basename(key);
+  const command = new GetObjectCommand({
+    Bucket: env.s3.bucket,
+    Key: key,
+    ResponseContentType: CONTENT_TYPES[path.extname(name).toLowerCase()] ?? 'application/octet-stream',
+    ResponseContentDisposition: `${disposition}; filename="${name.replace(/"/g, '')}"`,
+  });
+  return getSignedUrl(s3(), command, { expiresIn: minutes * 60 });
+};
+
+/**
+ * An S3 file opened for reading by its s3:// URL, for the backend to pass straight on to the browser (nothing is
+ * written to disk); undefined when it doesn't exist.
+ */
+export const openS3File = async (
+  s3Url: string,
+): Promise<{ body: Readable; name: string; contentType: string; length?: number } | undefined> => {
+  const key = keyOfS3Url(s3Url);
+  const name = path.posix.basename(key);
+  try {
+    const res = await s3().send(new GetObjectCommand({ Bucket: env.s3.bucket, Key: key }));
+    if (!res.Body) return undefined;
+    return {
+      body: res.Body as Readable,
+      name,
+      contentType: CONTENT_TYPES[path.extname(name).toLowerCase()] ?? res.ContentType ?? 'application/octet-stream',
+      length: res.ContentLength,
+    };
   } catch (err) {
     if ((err as { name?: string }).name === 'NoSuchKey') return undefined;
     throw err;

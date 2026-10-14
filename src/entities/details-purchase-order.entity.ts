@@ -1,10 +1,13 @@
-import { Column, Entity, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, Entity, Index, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
 import { TABLES } from '../constants/db';
 import { MasterPurchaseOrder } from './master-purchase-order.entity';
 import { decimal } from './transformers';
 
 /** details_purchase_orders: the PO lines, one row per SKU line (was sku_orders). Column names are camelCase in the DB. */
 @Entity({ name: TABLES.DETAILS_PURCHASE_ORDERS })
+// PO Overview filters (2026-10-14).
+@Index('idx_details_po_sku_code', ['skuCode'])
+@Index('idx_details_po_brand', ['brandName'])
 export class DetailsPurchaseOrder {
   @PrimaryGeneratedColumn({ name: 'id', type: 'bigint' })
   id: string;

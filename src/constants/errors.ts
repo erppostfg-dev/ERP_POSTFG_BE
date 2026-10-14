@@ -24,6 +24,16 @@ export const ERRORS = {
   // --- Request field checks (details of VALIDATION_FAILED) --------------------------------------------------------
   FIELD_NOT_EMAIL: define(400, (field: string) => `${field} must be an email`),
   FIELD_NOT_ISO_DATE: define(400, (field: string) => `${field} must be an ISO date`),
+  FIELD_NOT_DAY: define(400, (field: string) => `${field} must be a date as YYYY-MM-DD`),
+  FIELD_NOT_ONE_OF: define(400, (field: string, allowed: string) => `${field} must be one of: ${allowed}`),
+  FIELD_NOT_INT_RANGE: define(400, (field: string, min: number, max: number) => `${field} must be a whole number from ${min} to ${max}`),
+  FIELD_RANGE_REVERSED: define(400, (from: string, to: string) => `${from} must not be after ${to}`),
+  FIELD_REQUIRED: define(400, (field: string) => `${field} is required`),
+  FIELD_TOO_LONG: define(400, (field: string, max: number) => `${field} must be at most ${max} characters`),
+  FIELD_NOT_TEXT: define(400, (field: string) => `${field} must be text`),
+  FIELD_NOT_NUMBER: define(400, (field: string) => `${field} must be a number of 0 or more`),
+  FIELD_NOT_LIST: define(400, (field: string) => `${field} must be a list`),
+  FIELD_NOT_OBJECT: define(400, (field: string) => `${field} must be an object`),
 
   // --- Configuration (.env) ---------------------------------------------------------------------------------------
   ENV_MISSING: define(500, (key: string) => `Missing required environment variable: ${key}`),
@@ -36,6 +46,7 @@ export const ERRORS = {
   GMAIL_WATCH_CONFIG_MISSING: define(500, () => 'GCP_PROJECT_ID and PUBSUB_TOPIC are required for the Gmail watch'),
   PUBSUB_SUBSCRIPTION_MISSING: define(500, () => 'PUBSUB_SUBSCRIPTION is required'),
   S3_DISABLED: define(500, () => 'S3_ENABLED is not true in .env'),
+  S3_URL_INVALID: define(500, (url: string, bucket: string) => `Not an s3:// URL in bucket ${bucket}: ${url}`),
   DB_NOT_ALLOWED: define(
     500,
     (database: string, allowed: string) => `Database "${database}" is not allowed; the app may only use: ${allowed} (constants/db.ts)`,
@@ -71,6 +82,19 @@ export const ERRORS = {
         ? `Access denied: you have view-only access to ${page}. Ask an admin for ${needed} access to make changes.`
         : `Access denied: you have no access to ${page}. Ask an admin for ${needed} access.`,
   ),
+
+  // --- PO review API ----------------------------------------------------------------------------------------------
+  UPLOAD_NOT_FOUND: define(404, (uploadId: string) => `No PO upload ${uploadId}`),
+  SHIPMENT_NOT_FOUND: define(404, (uid: string) => `No shipment ${uid}`),
+  PROCESSED_JSON_MISSING: define(409, (uploadId: string) => `PO upload ${uploadId} has no processed.json in S3 yet`),
+  PO_FILE_MISSING: define(404, (uploadId: string) => `PO upload ${uploadId} has no PO file in S3`),
+  UPLOAD_NOT_IN_REVIEW: define(409, (uploadId: string, status: string) => `PO upload ${uploadId} is ${status}, not in review any more; reload it`),
+  REVIEW_INCOMPLETE: define(422, (count: number) => `${count} issue(s) are still open: correct them, accept them (where allowed) or reject the PO`),
+  ISSUE_NOT_ACCEPTABLE: define(422, (issueId: string, type: string) => `Issue ${issueId} (${type}) cannot be accepted: correct it or reject the PO`),
+  ISSUE_NOT_OPEN: define(400, (issueId: string) => `Issue ${issueId} is not an open issue of this PO`),
+  SKU_NOT_IN_MASTER: define(400, (pepCode: string, channel: string) => `${pepCode} is not in the ${channel} SKU master`),
+  LOCATION_NOT_IN_CHANNEL: define(400, (id: string, channel: string) => `Location ${id} is not a ${channel} delivery location`),
+  LINE_NOT_IN_PO: define(400, (lineNo: string) => `The PO has no line ${lineNo}`),
 
   // --- PO chain (po_uploads.error_details, resume) ----------------------------------------------------------------
   UNIWARE_CSV_MISSING: define(500, (csvPath: string) => `Uniware CSV ${csvPath} not found after the PO rows were saved; the sale order code must be checked by hand`),

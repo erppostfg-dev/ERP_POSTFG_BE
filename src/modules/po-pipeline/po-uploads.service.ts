@@ -163,7 +163,7 @@ const originalValues = (issue: ValidationIssue, r: ValidationResult): Record<str
   return Object.fromEntries(Object.entries(v).filter(([, x]) => x !== undefined && x !== ''));
 };
 
-const issueKey = (type: string, lineNo: number | null | '' | undefined, field: string | null) =>
+export const issueKey = (type: string, lineNo: number | null | '' | undefined, field: string | null) =>
   `${type}|${lineNo === '' || lineNo === undefined || lineNo === null ? '' : lineNo}|${field ?? ''}`;
 
 export interface IssuePlan {
