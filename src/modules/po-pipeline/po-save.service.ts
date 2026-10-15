@@ -8,6 +8,8 @@ import {
   FILES,
   NEW_PO_STATUS,
   PIPELINE_STEP,
+  SHIPMENT_LOG_ACTION,
+  SHIPMENT_LOG_SOURCE,
   NO_BRAND,
   round2,
   saleOrderCode,
@@ -15,7 +17,8 @@ import {
   UPLOAD_STATUS,
   VALIDATION_STATUS,
 } from '../../constants';
-import { DetailsPurchaseOrder, MasterPurchaseOrder, PoUpload, SaleOrderCodeCounter } from '../../entities';
+import { DetailsPurchaseOrder, MasterPurchaseOrder, PoUpload, SaleOrderCodeCounter, ShipmentLog } from '../../entities';
+import { flushChanges } from '../po-overview/po-overview.live';
 import { EmailMetadata } from '../email-intake/s3-layout';
 import { syncEmailToS3 } from '../email-intake/s3-mirror.service';
 import { s3UrlFor } from '../po-processing/common/processed-store';
@@ -73,12 +76,15 @@ export const takeSerial = async (m: EntityManager, date: string): Promise<number
  */
 export const poRows = (
   v: ValidationResult,
-  o: { today: string; now: Date; poDate: string | null; document: string | null },
+  o: { today: string; now: Date; poDate: string | null; expiryDate: string | null; document: string | null },
 ): { master: Partial<MasterPurchaseOrder>; details: Partial<DetailsPurchaseOrder>[] } => {
   const lines = v.lines;
   const master: Partial<MasterPurchaseOrder> = {
     entryDate: o.today,
     poDate: o.poDate,
+    // PEPIMS keeps the PO expiry date in labelsLink (its screen calls the column "PO Expiry Date"); YYYY-MM-DD as
+    // processed.json has it (user, 2026-10-14). The sale order code goes into orderNo1 when it is taken (save step).
+    labelsLink: o.expiryDate,
     facility: v.location?.facilityCode ?? null,
     // Links next to the text (2026-10-14); a result validated before then has no ids (masters:link fills them).
     facilityId: v.location?.facilityId ?? null,
@@ -138,7 +144,8 @@ export const planSave = async (db: DataSource, plan: EmailPlan, now = new Date()
 
     const ocr = (upload?.ocrResult ?? row.values.ocrResult ?? {}) as Record<string, unknown>;
     // processed.json in S3 (decided 2026-10-08: `document` until the PM adds a column for it).
-    const { master, details } = poRows(v, { today, now, poDate: await poDateOf(plan, row), document: (ocr.processed_json as string | undefined) ?? null });
+    const dates = await poDatesOf(plan, row);
+    const { master, details } = poRows(v, { today, now, ...dates, document: (ocr.processed_json as string | undefined) ?? null });
     const csvRelPath = path.posix.join(path.posix.dirname(row.relPath), UNIWARE_CSV.FILE_NAME(v.poNumber, today));
     out.push({ row, upload, skip, master, details, nextCode: saleOrderCode(today, skip ? 0 : serial), csvRelPath });
     if (!skip) serial++;
@@ -146,13 +153,13 @@ export const planSave = async (db: DataSource, plan: EmailPlan, now = new Date()
   return out;
 };
 
-/** po_date of the PO as processed.json has it (YYYY-MM-DD or empty). */
-const poDateOf = async (plan: EmailPlan, row: RowPlan): Promise<string | null> => {
+/** po_date and expiry_date of the PO as processed.json has them (YYYY-MM-DD; null when empty). */
+const poDatesOf = async (plan: EmailPlan, row: RowPlan): Promise<{ poDate: string | null; expiryDate: string | null }> => {
   try {
-    const po = JSON.parse(await fs.readFile(path.join(plan.folder, row.relPath), 'utf8')) as { po_date?: string };
-    return po.po_date || null;
+    const po = JSON.parse(await fs.readFile(path.join(plan.folder, row.relPath), 'utf8')) as { po_date?: string; expiry_date?: string };
+    return { poDate: po.po_date || null, expiryDate: po.expiry_date || null };
   } catch {
-    return null;
+    return { poDate: null, expiryDate: null };
   }
 };
 
@@ -212,10 +219,13 @@ export const applySave = async (db: DataSource, folder: string, plans: SavePlan[
       await db.transaction(async (m) => {
         const serial = await takeSerial(m, p.master.entryDate as string);
         code = saleOrderCode(p.master.entryDate as string, serial);
-        const masterRow = await m.getRepository(MasterPurchaseOrder).save(m.getRepository(MasterPurchaseOrder).create(p.master));
+        // The sale order code also goes into orderNo1 (PEPIMS's "Order No 1"; user, 2026-10-14).
+        const masterRow = await m.getRepository(MasterPurchaseOrder).save(m.getRepository(MasterPurchaseOrder).create({ ...p.master, orderNo1: code }));
         const details = m.getRepository(DetailsPurchaseOrder);
         await details.save(p.details.map((d) => details.create({ ...d, shipmentOrderId: masterRow.uid })));
         await m.getRepository(PoUpload).save({ ...upload, poUid: masterRow.uid });
+        // "created" in the shipment's history (same transaction): live PO Overview screens show the new shipment.
+        await m.getRepository(ShipmentLog).insert({ shipmentUid: masterRow.uid, userId: null, action: SHIPMENT_LOG_ACTION.CREATED, source: SHIPMENT_LOG_SOURCE.PIPELINE, remark: code });
         r.poUid = masterRow.uid;
         await fs.writeFile(csvFile, uniwareCsv(p, code), 'utf8');
       });
@@ -238,6 +248,7 @@ export const applySave = async (db: DataSource, folder: string, plans: SavePlan[
     }
     results.push(r);
   }
+  if (results.some((x) => x.poUid)) void flushChanges();
   return results;
 };
 

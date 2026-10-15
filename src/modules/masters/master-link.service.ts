@@ -1,11 +1,11 @@
 import { DataSource, EntityManager } from 'typeorm';
 import { DetailsChannel, MasterChannel, MasterCourierPartner, MasterFacility, MasterPurchaseOrder } from '../../entities';
-import { codeIndex, matchKey } from './master-match';
+import { codeIndex, EXACT_MATCH, matchKey } from './master-match';
 
 /*
  * masters:link: fills the link columns from the text next to them, so the links follow whatever the masters hold now.
  * Run after every masters:load; safe to run again.
- *   details_channels.facility_id            <- facility_code       (master_facilities code or alias)
+ *   details_channels.facility_id            <- facility_code       (master_facilities code or alias, case counts)
  *   master_purchase_orders.facilityId        <- facility            (same)
  *   master_purchase_orders.locationId        <- channel + location  (details_channels of that channel by location code;
  *                                              several -> the one with the PO's customerCode; none -> by customerCode)
@@ -54,7 +54,7 @@ const record = (t: LinkTarget, id: string, current: string | number | null, text
 };
 
 export const planLinks = async (db: DataSource): Promise<LinkPlan> => {
-  const facilities = codeIndex(await db.getRepository(MasterFacility).find());
+  const facilities = codeIndex(await db.getRepository(MasterFacility).find(), EXACT_MATCH);
   const partners = codeIndex(await db.getRepository(MasterCourierPartner).find());
   const channelId = new Map((await db.getRepository(MasterChannel).find()).map((c) => [matchKey(c.displayName), c.id]));
   const locations = await db.getRepository(DetailsChannel).find({

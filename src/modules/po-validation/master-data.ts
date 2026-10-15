@@ -1,7 +1,7 @@
 import { DataSource } from 'typeorm';
 import { CHANNEL_MASTER_IDS, ChannelName } from '../../constants';
 import { DetailsChannel, MasterChannel, MasterChannelSku, MasterFacility, MasterPurchaseOrder, MasterSku } from '../../entities';
-import { CodeIndex, codeIndex, matchKey } from '../masters/master-match';
+import { CodeIndex, codeIndex, EXACT_MATCH, matchKey } from '../masters/master-match';
 
 export { matchKey };
 
@@ -52,7 +52,7 @@ export class MasterDataReader {
     this.skus ??= new Map((await this.db.getRepository(MasterSku).find()).map((s) => [matchKey(s.pepCode), s]));
     const channelSkus = await this.db.getRepository(MasterChannelSku).findBy({ channelId: id });
     const locations = await this.db.getRepository(DetailsChannel).findBy({ channelId: id, isActive: true });
-    this.facilities ??= codeIndex(await this.db.getRepository(MasterFacility).find());
+    this.facilities ??= codeIndex(await this.db.getRepository(MasterFacility).find(), EXACT_MATCH);
     const orders = this.db.getRepository(MasterPurchaseOrder);
     return {
       channel,

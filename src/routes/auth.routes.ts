@@ -11,7 +11,7 @@ import { AppError, appError } from '../utils/AppError';
  *   GET  /auth/google            redirect to Google sign-in
  *   GET  /auth/google/callback   Google returns here -> session cookie -> redirect to AUTH_REDIRECT_URL
  *                                 (refused: AUTH_REDIRECT_URL?error=<CODE>)
- *   GET  /auth/me                the signed-in user, roles and every page's access
+ *   GET  /auth/me                the signed-in user, roles, PO Overview team and every page's access
  *   POST /auth/logout            ends the session, clears the cookie
  */
 
@@ -67,7 +67,8 @@ router.get('/me', requireAuth, async (req, res, next) => {
     const { user, roles } = req.auth!;
     res.json({
       data: {
-        user: { id: String(user.id), name: user.name, email: user.email, roles },
+        // team = the person's PO Overview team (users.po_team), null = none; the header shows it next to the roles.
+        user: { id: String(user.id), name: user.name, email: user.email, roles, team: user.poTeam ?? null },
         access: await resolveAllAccess(user.id, roles),
       },
     });

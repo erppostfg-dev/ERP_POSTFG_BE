@@ -35,8 +35,8 @@ export interface ValidatedLocation {
   locationCode: string;
   /** -> Uniware Customer Code, master_purchase_orders.customerCode */
   customerCode: string;
-  /** -> Uniware Facility Code, master_purchase_orders.facility: master_facilities.code when the location links to a
-   *  facility (by facility_id, else by its facility_code or an alias), else details_channels.facility_code as stored. */
+  /** -> Uniware Facility Code, master_purchase_orders.facility: details_channels.facility_code EXACTLY as stored
+   *  (case matters: MUM_WAREHOUSE2 is the main warehouse, MUM_Warehouse2 its child; user, 2026-10-14). */
   facilityCode: string;
   /** master_facilities.id -> master_purchase_orders.facilityId; null = the facility is not in master_facilities yet. */
   facilityId: number | null;
@@ -130,8 +130,11 @@ const findLocation = (po: ProcessedPo, master: ChannelMasterData, issues: Valida
   }
 
   const [row] = rows;
-  const facility = (row.facilityId !== null ? master.facilities.byId.get(row.facilityId) : undefined) ?? master.facilities.find(row.facilityCode);
-  const facilityCode = (facility?.code ?? row.facilityCode)?.trim() ?? '';
+  // The Uniware facility is the location's own code, never a master spelling; the link is kept only when it points
+  // at exactly that code (else the exact lookup decides).
+  const facilityCode = row.facilityCode?.trim() ?? '';
+  const linked = row.facilityId !== null ? master.facilities.byId.get(row.facilityId) : undefined;
+  const facility = linked && linked.code === facilityCode ? linked : master.facilities.find(facilityCode);
   const missing = [
     !row.uniwareCustomerCode?.trim() && 'uniware_customer_code',
     !facilityCode && 'facility_code',

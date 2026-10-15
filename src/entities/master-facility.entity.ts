@@ -1,10 +1,12 @@
-import { Column, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, Entity, Index, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
 import { MASTER_SOURCE, MasterSource, TABLES } from '../constants/db';
 
 /**
  * master_facilities: our dispatch warehouses, one row per Uniware facility (PEPIMS facility_masters + the Warehouses
  * screen's fields). details_channels.facility_id and master_purchase_orders.facilityId link here.
- * code is unique ignoring case, so two spellings can never become two facilities: other spellings go in aliases.
+ * code is CASE-SENSITIVE (utf8mb4_bin): upper and lower case are different warehouses, capitals = the main warehouse,
+ * lower / mixed case = its child (user, 2026-10-14), e.g. MUM_WAREHOUSE2 (main) and MUM_Warehouse2 (child).
+ * parent_facility_id = the main warehouse of a child. Other spellings of the SAME code (typos) go in aliases.
  * Rows are never deleted: is_active = false; source tells where a row came from (masters:load).
  */
 @Entity({ name: TABLES.MASTER_FACILITIES })
@@ -14,8 +16,12 @@ export class MasterFacility {
   id: number;
 
   /** The Uniware facility code (e.g. MUM_WAREHOUSE2): written to the Uniware CSV. */
-  @Column({ name: 'code', type: 'varchar', length: 100 })
+  @Column({ name: 'code', type: 'varchar', length: 100, collation: 'utf8mb4_bin' })
   code: string;
+
+  /** The main warehouse of a child warehouse; null = a main warehouse. */
+  @Column({ name: 'parent_facility_id', type: 'int', nullable: true })
+  parentFacilityId: number | null;
 
   /** Other spellings found in the data (e.g. ["MUM_Warehouse2"]): masters:link matches them to this row. */
   @Column({ name: 'aliases', type: 'json', nullable: true })
@@ -59,4 +65,9 @@ export class MasterFacility {
 
   @Column({ name: 'updated_at', type: 'datetime', precision: 6, default: () => 'CURRENT_TIMESTAMP(6)', onUpdate: 'CURRENT_TIMESTAMP(6)' })
   updatedAt: Date;
+
+  /** fk_master_facilities_parent: a main warehouse with children cannot be deleted. */
+  @ManyToOne(() => MasterFacility, { nullable: true, onDelete: 'RESTRICT', onUpdate: 'CASCADE' })
+  @JoinColumn({ name: 'parent_facility_id', referencedColumnName: 'id', foreignKeyConstraintName: 'fk_master_facilities_parent' })
+  parent: MasterFacility | null;
 }

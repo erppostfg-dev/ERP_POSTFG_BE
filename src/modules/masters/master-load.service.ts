@@ -20,7 +20,7 @@ import {
   MasterFinalStatusMap,
   MasterShipmentStatus,
 } from '../../entities';
-import { codeIndex, matchKey } from './master-match';
+import { codeIndex, EXACT_MATCH, matchKey } from './master-match';
 
 /*
  * masters:load: plans what one CSV changes in one master table, then (with --apply) writes it in one transaction.
@@ -82,15 +82,21 @@ export const missingColumns = (type: MasterLoadType, header: string[]): string[]
 class Planner {
   readonly changes: LoadChange[] = [];
   readonly ops: Op[] = [];
+  /** Run after every add / update (e.g. a parent that the same file adds). */
+  readonly lastOps: Op[] = [];
   private readonly seen = new Set<string>();
+
+  /** `exact`: case counts in the duplicate check (facility codes). */
+  constructor(private readonly exact = false) {}
 
   /** false (and a skip) when the key was already in the file. */
   first(key: string): boolean {
-    if (this.seen.has(matchKey(key))) {
+    const k = this.exact ? key.trim() : matchKey(key);
+    if (this.seen.has(k)) {
       this.changes.push({ action: 'skip', key, detail: 'duplicate row in the file (the first one is used)' });
       return false;
     }
-    this.seen.add(matchKey(key));
+    this.seen.add(k);
     return true;
   }
 
@@ -114,13 +120,14 @@ class Planner {
   }
 
   plan(type: MasterLoadType, notInFile: string[]): LoadPlan {
-    const ops = this.ops;
+    const ops = [...this.ops, ...this.lastOps];
     return { type, changes: this.changes, notInFile, apply: async (m) => { for (const op of ops) await op(m); } };
   }
 }
 
 /** Code + aliases after a file row matched `existing` (see the header: --set-code). */
-const codeAndAliases = (existing: { code: string; aliases: string[] | null } | null, code: string, fileAliases: string[], setCode: boolean) => {
+const codeAndAliases = (existing: { code: string; aliases: string[] | null } | null, code: string, fileAliases: string[], setCode: boolean, exact = false) => {
+  const same = (a: string, b: string) => (exact ? a.trim() === b.trim() : matchKey(a) === matchKey(b));
   if (!existing) return { code, aliases: fileAliases.length ? fileAliases : null, note: undefined };
   const aliases = new Set([...(existing.aliases ?? []), ...fileAliases]);
   let finalCode = existing.code;
@@ -131,18 +138,18 @@ const codeAndAliases = (existing: { code: string; aliases: string[] | null } | n
       aliases.add(existing.code);
       note = `code ${existing.code} -> ${code} (old code kept as alias)`;
     } else {
-      if (matchKey(existing.code) !== matchKey(code)) aliases.add(code);
+      if (!same(existing.code, code)) aliases.add(code);
       note = `file spelling "${code}" matched "${existing.code}"`;
     }
   }
-  for (const a of [...aliases]) if (matchKey(a) === matchKey(finalCode) && a === finalCode) aliases.delete(a);
+  for (const a of [...aliases]) if (a === finalCode) aliases.delete(a);
   return { code: finalCode, aliases: aliases.size ? [...aliases].sort() : null, note };
 };
 
 const planFacilities = async (db: DataSource, header: string[], recs: Rec[], o: LoadOptions): Promise<LoadPlan> => {
   const rows = await db.getRepository(MasterFacility).find();
-  const idx = codeIndex(rows);
-  const p = new Planner();
+  const idx = codeIndex(rows, EXACT_MATCH);
+  const p = new Planner(true);
   const used = new Set<number>();
   for (const r of recs) {
     const code = txt(r.facility);
@@ -150,7 +157,22 @@ const planFacilities = async (db: DataSource, header: string[], recs: Rec[], o: 
     if (!p.first(code)) continue;
     const existing = idx.find(code) ?? list(r.aliases).map((a) => idx.find(a)).find(Boolean) ?? null;
     if (existing) used.add(existing.id);
-    const ca = codeAndAliases(existing, code, list(r.aliases), !!o.setCode);
+    const ca = codeAndAliases(existing, code, list(r.aliases), !!o.setCode, true);
+    // parentFacility = the main warehouse of a child (exact code). Set after all adds, so a parent added by the same
+    // file is found; a parent that does not exist rolls the whole load back.
+    const parentCode = header.includes('parentFacility') ? txt(r.parentFacility) : undefined;
+    if (parentCode !== undefined) {
+      const known = parentCode ? idx.find(parentCode) : null;
+      const note = parentCode ? `parent ${parentCode}${known ? '' : ' (added by this file)'}` : 'no parent';
+      if (!existing || existing.parentFacilityId !== (known?.id ?? null)) p.changes.push({ action: 'update', key: code, detail: note });
+      p.lastOps.push(async (m) => {
+        const repo = m.getRepository(MasterFacility);
+        const parent = parentCode ? await repo.findOneBy({ code: parentCode }) : null;
+        if (parentCode && !parent) throw new Error(`parent facility ${parentCode} of ${code} not found`);
+        const child = await repo.findOneBy({ code: ca.code });
+        if (child && child.parentFacilityId !== (parent?.id ?? null)) await repo.update(child.id, { parentFacilityId: parent?.id ?? null });
+      });
+    }
     const next: Partial<MasterFacility> = {
       code: ca.code,
       aliases: ca.aliases,

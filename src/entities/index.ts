@@ -19,4 +19,5 @@ export * from './po-issue.entity';
 export * from './po-upload.entity';
 export * from './sale-order-code-counter.entity';
 export * from './shipment-log.entity';
+export * from './team-access.entities';
 export * from './auth.entities';

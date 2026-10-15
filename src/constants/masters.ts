@@ -39,7 +39,7 @@ export const CSV_LIST_SEPARATOR = '|';
 export const MASTER_CSV_COLUMNS: Record<MasterLoadType, { required: readonly string[]; optional: readonly string[] }> = {
   [MASTER_LOAD_TYPE.FACILITY]: {
     required: ['facility'],
-    optional: ['pickupLocation', 'aliases', 'name', 'entity', 'state', 'facilityType', 'billToGstin', 'shipToGstin', 'remarks'],
+    optional: ['parentFacility', 'pickupLocation', 'aliases', 'name', 'entity', 'state', 'facilityType', 'billToGstin', 'shipToGstin', 'remarks'],
   },
   [MASTER_LOAD_TYPE.COURIER_PARTNER]: {
     required: ['courierPartnerMode'],

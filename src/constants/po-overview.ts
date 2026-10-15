@@ -11,7 +11,50 @@ export const PO_OVERVIEW_ROUTES = {
   LINES: '/lines',
   FILTER_OPTIONS: '/filter-options',
   COLUMNS: '/columns',
+  /** Editing (2026-10-14): save changed fields, the change history, the dropdown lists. */
+  SHIPMENT_HISTORY: '/shipments/:uid/history',
+  EDIT_OPTIONS: '/edit-options',
+  /** Live updates: Server-Sent Events, and the "changes since" fallback the screen polls when SSE is down. */
+  EVENTS: '/events',
+  CHANGES: '/changes',
 } as const;
+
+/*
+ * Live updates (self-healing, user 2026-10-14): the server pushes "shipment X changed" over SSE after every save;
+ * screens re-read only that row. Missed messages are replayed from shipment_logs (the log id is the message id), and
+ * a screen whose SSE goes quiet polls /changes every POLL_MS until SSE is back.
+ */
+export const LIVE = {
+  /** A ping event this often, so screens can tell a silent connection from a quiet one. */
+  HEARTBEAT_MS: 25_000,
+  /** The server checks shipment_logs this often for rows written by another process (scripts, a second server). */
+  WATCH_MS: 10_000,
+  /** At most this many changes per replay / poll answer (the screen asks again for the rest). */
+  BATCH_MAX: 500,
+  /** SSE event names. */
+  EVENT_SHIPMENT: 'shipment',
+  EVENT_PING: 'ping',
+} as const;
+
+/** Longest text a remark / text field may hold when edited (TEXT columns; VARCHAR columns use their own length). */
+export const EDIT_TEXT_MAX = 5000;
+
+/** Status columns -> the stage whose master_shipment_statuses values they may hold. */
+export const STATUS_FIELD_STAGE: Record<string, 'planning' | 'warehouse' | 'logistics'> = {
+  statusPlanning: 'planning',
+  statusWarehouse: 'warehouse',
+  statusLogistics: 'logistics',
+};
+
+/** Transporter columns -> their link column (set from master_courier_partners on save). */
+export const TRANSPORTER_FIELD_LINK: Record<string, 'firstTransporterId' | 'secondTransporterId' | 'thirdTransporterId'> = {
+  firstTransporter: 'firstTransporterId',
+  secondTransporter: 'secondTransporterId',
+  thirdTransporter: 'thirdTransporterId',
+};
+
+/** Changing this field needs a remark from master_appointment_remarks (list appointment_change), as in PEPIMS. */
+export const APPOINTMENT_FIELD = 'currentAppointmentDate';
 
 /** Paging: PEPIMS loads 200 rows per request. */
 export const PO_OVERVIEW_LIST = { DEFAULT_PAGE_SIZE: 200, MAX_PAGE_SIZE: 500 } as const;

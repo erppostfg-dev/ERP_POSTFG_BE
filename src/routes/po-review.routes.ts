@@ -223,7 +223,7 @@ const uploadIdOf = (req: Request): string => {
 router.post('/:uploadId/resubmit', requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
   try {
     const uploadId = uploadIdOf(req);
-    res.json({ data: await resubmitPo(uploadId, parseResubmit(req.body), req.auth!.user.email) });
+    res.json({ data: await resubmitPo(uploadId, parseResubmit(req.body), req.auth!.user.email, req.auth!.user.id) });
   } catch (err) {
     next(err);
   }

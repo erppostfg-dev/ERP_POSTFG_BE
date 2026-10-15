@@ -55,6 +55,9 @@ export const TABLES = {
   MASTER_FINAL_STATUS_MAP: 'master_final_status_map',
   MASTER_APPOINTMENT_REMARKS: 'master_appointment_remarks',
   SHIPMENT_LOGS: 'shipment_logs',
+  // PO Overview team access (2026-10-14): what each team may do per column group, and each person's facilities.
+  TEAM_COLUMN_ACCESS: 'team_column_access',
+  USER_FACILITIES: 'user_facilities',
 } as const;
 
 /** TypeORM's own record of which migrations have run. */
@@ -161,3 +164,24 @@ export type RemarkList = (typeof REMARK_LIST)[keyof typeof REMARK_LIST];
 /** master_purchase_orders.statusActive ("Status (Active/Inactive)" in PEPIMS). */
 export const PO_ACTIVE_STATUS = { ACTIVE: 'Active', INACTIVE: 'Inactive' } as const;
 export type PoActiveStatus = (typeof PO_ACTIVE_STATUS)[keyof typeof PO_ACTIVE_STATUS];
+
+/** shipment_logs.action: what was done to the shipment (one row per changed field, or one row for the action). */
+export const SHIPMENT_LOG_ACTION = {
+  CREATED: 'created',
+  FIELD_CHANGED: 'field_changed',
+  BULK_UPDATE: 'bulk_update',
+  LINE_QTY_REQUESTED: 'line_qty_requested',
+  LINE_QTY_APPROVED: 'line_qty_approved',
+  LINE_QTY_REJECTED: 'line_qty_rejected',
+} as const;
+export type ShipmentLogAction = (typeof SHIPMENT_LOG_ACTION)[keyof typeof SHIPMENT_LOG_ACTION];
+
+/** shipment_logs.source: where the action came from. */
+export const SHIPMENT_LOG_SOURCE = {
+  SCREEN: 'screen',
+  BULK_CSV: 'bulk_csv',
+  PIPELINE: 'pipeline',
+  REVIEW: 'review',
+  SCRIPT: 'script',
+} as const;
+export type ShipmentLogSource = (typeof SHIPMENT_LOG_SOURCE)[keyof typeof SHIPMENT_LOG_SOURCE];

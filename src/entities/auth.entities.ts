@@ -10,6 +10,7 @@ import {
   USER_STATUS,
   UserStatus,
 } from '../constants/db';
+import { USER_TEAM, UserTeam } from '../constants/po-overview-columns';
 
 /*
  * Login and page access, in prefg's exact shape (mcaff_prefg_dev, SHOW CREATE TABLE read 2026-10-09), created in
@@ -43,6 +44,13 @@ export class User {
   /** Google's account id (sub), set at the first login. */
   @Column({ name: 'google_id', type: 'varchar', length: 255, nullable: true })
   googleId: string | null;
+
+  /**
+   * The PO Overview team (2026-10-14): ONE per person (planning, warehouse, logistics, accounts, viewer); what it may
+   * do = team_column_access. Null = no team: sees the PO Overview by page access only (admin / developer edit all).
+   */
+  @Column({ name: 'po_team', type: 'enum', enum: Object.values(USER_TEAM), nullable: true })
+  poTeam: UserTeam | null;
 }
 
 /** user_roles: a user's roles (keys from constants/auth ROLES). */

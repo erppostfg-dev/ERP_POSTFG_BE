@@ -1,11 +1,9 @@
 import {
-  ACCESS_LEVEL,
   COLUMN_ACCESS,
   ColumnAccess,
   ColumnDef,
   DELIVERY_TYPE,
   ERROR_CODES,
-  PAGE,
   PICKUP_CHANNELS,
   PO_KEY_COLUMNS,
   PO_SYSTEM_COLUMNS,
@@ -15,7 +13,7 @@ import {
   PoTeam,
   STATUS_WHEN_EMPTY,
 } from '../../constants';
-import { resolveAccess } from '../auth/access.service';
+import { canEditShipment, PoOverviewAccess } from './po-overview.access';
 import { DetailsPurchaseOrder, MasterCourierRate, MasterPurchaseOrder } from '../../entities';
 import { appError } from '../../utils/AppError';
 import { matchKey } from '../masters/master-match';
@@ -137,10 +135,23 @@ const toShipmentItem = (po: MasterPurchaseOrder, c: Context): ShipmentItem => {
   };
 };
 
-export const listShipments = async (f: PoOverviewFilters, p: Paging): Promise<{ items: ShipmentItem[]; total: number }> => {
+/**
+ * What a person gets of an item: the fields of a column group they have no access to are removed (on the server, so
+ * they never reach the browser), except the key columns every tab shows.
+ */
+const KEY_FIELDS = new Set(PO_KEY_COLUMNS.map((c) => c.field));
+export const hiddenFields = (a: PoOverviewAccess): Set<string> =>
+  new Set(PO_TEAM_ORDER.filter((t) => a.groups[t] === COLUMN_ACCESS.NONE).flatMap((t) => PO_TEAM_COLUMNS[t].map((c) => c.field)).filter((f) => !KEY_FIELDS.has(f)));
+const withoutHidden = <T extends object>(item: T, hidden: Set<string>): T =>
+  (hidden.size ? Object.fromEntries(Object.entries(item).filter(([k]) => !hidden.has(k))) : item) as T;
+
+export type ShipmentForUser = ShipmentItem & { /** May this person edit this shipment (team + facility)? */ canEdit: boolean };
+
+export const listShipments = async (f: PoOverviewFilters, p: Paging, a: PoOverviewAccess): Promise<{ items: ShipmentForUser[]; total: number }> => {
   const { rows, total } = await findShipmentPage(f, p);
   const c = await contextFor(rows);
-  return { items: rows.map((po) => toShipmentItem(po, c)), total };
+  const hidden = hiddenFields(a);
+  return { items: rows.map((po) => ({ ...withoutHidden(toShipmentItem(po, c), hidden), canEdit: canEditShipment(a, po.facilityId) })), total };
 };
 
 export interface LineItem {
@@ -221,17 +232,22 @@ const toLineItems = async (lines: DetailsPurchaseOrder[], shipmentOf: (l: Detail
   });
 };
 
-export const listLines = async (f: PoOverviewFilters, p: Paging): Promise<{ items: LineItem[]; total: number }> => {
+export const listLines = async (f: PoOverviewFilters, p: Paging, a: PoOverviewAccess): Promise<{ items: LineItem[]; total: number }> => {
   const { rows, total } = await findLinePage(f, p);
-  return { items: await toLineItems(rows, (l) => l.purchaseOrder), total };
+  const hidden = hiddenFields(a);
+  return { items: (await toLineItems(rows, (l) => l.purchaseOrder)).map((i) => withoutHidden(i, hidden)), total };
 };
 
 /** One shipment with its lines (the details drawer). */
-export const getShipment = async (uid: string): Promise<{ shipment: ShipmentItem; lines: LineItem[] }> => {
+export const getShipment = async (uid: string, a: PoOverviewAccess): Promise<{ shipment: ShipmentForUser; lines: LineItem[] }> => {
   const po = await findShipment(uid);
   if (!po) throw appError(ERROR_CODES.SHIPMENT_NOT_FOUND, uid);
   const [c, lines] = await Promise.all([contextFor([po]), findLinesOfShipment(uid)]);
-  return { shipment: toShipmentItem(po, c), lines: await toLineItems(lines, () => po) };
+  const hidden = hiddenFields(a);
+  return {
+    shipment: { ...withoutHidden(toShipmentItem(po, c), hidden), canEdit: canEditShipment(a, po.facilityId) },
+    lines: (await toLineItems(lines, () => po)).map((i) => withoutHidden(i, hidden)),
+  };
 };
 
 export const getFilterOptions = (): Promise<FilterOptions> => filterOptions();
@@ -248,22 +264,22 @@ export interface TeamColumns {
 export interface PoOverviewColumns {
   keyColumns: readonly ColumnDef[];
   systemColumns: readonly ColumnDef[];
-  /** In workflow order; teams the person has no access to are left out. */
+  /** In workflow order; teams whose columns the person may not see are left out. */
   teams: TeamColumns[];
+  /** The person's team (null = none). */
+  team: string | null;
+  /** true = the person edits only shipments of `facilities`; the screen opens filtered to them. */
+  facilityScoped: boolean;
+  facilities: string[];
 }
 
-/**
- * The column groups and this person's access to each. For now access follows the page access of the PO Overview
- * (editor = edit every team's columns, viewer = view); per-team access replaces this once the team roles exist
- * (design doc, section 5).
- */
-export const getColumns = async (userId: number, roles: string[]): Promise<PoOverviewColumns> => {
-  const page = await resolveAccess(userId, roles, PAGE.PO_OVERVIEW);
-  const access: ColumnAccess = page === ACCESS_LEVEL.EDITOR ? COLUMN_ACCESS.EDIT : page === ACCESS_LEVEL.VIEWER ? COLUMN_ACCESS.VIEW : COLUMN_ACCESS.NONE;
-  return {
-    keyColumns: PO_KEY_COLUMNS,
-    systemColumns: PO_SYSTEM_COLUMNS,
-    teams: PO_TEAM_ORDER.map((key, i) => ({ key, label: PO_TEAM_LABEL[key], step: i + 1, access, columns: PO_TEAM_COLUMNS[key] }))
-      .filter((t) => t.access !== COLUMN_ACCESS.NONE),
-  };
-};
+/** The column groups and this person's access to each (team_column_access, page access, role; po-overview.access.ts). */
+export const getColumns = (a: PoOverviewAccess): PoOverviewColumns => ({
+  keyColumns: PO_KEY_COLUMNS,
+  systemColumns: PO_SYSTEM_COLUMNS,
+  teams: PO_TEAM_ORDER.map((key, i) => ({ key, label: PO_TEAM_LABEL[key], step: i + 1, access: a.groups[key], columns: PO_TEAM_COLUMNS[key] }))
+    .filter((t) => t.access !== COLUMN_ACCESS.NONE),
+  team: a.team,
+  facilityScoped: a.facilityScoped,
+  facilities: a.facilityCodes,
+});

@@ -9,8 +9,11 @@ import {
   saleOrderCode,
   UNIWARE_CSV,
   UPLOAD_STATUS,
+  SHIPMENT_LOG_ACTION,
+  SHIPMENT_LOG_SOURCE,
 } from '../../constants';
-import { DetailsPurchaseOrder, MasterPurchaseOrder, PoIssue, PoIssueAction, PoUpload } from '../../entities';
+import { DetailsPurchaseOrder, MasterPurchaseOrder, PoIssue, PoIssueAction, PoUpload, ShipmentLog } from '../../entities';
+import { flushChanges } from '../po-overview/po-overview.live';
 import { appError } from '../../utils/AppError';
 import { readS3Json, siblingS3Url, writeS3Text } from '../email-intake/s3-mirror.service';
 import { ProcessedPo } from '../po-processing/common/processed-po';
@@ -78,7 +81,8 @@ const corrected = (po: ProcessedPo, lines: LineCorrection[]): ProcessedPo => {
   return out;
 };
 
-export const resubmitPo = async (uploadId: string, body: ResubmitBody, actor: string): Promise<ResubmitResult> => {
+/** actor = the reviewer's email (issue actions), actorId = their users.id (the shipment's "created" history row). */
+export const resubmitPo = async (uploadId: string, body: ResubmitBody, actor: string, actorId: number | null = null): Promise<ResubmitResult> => {
   const upload = inReview(await AppDataSource.getRepository(PoUpload).findOneBy({ id: uploadId }), uploadId);
   const processedUrl = upload.ocrResult?.processed_json;
   const po = typeof processedUrl === 'string' ? await readS3Json<ProcessedPo>(processedUrl) : undefined;
@@ -120,7 +124,7 @@ export const resubmitPo = async (uploadId: string, body: ResubmitBody, actor: st
   const today = todayIst(now);
   const correctedUrl = siblingS3Url(processedUrl, FILES.CORRECTED);
   const csvUrl = siblingS3Url(processedUrl, UNIWARE_CSV.FILE_NAME(v.poNumber, today));
-  const rows = poRows(v, { today, now, poDate: fixedPo.po_date || null, document: correctedUrl });
+  const rows = poRows(v, { today, now, poDate: fixedPo.po_date || null, expiryDate: fixedPo.expiry_date || null, document: correctedUrl });
   const acceptRemark = new Map(accepted.map((a) => [String(a.issue.id), a.remark]));
   const correction = { locationId: body.locationId ?? null, lines: body.lines };
 
@@ -130,8 +134,10 @@ export const resubmitPo = async (uploadId: string, body: ResubmitBody, actor: st
     const locked = inReview(await m.getRepository(PoUpload).findOne({ where: { id: uploadId }, lock: { mode: 'pessimistic_write' } }), uploadId);
     code = saleOrderCode(today, await takeSerial(m, today));
     const masterRepo = m.getRepository(MasterPurchaseOrder);
-    const masterRow = await masterRepo.save(masterRepo.create(rows.master));
+    // The sale order code also goes into orderNo1 (PEPIMS's "Order No 1"; user, 2026-10-14).
+    const masterRow = await masterRepo.save(masterRepo.create({ ...rows.master, orderNo1: code }));
     poUid = String(masterRow.uid);
+    await m.getRepository(ShipmentLog).insert({ shipmentUid: poUid, userId: actorId, action: SHIPMENT_LOG_ACTION.CREATED, source: SHIPMENT_LOG_SOURCE.REVIEW, remark: code });
     const details = m.getRepository(DetailsPurchaseOrder);
     await details.save(rows.details.map((d) => details.create({ ...d, shipmentOrderId: masterRow.uid })));
 
@@ -159,6 +165,7 @@ export const resubmitPo = async (uploadId: string, body: ResubmitBody, actor: st
     });
   });
   console.log(`[po-review] ${uploadId} ${v.poNumber}: resubmitted by ${actor}, sale order ${code}, CSV ${csvUrl}`);
+  void flushChanges();
   return { status: UPLOAD_STATUS.COMPLETED, poUid, saleOrderCode: code, uniwareCsv: csvUrl, resolvedIssues: open.map((i) => String(i.id)) };
 };
 

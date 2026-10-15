@@ -86,6 +86,12 @@ export const ERRORS = {
   // --- PO review API ----------------------------------------------------------------------------------------------
   UPLOAD_NOT_FOUND: define(404, (uploadId: string) => `No PO upload ${uploadId}`),
   SHIPMENT_NOT_FOUND: define(404, (uid: string) => `No shipment ${uid}`),
+  // --- PO Overview editing (2026-10-14) ---
+  SHIPMENT_NOT_EDITABLE: define(403, (uid: string) => `You can't edit shipment ${uid} (not one of your facilities, or view-only access)`),
+  FIELDS_NOT_EDITABLE: define(403, (fields: string) => `You can't edit: ${fields}`),
+  FIELDS_CHANGED_MEANWHILE: define(409, (count: number) => `${count} field(s) were changed by someone else since you opened the shipment`),
+  APPOINTMENT_REMARK_REQUIRED: define(400, () => 'A changed appointment date needs a remark from the appointment remark list'),
+  NO_CHANGES: define(400, () => 'Nothing to save: no field was changed'),
   PROCESSED_JSON_MISSING: define(409, (uploadId: string) => `PO upload ${uploadId} has no processed.json in S3 yet`),
   PO_FILE_MISSING: define(404, (uploadId: string) => `PO upload ${uploadId} has no PO file in S3`),
   UPLOAD_NOT_IN_REVIEW: define(409, (uploadId: string, status: string) => `PO upload ${uploadId} is ${status}, not in review any more; reload it`),

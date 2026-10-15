@@ -22,6 +22,9 @@ export interface ColumnDef {
   field: string;
   label: string;
   kind: ColumnKind;
+  /** Never edited on the screen, even by its team: changing it re-points links, the customer code and the Uniware CSV
+   *  (needs its own rules, later). */
+  locked?: boolean;
 }
 
 export const PO_TEAM = { PLANNING: 'planning', WAREHOUSE: 'warehouse', LOGISTICS: 'logistics', ACCOUNTS: 'accounts' } as const;
@@ -37,21 +40,23 @@ export const PO_TEAM_LABEL: Record<PoTeam, string> = {
   [PO_TEAM.ACCOUNTS]: 'Accounts',
 };
 
-const c = (field: string, label: string, kind: ColumnKind = COLUMN_KIND.TEXT): ColumnDef => ({ field, label, kind });
+const c = (field: string, label: string, kind: ColumnKind = COLUMN_KIND.TEXT, locked = false): ColumnDef => (locked ? { field, label, kind, locked } : { field, label, kind });
 const K = COLUMN_KIND;
 
-/** Always on the left of every tab, so a row can be recognised (a team tab drops those it owns itself). */
+/**
+ * Fixed on the left of every tab (they stay while the rest scrolls), so a row can be recognised (user, 2026-10-14:
+ * facility not needed here; UID moved to the Overview's shipment group).
+ */
 export const PO_KEY_COLUMNS: readonly ColumnDef[] = [
-  c('uid', 'UID', K.MONO),
   c('poNumber', 'PO Number', K.MONO),
   c('channel', 'Channel'),
   c('location', 'Location'),
-  c('facility', 'Facility', K.MONO),
   c('statusFinal', 'Final Status', K.STATUS),
 ];
 
 /** Set when the PO is saved or computed: nobody edits them; shown on the Overview tab. */
 export const PO_SYSTEM_COLUMNS: readonly ColumnDef[] = [
+  c('uid', 'UID', K.MONO),
   c('entryDate', 'Entry Date', K.DATE),
   c('poDate', 'PO Date', K.DATE),
   c('brandName', 'Brand'),
@@ -70,10 +75,10 @@ export const PO_SYSTEM_COLUMNS: readonly ColumnDef[] = [
 /** Each team's own columns (PEPIMS's role field lists; open points marked in the design doc). */
 export const PO_TEAM_COLUMNS: Record<PoTeam, readonly ColumnDef[]> = {
   [PO_TEAM.PLANNING]: [
-    c('poNumber', 'PO Number', K.MONO),
-    c('facility', 'Facility', K.MONO),
-    c('channel', 'Channel'),
-    c('location', 'Location'),
+    c('poNumber', 'PO Number', K.MONO, true),
+    c('facility', 'Facility', K.MONO, true),
+    c('channel', 'Channel', K.TEXT, true),
+    c('location', 'Location', K.TEXT, true),
     c('statusPlanning', 'Status (Planning)', K.STATUS),
     c('statusActive', 'Active / Inactive'),
     c('remarksPlanning', 'Remarks (Planning)'),
@@ -150,3 +155,26 @@ export const PO_TEAM_COLUMNS: Record<PoTeam, readonly ColumnDef[]> = {
 /** A person's access to a team's columns. */
 export const COLUMN_ACCESS = { NONE: 'none', VIEW: 'view', EDIT: 'edit' } as const;
 export type ColumnAccess = (typeof COLUMN_ACCESS)[keyof typeof COLUMN_ACCESS];
+
+/*
+ * Teams of people (2026-10-14, user): ONE team per person (users.po_team). The four column-owning teams + viewer
+ * (sees, edits nothing). Admin / developer roles have no team: they edit every group and see every shipment.
+ */
+export const USER_TEAM = { ...PO_TEAM, VIEWER: 'viewer' } as const;
+export type UserTeam = (typeof USER_TEAM)[keyof typeof USER_TEAM];
+
+/**
+ * Default access of each team to each column group (design doc section 5, accepted by the user). The migration seeds
+ * team_column_access with exactly this; after that the table is the truth (Admin page later). System and key columns
+ * are view for everyone.
+ */
+export const DEFAULT_TEAM_ACCESS: Record<UserTeam, Record<PoTeam, ColumnAccess>> = {
+  [USER_TEAM.PLANNING]: { planning: COLUMN_ACCESS.EDIT, warehouse: COLUMN_ACCESS.VIEW, logistics: COLUMN_ACCESS.VIEW, accounts: COLUMN_ACCESS.VIEW },
+  [USER_TEAM.WAREHOUSE]: { planning: COLUMN_ACCESS.VIEW, warehouse: COLUMN_ACCESS.EDIT, logistics: COLUMN_ACCESS.VIEW, accounts: COLUMN_ACCESS.NONE },
+  [USER_TEAM.LOGISTICS]: { planning: COLUMN_ACCESS.VIEW, warehouse: COLUMN_ACCESS.VIEW, logistics: COLUMN_ACCESS.EDIT, accounts: COLUMN_ACCESS.VIEW },
+  [USER_TEAM.ACCOUNTS]: { planning: COLUMN_ACCESS.VIEW, warehouse: COLUMN_ACCESS.VIEW, logistics: COLUMN_ACCESS.VIEW, accounts: COLUMN_ACCESS.EDIT },
+  [USER_TEAM.VIEWER]: { planning: COLUMN_ACCESS.VIEW, warehouse: COLUMN_ACCESS.VIEW, logistics: COLUMN_ACCESS.VIEW, accounts: COLUMN_ACCESS.VIEW },
+};
+
+/** Teams whose shipments are limited to their facilities (option c: own facilities by default, edit only own). */
+export const FACILITY_SCOPED_TEAMS: readonly UserTeam[] = [USER_TEAM.WAREHOUSE, USER_TEAM.LOGISTICS];
