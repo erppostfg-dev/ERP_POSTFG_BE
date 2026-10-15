@@ -27,14 +27,16 @@ export interface ColumnDef {
   locked?: boolean;
 }
 
-export const PO_TEAM = { PLANNING: 'planning', WAREHOUSE: 'warehouse', LOGISTICS: 'logistics', ACCOUNTS: 'accounts' } as const;
+/** COPT (2026-10-15, user): its own team, after planning; took planning's columns from Special Remarks to Delivery Type. */
+export const PO_TEAM = { PLANNING: 'planning', COPT: 'copt', WAREHOUSE: 'warehouse', LOGISTICS: 'logistics', ACCOUNTS: 'accounts' } as const;
 export type PoTeam = (typeof PO_TEAM)[keyof typeof PO_TEAM];
 
 /** Workflow order: the tab's step number = its position here + 1. */
-export const PO_TEAM_ORDER: readonly PoTeam[] = [PO_TEAM.PLANNING, PO_TEAM.WAREHOUSE, PO_TEAM.LOGISTICS, PO_TEAM.ACCOUNTS];
+export const PO_TEAM_ORDER: readonly PoTeam[] = [PO_TEAM.PLANNING, PO_TEAM.COPT, PO_TEAM.WAREHOUSE, PO_TEAM.LOGISTICS, PO_TEAM.ACCOUNTS];
 
 export const PO_TEAM_LABEL: Record<PoTeam, string> = {
   [PO_TEAM.PLANNING]: 'Planning',
+  [PO_TEAM.COPT]: 'COPT',
   [PO_TEAM.WAREHOUSE]: 'Warehouse',
   [PO_TEAM.LOGISTICS]: 'Logistics',
   [PO_TEAM.ACCOUNTS]: 'Accounts',
@@ -82,6 +84,9 @@ export const PO_TEAM_COLUMNS: Record<PoTeam, readonly ColumnDef[]> = {
     c('statusPlanning', 'Status (Planning)', K.STATUS),
     c('statusActive', 'Active / Inactive'),
     c('remarksPlanning', 'Remarks (Planning)'),
+  ],
+  // Moved out of planning (user, 2026-10-15): Special Remarks ... Delivery Type, in the same order.
+  [PO_TEAM.COPT]: [
     c('specialRemarksCOPT', 'Special Remarks (COPT)'),
     c('newShipmentReference', 'New Shipment Reference', K.MONO),
     c('channelInwardingRemarks', 'Channel Inwarding Remarks'),
@@ -169,11 +174,13 @@ export type UserTeam = (typeof USER_TEAM)[keyof typeof USER_TEAM];
  * are view for everyone.
  */
 export const DEFAULT_TEAM_ACCESS: Record<UserTeam, Record<PoTeam, ColumnAccess>> = {
-  [USER_TEAM.PLANNING]: { planning: COLUMN_ACCESS.EDIT, warehouse: COLUMN_ACCESS.VIEW, logistics: COLUMN_ACCESS.VIEW, accounts: COLUMN_ACCESS.VIEW },
-  [USER_TEAM.WAREHOUSE]: { planning: COLUMN_ACCESS.VIEW, warehouse: COLUMN_ACCESS.EDIT, logistics: COLUMN_ACCESS.VIEW, accounts: COLUMN_ACCESS.NONE },
-  [USER_TEAM.LOGISTICS]: { planning: COLUMN_ACCESS.VIEW, warehouse: COLUMN_ACCESS.VIEW, logistics: COLUMN_ACCESS.EDIT, accounts: COLUMN_ACCESS.VIEW },
-  [USER_TEAM.ACCOUNTS]: { planning: COLUMN_ACCESS.VIEW, warehouse: COLUMN_ACCESS.VIEW, logistics: COLUMN_ACCESS.VIEW, accounts: COLUMN_ACCESS.EDIT },
-  [USER_TEAM.VIEWER]: { planning: COLUMN_ACCESS.VIEW, warehouse: COLUMN_ACCESS.VIEW, logistics: COLUMN_ACCESS.VIEW, accounts: COLUMN_ACCESS.VIEW },
+  // COPT (2026-10-15): the COPT team edits its own group; everyone else sees it (planning too: the columns left it).
+  [USER_TEAM.PLANNING]: { planning: COLUMN_ACCESS.EDIT, copt: COLUMN_ACCESS.VIEW, warehouse: COLUMN_ACCESS.VIEW, logistics: COLUMN_ACCESS.VIEW, accounts: COLUMN_ACCESS.VIEW },
+  [USER_TEAM.COPT]: { planning: COLUMN_ACCESS.VIEW, copt: COLUMN_ACCESS.EDIT, warehouse: COLUMN_ACCESS.VIEW, logistics: COLUMN_ACCESS.VIEW, accounts: COLUMN_ACCESS.VIEW },
+  [USER_TEAM.WAREHOUSE]: { planning: COLUMN_ACCESS.VIEW, copt: COLUMN_ACCESS.VIEW, warehouse: COLUMN_ACCESS.EDIT, logistics: COLUMN_ACCESS.VIEW, accounts: COLUMN_ACCESS.NONE },
+  [USER_TEAM.LOGISTICS]: { planning: COLUMN_ACCESS.VIEW, copt: COLUMN_ACCESS.VIEW, warehouse: COLUMN_ACCESS.VIEW, logistics: COLUMN_ACCESS.EDIT, accounts: COLUMN_ACCESS.VIEW },
+  [USER_TEAM.ACCOUNTS]: { planning: COLUMN_ACCESS.VIEW, copt: COLUMN_ACCESS.VIEW, warehouse: COLUMN_ACCESS.VIEW, logistics: COLUMN_ACCESS.VIEW, accounts: COLUMN_ACCESS.EDIT },
+  [USER_TEAM.VIEWER]: { planning: COLUMN_ACCESS.VIEW, copt: COLUMN_ACCESS.VIEW, warehouse: COLUMN_ACCESS.VIEW, logistics: COLUMN_ACCESS.VIEW, accounts: COLUMN_ACCESS.VIEW },
 };
 
 /** Teams whose shipments are limited to their facilities (option c: own facilities by default, edit only own). */
