@@ -47,10 +47,15 @@ const safely = async (folder: string, step: string, fn: () => Promise<void>): Pr
 
 /*
  * PIPELINE_LIMIT (testing): at most N emails per process start go into the chain, new intake and resume together.
- * 0 = no limit (production). An email over the limit is only stored as files: no po_uploads row, no OCR.
+ * 0 = no limit (production). Once the N are taken, intake STOPS (user, 2026-10-15: "everything for 5 emails and
+ * stop"): no more emails are read from Gmail, stored or copied to S3; they stay unsent and the next start takes them.
+ * (An email over the limit that still arrives, e.g. a manual upload, is only stored as files: no row, no OCR.)
  */
 let taken = 0;
 const limitReached = (): boolean => env.pipeline.limit > 0 && taken >= env.pipeline.limit;
+/** True when PIPELINE_LIMIT places are all taken: intake stops reading and storing emails. */
+export const pipelineFull = (): boolean => limitReached();
+
 /** Takes one place in the chain; false when PIPELINE_LIMIT is reached. */
 export const takeSlot = (): boolean => {
   if (limitReached()) return false;

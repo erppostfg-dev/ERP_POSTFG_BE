@@ -1,6 +1,7 @@
 import { In } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
 import {
+  TABLES,
   ACCEPTABLE_ISSUE_TYPES,
   ChannelName,
   ERROR_CODES,
@@ -216,6 +217,11 @@ export interface PoReviewDetail {
   warnings: PoWarning[];
   /** The channel's SKUs a line can be mapped to (master_channel_skus, one per pep_code). */
   skuOptions: PoReviewSkuOption[];
+  /**
+   * The latest approval round of this PO (po_review_submissions), or null: lets In Review show why a PO came back
+   * (returned by the system / earlier rounds) and the Approvals page who submitted it.
+   */
+  lastSubmission: { id: string; type: string; status: string; submittedBy: string | null; submittedAt: string; decidedBy: string | null; decidedAt: string | null; remark: string | null } | null;
   /** Short-lived https links (PO_REVIEW_LINK_MINUTES); null when the file is not in S3. */
   files: {
     poFile: string | null;
@@ -287,7 +293,21 @@ export const getPoReview = async (uploadId: string): Promise<PoReviewDetail> => 
     : undefined;
 
   const checked = new Map(validation.lines.map((l) => [String(l.lineNo), l]));
+  const [last] = (await AppDataSource.query(
+    `SELECT s.id, s.type, s.status, su.name sub, s.submitted_at, du.name decider, s.decided_at, s.decision_remark
+       FROM ${TABLES.PO_REVIEW_SUBMISSIONS} s
+       LEFT JOIN ${TABLES.USERS} su ON su.id = s.submitted_by LEFT JOIN ${TABLES.USERS} du ON du.id = s.decided_by
+      WHERE s.upload_id = ? ORDER BY s.id DESC LIMIT 1`,
+    [uploadId],
+  )) as { id: string | number; type: string; status: string; sub: string | null; submitted_at: Date; decider: string | null; decided_at: Date | null; decision_remark: string | null }[];
+  const lastSubmission = last
+    ? {
+        id: String(last.id), type: last.type, status: last.status, submittedBy: last.sub, submittedAt: new Date(last.submitted_at).toISOString(),
+        decidedBy: last.decider, decidedAt: last.decided_at ? new Date(last.decided_at).toISOString() : null, remark: last.decision_remark,
+      }
+    : null;
   return {
+    lastSubmission,
     upload: {
       uploadId: String(upload.id),
       status: upload.status,

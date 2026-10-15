@@ -16,6 +16,7 @@ export * from './master-shipment-status.entity';
 export * from './master-sku.entity';
 export * from './po-issue-action.entity';
 export * from './po-issue.entity';
+export * from './po-review-submission.entity';
 export * from './po-upload.entity';
 export * from './sale-order-code-counter.entity';
 export * from './shipment-log.entity';

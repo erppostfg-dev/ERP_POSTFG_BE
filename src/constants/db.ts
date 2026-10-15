@@ -39,6 +39,7 @@ export const TABLES = {
   PO_UPLOADS: 'po_uploads',
   PO_ISSUES: 'po_issues',
   PO_ISSUE_ACTIONS: 'po_issue_actions',
+  PO_REVIEW_SUBMISSIONS: 'po_review_submissions',
   // Login and page access (2026-10-09, prefg's shape; created by our migration).
   USERS: 'users',
   USER_ROLES: 'user_roles',
@@ -104,6 +105,8 @@ export const UPLOAD_STATUS = {
   QUEUED: 'queued',
   EXTRACTING: 'extracting',
   NEEDS_REVIEW: 'needs_review',
+  /** The reviewer fixed every issue and submitted it; waits for an admin on the Approvals page (2026-10-15). */
+  PENDING_APPROVAL: 'pending_approval',
   PROCESSING: 'processing',
   COMPLETED: 'completed',
   REJECTED: 'rejected',
@@ -132,6 +135,16 @@ export type IssueStatus = (typeof ISSUE_STATUS)[keyof typeof ISSUE_STATUS];
 
 /** po_issue_actions.action_by / po_issues.resolved_by for what the app does by itself (raise, auto-close). */
 export const SYSTEM_ACTOR = 'system';
+
+/** po_review_submissions.type: a reviewer's fixes waiting for an approver, or a reviewer's direct reject (kept so who
+ *  rejected which PO and why can be listed later; user, 2026-10-15). */
+export const REVIEW_SUBMISSION_TYPE = { APPROVAL: 'approval', REVIEWER_REJECT: 'reviewer_reject' } as const;
+export type ReviewSubmissionType = (typeof REVIEW_SUBMISSION_TYPE)[keyof typeof REVIEW_SUBMISSION_TYPE];
+
+/** po_review_submissions.status. returned = the PO no longer passed the checks when approved (e.g. a master changed):
+ *  it went back to In Review by itself with the reason (self-healing), no approver action needed. */
+export const REVIEW_SUBMISSION_STATUS = { PENDING: 'pending', APPROVED: 'approved', REJECTED: 'rejected', RETURNED: 'returned' } as const;
+export type ReviewSubmissionStatus = (typeof REVIEW_SUBMISSION_STATUS)[keyof typeof REVIEW_SUBMISSION_STATUS];
 
 /** po_issue_actions.action */
 export const ISSUE_ACTION = {

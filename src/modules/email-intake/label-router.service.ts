@@ -3,6 +3,7 @@ import { env } from '../../config/env';
 import { ERROR_CODES, PROVIDERS } from '../../constants';
 import { appError } from '../../utils/AppError';
 import { getGmail } from './gmail.client';
+import { pipelineFull } from '../po-pipeline/pipeline.service';
 import { downloadAttachments, originalSender, readParts, toHeaderMap } from './gmail-message';
 import { readState, ResolvedRoute, writeState } from './gmail-watch.service';
 
@@ -124,6 +125,11 @@ const forwardNew = async (gmail: gmail_v1.Gmail, ids: string[], routes: Resolved
 
   for (const id of ids) {
     if (done.has(id)) continue;
+    // PIPELINE_LIMIT reached: stop here, nothing more is downloaded or stored; the rest stay unsent for the next start.
+    if (pipelineFull()) {
+      console.log(`[route] PIPELINE_LIMIT ${env.pipeline.limit} reached: intake stopped, ${ids.filter((i) => !done.has(i)).length} email(s) left in Gmail for the next start`);
+      break;
+    }
     if (await forwardMessage(gmail, id, routes)) sent++;
     done.add(id);
     await rememberForwarded(id);
@@ -162,11 +168,14 @@ export const processGmailChanges = async (routes: ResolvedRoute[], notifiedHisto
     console.warn(`[gmail] history ${startHistoryId} expired; searching labels for emails since ${since.toISOString()}`);
     const profile = await gmail.users.getProfile({ userId: 'me' });
     for (const route of routes) await backfillLabel(gmail, route, since);
+    if (pipelineFull()) return; // intake stopped: keep the old sync point (see below)
     await writeState({ historyId: profile.data.historyId ?? notifiedHistoryId, lastSyncAt: new Date().toISOString() });
     return;
   }
 
   await forwardNew(gmail, changes.ids, routes);
+  // Intake stopped at PIPELINE_LIMIT: keep the old sync point, so the next start still finds the unsent emails.
+  if (pipelineFull()) return;
   await writeState({ historyId: changes.latestHistoryId, lastSyncAt: new Date().toISOString() });
 };
 
@@ -186,6 +195,7 @@ export const catchUpOnStart = async (routes: ResolvedRoute[]): Promise<void> => 
 
   for (const route of fresh) {
     await backfillLabel(gmail, route);
+    if (pipelineFull()) return; // intake stopped mid-backfill: the label is backfilled again on the next start
     backfilled.add(route.label);
     await writeState({ backfilledLabels: [...backfilled], lastSyncAt: new Date().toISOString() });
   }

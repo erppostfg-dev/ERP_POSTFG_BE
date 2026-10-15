@@ -9,13 +9,15 @@ import {
   PO_REVIEW_LIST,
   PO_REVIEW_REMARK_MAX,
   PO_REVIEW_QUERY,
+  REVIEW_LIVE,
   UPLOAD_ID_PATTERN,
   UPLOAD_STATUS,
   UploadStatus,
 } from '../constants';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
 import { getPoFile, getPoReview, listPoReview, PoReviewListQuery } from '../modules/po-review/po-review.service';
-import { LineCorrection, rejectPo, resubmitPo, ResubmitBody } from '../modules/po-review/po-review-actions.service';
+import { reviewEvents, reviewVersion } from '../modules/po-review/po-review.live';
+import { LineCorrection, rejectPo, ResubmitBody, submitForApproval } from '../modules/po-review/po-review-actions.service';
 import { appError } from '../utils/AppError';
 
 /*
@@ -24,15 +26,19 @@ import { appError } from '../utils/AppError';
  *                     ?status=&channel=&q=&from=YYYY-MM-DD&to=YYYY-MM-DD&page=&pageSize=
  *   GET /po-review/:uploadId   one PO for the review panel (processed.json from S3, issues, our SKU/MRP/rate per line,
  *                              the channel's SKUs, download links). Viewer on /operations/po-review.
+ *   GET /po-review/events, /live-state   live updates (SSE) and the version for polling (po-review.live.ts).
  *   GET /po-review/:uploadId/file   the PO file itself, streamed from S3 (for the panel's PDF viewer). Viewer.
- *   POST /po-review/:uploadId/resubmit   { location?: { detailsChannelId }, lines?: [{ lineNo, pepCode?, qty?, mrp?, rate? }],
- *                                          accept?: [{ issueId, remark? }], remark? }   corrections -> validate -> save.
- *   POST /po-review/:uploadId/reject     { remark }   Editor on /operations/po-review for both.
+ *   POST /po-review/:uploadId/submit   { location?: { detailsChannelId }, lines?: [{ lineNo, pepCode?, qty?, mrp?, rate? }],
+ *                                        accept?: [{ issueId, remark? }], remark? }   corrections -> validate -> must pass
+ *                                        completely -> pending_approval (Approvals page; 2026-10-15, replaces /resubmit,
+ *                                        which saved the PO at once).
+ *   POST /po-review/:uploadId/reject   { remark }   the reviewer rejects directly (kept in po_review_submissions).
+ *   Editor on /operations/po-review for both. Approve / reject of a submission: routes/approvals.routes.ts.
  */
 
 const router = Router();
 
-type Problem = { field: string; code: string; message: string };
+export type Problem = { field: string; code: string; message: string };
 
 const STATUSES = Object.values(UPLOAD_STATUS) as string[];
 
@@ -106,6 +112,18 @@ router.get('/', requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.VIEWER), a
   }
 });
 
+// Live updates (before /:uploadId): SSE + the version for the screen's polling fallback.
+router.get(REVIEW_LIVE.EVENTS, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.VIEWER), (req, res, next) => {
+  reviewEvents(req, res).catch(next);
+});
+router.get(REVIEW_LIVE.STATE, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.VIEWER), async (_req, res, next) => {
+  try {
+    res.json({ data: { version: await reviewVersion() } });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/:uploadId', requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.VIEWER), async (req, res, next) => {
   try {
     const { uploadId } = req.params;
@@ -135,7 +153,7 @@ router.get('/:uploadId/file', requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LE
 const B = PO_REVIEW_BODY;
 
 /** Field checks on a JSON body; `problems` collects every bad field, so the reviewer sees them all at once. */
-const bodyReader = (problems: Problem[]) => {
+export const bodyReader = (problems: Problem[]) => {
   const bad = (field: string, code: keyof typeof ERROR_CODES, ...args: unknown[]) =>
     problems.push({ field, code, message: (errorMessage as (c: string, ...a: unknown[]) => string)(ERROR_CODES[code], ...args) });
   const id = (v: unknown, field: string): string | undefined => {
@@ -220,10 +238,10 @@ const uploadIdOf = (req: Request): string => {
   return uploadId;
 };
 
-router.post('/:uploadId/resubmit', requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
+router.post('/:uploadId/submit', requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
   try {
     const uploadId = uploadIdOf(req);
-    res.json({ data: await resubmitPo(uploadId, parseResubmit(req.body), req.auth!.user.email, req.auth!.user.id) });
+    res.json({ data: await submitForApproval(uploadId, parseResubmit(req.body), { id: req.auth!.user.id, email: req.auth!.user.email }) });
   } catch (err) {
     next(err);
   }
@@ -235,7 +253,7 @@ router.post('/:uploadId/reject', requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS
     const problems: Problem[] = [];
     const remark = bodyReader(problems).remark((req.body as Record<string, unknown> | undefined)?.[B.REMARK], B.REMARK, true);
     if (problems.length || !remark) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails(problems);
-    res.json({ data: await rejectPo(uploadId, remark, req.auth!.user.email) });
+    res.json({ data: await rejectPo(uploadId, remark, { id: req.auth!.user.id, email: req.auth!.user.email }) });
   } catch (err) {
     next(err);
   }

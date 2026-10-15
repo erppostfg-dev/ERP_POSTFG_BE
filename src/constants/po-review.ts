@@ -1,3 +1,6 @@
+import { ROLES, RoleKey } from './auth';
+import { REVIEW_SUBMISSION_STATUS } from './db';
+
 /*
  * PO review API (API contract "PO review", 2026-10-09): GET /po-review lists po_uploads by status, one row per PO.
  */
@@ -46,3 +49,32 @@ export const PO_REVIEW_BODY = {
   ISSUE_ID: 'issueId',
   REMARK: 'remark',
 } as const;
+
+/*
+ * PO review approvals (user, 2026-10-15): the reviewer submits the fixed PO, an approver approves (PO is created) or
+ * rejects it on the Approvals page. Approvers = these roles (admin + developer while testing; prod: PROD_CHECKLIST).
+ * An approver may approve their own submission for now (one user on dev; prod: PROD_CHECKLIST).
+ */
+export const APPROVER_ROLES: readonly RoleKey[] = [ROLES.ADMIN, ROLES.DEVELOPER];
+
+/** The tabs of the Approvals page (GET /approvals/po-reviews?status=). */
+export const APPROVAL_LIST_STATUSES = [REVIEW_SUBMISSION_STATUS.PENDING, REVIEW_SUBMISSION_STATUS.APPROVED, REVIEW_SUBMISSION_STATUS.REJECTED] as const;
+
+/** po_review_submissions.id in a URL. */
+export const SUBMISSION_ID_PATTERN = /^\d{1,19}$/;
+
+
+/** Field names in po_review_submissions.fixes (what the reviewer changed on a line). */
+export const REVIEW_FIX_FIELD = { SKU: 'pepCode', QTY: 'qty', MRP: 'mrp', RATE: 'rate' } as const;
+
+/** Live PO Review + Approvals (po-review.live.ts): the screens reload when the review data's version changes. */
+export const REVIEW_LIVE = {
+  /** While a screen is connected, the server re-reads the version this often (catches other processes). */
+  WATCH_MS: 5_000,
+  /** SSE event name of a change (the ping is LIVE.EVENT_PING). */
+  EVENT_CHANGE: 'review',
+  /** Route names, under /po-review and /approvals. */
+  EVENTS: '/events',
+  STATE: '/live-state',
+} as const;
+

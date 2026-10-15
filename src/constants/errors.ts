@@ -62,6 +62,7 @@ export const ERRORS = {
     () => 'No refresh token returned. Remove the app at https://myaccount.google.com/permissions and run again.',
   ),
   /** The intake endpoint answered 5xx: the email is retried. */
+  PIPELINE_LIMIT_REACHED: define(503, (limit: number) => `PIPELINE_LIMIT ${limit} reached: intake stopped until the next start`),
   ROUTE_FORWARD_FAILED: define(502, (url: string, status: number, body: string) => `POST ${url} -> ${status}: ${body}`),
 
   // --- Storage / S3 -----------------------------------------------------------------------------------------------
@@ -96,6 +97,11 @@ export const ERRORS = {
   PO_FILE_MISSING: define(404, (uploadId: string) => `PO upload ${uploadId} has no PO file in S3`),
   UPLOAD_NOT_IN_REVIEW: define(409, (uploadId: string, status: string) => `PO upload ${uploadId} is ${status}, not in review any more; reload it`),
   REVIEW_INCOMPLETE: define(422, (count: number) => `${count} issue(s) are still open: correct them, accept them (where allowed) or reject the PO`),
+  // --- PO review approvals (2026-10-15) ---
+  SUBMISSION_NOT_FOUND: define(404, (id: string) => `No PO review submission ${id}`),
+  SUBMISSION_NOT_PENDING: define(409, (id: string, status: string) => `Submission ${id} is ${status}, not pending any more; reload it`),
+  NOT_AN_APPROVER: define(403, (roles: string) => `Only ${roles} can approve or reject PO reviews`),
+  REVIEW_RETURNED: define(409, (count: number) => `The PO no longer passes the checks (${count} issue(s)); it went back to In Review with the reason`),
   ISSUE_NOT_ACCEPTABLE: define(422, (issueId: string, type: string) => `Issue ${issueId} (${type}) cannot be accepted: correct it or reject the PO`),
   ISSUE_NOT_OPEN: define(400, (issueId: string) => `Issue ${issueId} is not an open issue of this PO`),
   SKU_NOT_IN_MASTER: define(400, (pepCode: string, channel: string) => `${pepCode} is not in the ${channel} SKU master`),

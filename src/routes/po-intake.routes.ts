@@ -7,7 +7,7 @@ import { sortStoredEmail, SortResult } from '../modules/email-intake/email-sorte
 import { storeInboundEmail } from '../modules/email-intake/email-storage.service';
 import { mirrorLater, syncEmailToS3, uploadFileToS3 } from '../modules/email-intake/s3-mirror.service';
 import { queueExtractPo } from '../modules/ocr/extract-po.service';
-import { emailStored } from '../modules/po-pipeline/pipeline.service';
+import { emailStored, pipelineFull } from '../modules/po-pipeline/pipeline.service';
 import { ERROR_CODES, errorMessage, FILES, FOLDERS, INTAKE_STATUS, PROVIDERS } from '../constants';
 import { appError } from '../utils/AppError';
 
@@ -69,6 +69,10 @@ router.post('/email', requireWebhookSecret, upload.array('files', MAX_FILES), as
       });
     }
     if (problems.length) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails(problems);
+
+    // PIPELINE_LIMIT reached: Gmail intake stops; nothing is stored or copied to S3. 503 = the sender keeps the email
+    // unsent and the next start takes it (the router normally stops before this; this covers emails already in flight).
+    if (body.provider === PROVIDERS.GMAIL_PUBSUB && pipelineFull()) throw appError(ERROR_CODES.PIPELINE_LIMIT_REACHED, env.pipeline.limit);
 
     const messageId = body.messageId?.trim() || `${body.provider ?? PROVIDERS.MANUAL}-${crypto.randomUUID()}`;
     const stored = await storeInboundEmail({
