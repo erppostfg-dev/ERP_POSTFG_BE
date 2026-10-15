@@ -15,5 +15,6 @@ export * from './po-overview-columns';
 export * from './po-review';
 export * from './sale-order';
 export * from './statuses';
+export * from './users';
 export * from './validation';
 export * from './warnings';

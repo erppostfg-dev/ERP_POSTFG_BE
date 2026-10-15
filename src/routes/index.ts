@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import adminRoutes from './admin.routes';
 import approvalsRoutes from './approvals.routes';
 import authRoutes from './auth.routes';
 import healthRoutes from './health.routes';
@@ -12,6 +13,7 @@ const router = Router();
 router.use('/health', healthRoutes);
 router.use('/auth', authRoutes);
 router.use('/approvals', approvalsRoutes);
+router.use('/admin', adminRoutes);
 router.use('/masters', mastersRoutes);
 router.use('/po-intake', poIntakeRoutes);
 router.use('/po-overview', poOverviewRoutes);

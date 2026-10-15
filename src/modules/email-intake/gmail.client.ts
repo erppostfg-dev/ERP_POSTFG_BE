@@ -4,6 +4,8 @@ import { ERROR_CODES } from '../../constants';
 import { appError } from '../../utils/AppError';
 
 export const GMAIL_SCOPES = ['https://www.googleapis.com/auth/gmail.readonly'];
+/** Sending (welcome emails, 2026-10-15): asked for by `npm run gmail:token`; a service account gets its own client. */
+export const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send';
 // Lets the same login pull from the Pub/Sub subscription.
 export const PUBSUB_SCOPES = ['https://www.googleapis.com/auth/pubsub'];
 

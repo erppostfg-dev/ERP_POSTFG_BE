@@ -5,6 +5,9 @@ import { resolveAllAccess } from '../modules/auth/access.service';
 import { clientInfo, requireAuth } from '../modules/auth/auth.middleware';
 import { allowedUser, endSession, googleSignInUrl, newState, profileFromCode, startSession } from '../modules/auth/session.service';
 import { AppError, appError } from '../utils/AppError';
+import { AppDataSource } from '../config/data-source';
+import { Role } from '../entities';
+import { In } from 'typeorm';
 
 /*
  * Login routes (API contract, 2026-10-09; prefg's flow):
@@ -68,7 +71,12 @@ router.get('/me', requireAuth, async (req, res, next) => {
     res.json({
       data: {
         // team = the person's PO Overview team (users.po_team), null = none; the header shows it next to the roles.
-        user: { id: String(user.id), name: user.name, email: user.email, roles, team: user.poTeam ?? null },
+        // roleLabels (2026-10-15): custom roles' names from the roles table, for the header badge.
+        user: {
+          id: String(user.id), name: user.name, email: user.email, roles, team: user.poTeam ?? null,
+          // Never blocks sign-in: before the UsersAndRoles migration (no roles table) the labels are just empty.
+          roleLabels: roles.length ? await AppDataSource.getRepository(Role).findBy({ key: In(roles) }).then((rs) => Object.fromEntries(rs.map((r) => [r.key, r.label]))).catch(() => ({})) : {},
+        },
         access: await resolveAllAccess(user.id, roles),
       },
     });

@@ -3,7 +3,7 @@
  *
  *   1. Put GMAIL_OAUTH_CLIENT_ID and GMAIL_OAUTH_CLIENT_SECRET in .env (OAuth client of type "Desktop app").
  *   2. npm run gmail:token
- *   3. Sign in as GMAIL_MAILBOX in the browser and allow read access.
+ *   3. Sign in as GMAIL_MAILBOX in the browser and allow read, Pub/Sub and send access (send: welcome emails).
  *   4. Copy the printed GMAIL_OAUTH_REFRESH_TOKEN into .env.
  */
 import { exec } from 'child_process';
@@ -13,10 +13,10 @@ import { google } from 'googleapis';
 import { env } from '../config/env';
 import { ERROR_CODES } from '../constants';
 import { appError } from '../utils/AppError';
-import { GMAIL_SCOPES, PUBSUB_SCOPES } from '../modules/email-intake/gmail.client';
+import { GMAIL_SCOPES, GMAIL_SEND_SCOPE, PUBSUB_SCOPES } from '../modules/email-intake/gmail.client';
 
-// Gmail read + Pub/Sub pull, so one refresh token serves the whole email listener.
-const SCOPES = [...GMAIL_SCOPES, ...PUBSUB_SCOPES];
+// Gmail read + Pub/Sub pull + send (welcome emails, 2026-10-15): one refresh token serves the listener and the mailer.
+const SCOPES = [...GMAIL_SCOPES, ...PUBSUB_SCOPES, GMAIL_SEND_SCOPE];
 
 const openBrowser = (url: string): void => {
   const cmd =

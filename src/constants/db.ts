@@ -43,6 +43,7 @@ export const TABLES = {
   // Login and page access (2026-10-09, prefg's shape; created by our migration).
   USERS: 'users',
   USER_ROLES: 'user_roles',
+  ROLES: 'roles',
   PAGE_PERMISSIONS: 'page_permissions',
   USER_PAGE_PERMISSIONS: 'user_page_permissions',
   SESSIONS: 'sessions',
