@@ -7,7 +7,6 @@ import {
   IST_OFFSET_MS,
   PAGES,
   ROLE_EXCLUDED_PAGES,
-  ROLE_KEY_PATTERN,
   TABLES,
 } from '../../constants';
 import { ActivityLog, PagePermission, Role } from '../../entities';
@@ -16,8 +15,9 @@ import { appError } from '../../utils/AppError';
 /*
  * Roles (2026-10-15, user: "based on the role he can only access a few routes"). A role = a label + page grants
  * (page_permissions): for each route none / viewer / editor. Every editable page gets its own row (so a child page can
- * be hidden even when its section is open). Built-in roles (developer, admin) keep full access and are not editable
- * here; /admin (Users & Roles) cannot be given to a custom role. Roles are never deleted from the screen.
+ * be hidden even when its section is open). FIXED LIST (2026-10-16): roles come from ROLE_CATALOG via migrations; the
+ * screen only changes a non-built-in role's page access (no create, no rename, no delete). Built-in roles (developer,
+ * admin) keep full access; /admin (Users & Roles) cannot be given to another role.
  */
 
 export type Grants = Record<string, AccessLevel>;
@@ -79,40 +79,15 @@ const audit = (m: EntityManager, userId: number, what: string) =>
 
 const summary = (g: Grants) => Object.entries(g).filter(([, l]) => l !== ACCESS_LEVEL.NONE).map(([s, l]) => `${s}:${l}`).join(' ') || 'none';
 
-/** "Warehouse Ops" -> "warehouse-ops". */
-export const roleKeyOf = (label: string) => label.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-
-export const createRole = async (input: { label: string; description?: string | null; grants: Grants }, by: { id: number; email: string }): Promise<RoleItem> => {
-  const key = roleKeyOf(input.label);
-  if (!ROLE_KEY_PATTERN.test(key)) throw appError(ERROR_CODES.FIELD_NOT_TEXT, 'label');
-  const grants = checkGrants(input.grants);
-  await AppDataSource.transaction(async (m) => {
-    const repo = m.getRepository(Role);
-    if (await repo.findOneBy({ key })) throw appError(ERROR_CODES.ROLE_EXISTS, key);
-    await repo.insert({ key, label: input.label.trim(), description: input.description?.trim() || null, isSystem: false, createdBy: by.id });
-    await writeGrants(m, key, grants);
-    await audit(m, by.id, `roles: added ${key} ${summary(grants)}`);
-  });
-  console.log(`[roles] ${by.email} added role ${key}`);
-  return (await listRoles()).find((r) => r.key === key)!;
-};
-
-export const updateRole = async (
-  key: string,
-  input: { label?: string; description?: string | null; grants?: Grants },
-  by: { id: number; email: string },
-): Promise<RoleItem> => {
+/** Changes a role's page access (the only thing the screen may change about a role). */
+export const updateRole = async (key: string, input: { grants: Grants }, by: { id: number; email: string }): Promise<RoleItem> => {
   await AppDataSource.transaction(async (m) => {
     const repo = m.getRepository(Role);
     const role = await repo.findOne({ where: { key }, lock: { mode: 'pessimistic_write' } });
     if (!role) throw appError(ERROR_CODES.ROLE_NOT_FOUND, key);
     if (role.isSystem) throw appError(ERROR_CODES.ROLE_IS_SYSTEM, role.label);
-    const set: Partial<Role> = {};
-    if (input.label?.trim()) set.label = input.label.trim();
-    if (input.description !== undefined) set.description = input.description?.trim() || null;
-    if (Object.keys(set).length) await repo.update(key, set);
-    if (input.grants) await writeGrants(m, key, checkGrants(input.grants));
-    await audit(m, by.id, `roles: changed ${key}${set.label ? ` label=${set.label}` : ''}${input.grants ? ` ${summary(input.grants)}` : ''}`);
+    await writeGrants(m, key, checkGrants(input.grants));
+    await audit(m, by.id, `roles: page access of ${key} -> ${summary(input.grants)}`);
   });
   console.log(`[roles] ${by.email} changed role ${key}`);
   return (await listRoles()).find((r) => r.key === key)!;

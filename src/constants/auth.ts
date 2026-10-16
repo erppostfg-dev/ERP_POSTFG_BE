@@ -29,9 +29,11 @@ export interface PageEntry {
 /** Every permission page = one sidebar item (the UI of 2026-10-09), its section the parent. */
 export const PAGES: readonly PageEntry[] = [
   { slug: '/masters', label: 'Masters', section: 'Masters' },
-  { slug: '/masters/pep-skus', label: 'PEP SKU master', section: 'Masters' },
-  { slug: '/masters/channel-skus', label: 'Channel SKU master', section: 'Masters' },
-  { slug: '/masters/channel-customers', label: 'Channel / Customer master', section: 'Masters' },
+  // Title Case like every other page name (2026-10-16). Channel Master keeps its old slug, so grants stay valid.
+  { slug: '/masters/pep-skus', label: 'PEP SKU Master', section: 'Masters' },
+  { slug: '/masters/channel-skus', label: 'Channel SKU Master', section: 'Masters' },
+  { slug: '/masters/channel-customers', label: 'Channel Master', section: 'Masters' },
+  { slug: '/masters/channel-locations', label: 'Channel Location Master', section: 'Masters' },
   { slug: '/masters/warehouses', label: 'Warehouses', section: 'Masters' },
   { slug: '/operations', label: 'B2B/B2C Operations', section: 'B2B/B2C Operations' },
   { slug: '/operations/po-overview', label: 'PO Overview', section: 'B2B/B2C Operations' },
@@ -44,7 +46,7 @@ export const PAGES: readonly PageEntry[] = [
   { slug: '/planning/drr-aging', label: 'DRR & Aging', section: 'Demand Planning' },
   { slug: '/planning/analytics', label: 'Analytics', section: 'Demand Planning' },
   { slug: '/approvals', label: 'Approvals', section: 'General' },
-  { slug: '/admin', label: 'Admin', section: 'General' },
+  { slug: '/admin', label: 'Users & Roles', section: 'General' },
 ];
 
 /** Page keys the API guards name (so routes never type a slug). */
@@ -53,6 +55,7 @@ export const PAGE = {
   PEP_SKUS: '/masters/pep-skus',
   CHANNEL_SKUS: '/masters/channel-skus',
   CHANNEL_CUSTOMERS: '/masters/channel-customers',
+  CHANNEL_LOCATIONS: '/masters/channel-locations',
   WAREHOUSES: '/masters/warehouses',
   OPERATIONS: '/operations',
   PO_OVERVIEW: '/operations/po-overview',

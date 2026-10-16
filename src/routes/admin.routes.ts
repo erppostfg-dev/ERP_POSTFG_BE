@@ -4,8 +4,6 @@ import {
   ERROR_CODES,
   errorMessage,
   PAGE,
-  ROLE_DESCRIPTION_MAX,
-  ROLE_LABEL_MAX,
   USER_ADMIN_ROLES,
   USER_BODY,
   USER_ID_PATTERN,
@@ -16,7 +14,7 @@ import {
   UserTeam,
 } from '../constants';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
-import { createRole, Grants, listRoles, rolePages, updateRole } from '../modules/admin/roles.service';
+import { Grants, listRoles, rolePages, updateRole } from '../modules/admin/roles.service';
 import { createUser, listUsers, sendWelcome, updateUser, UserInput, userOptions } from '../modules/admin/users.service';
 import { appError } from '../utils/AppError';
 import { Problem } from './po-review.routes';
@@ -29,8 +27,8 @@ import { Problem } from './po-review.routes';
  *   PATCH /admin/users/:id                 { name?, roles?, team?, facilities?, status? }   change / switch off-on
  *   POST  /admin/users/:id/welcome-email   send the welcome email again
  *   GET   /admin/roles                     roles with their page grants and user counts; GET /admin/roles/pages
- *   POST  /admin/roles                     { label, description?, grants: { "<page>": none|viewer|editor } }
- *   PATCH /admin/roles/:key                { label?, description?, grants? }   (built-in roles refused)
+ *   PATCH /admin/roles/:key                { grants: { "<page>": none|viewer|editor } }   a role's page access
+ *   Roles themselves are a fixed list (constants ROLE_CATALOG, loaded by migrations): no create / rename here.
  */
 
 const router = Router();
@@ -131,22 +129,12 @@ const grantsOf = (r: ReturnType<typeof reader>): Grants | undefined => {
 router.get('/roles', ...guard, wrap(() => listRoles()));
 router.get('/roles/pages', ...guard, wrap(async () => rolePages()));
 
-router.post('/roles', ...guard, wrap(async (req) => {
-  const r = reader(req.body);
-  const label = r.text(USER_BODY.LABEL, ROLE_LABEL_MAX, true);
-  const description = r.text(USER_BODY.DESCRIPTION, ROLE_DESCRIPTION_MAX);
-  const grants = grantsOf(r) ?? {};
-  r.done();
-  return createRole({ label: label!, description, grants }, actor(req));
-}));
-
 router.patch('/roles/:key', ...guard, wrap(async (req) => {
   const r = reader(req.body);
-  const label = r.text(USER_BODY.LABEL, ROLE_LABEL_MAX);
-  const description = r.b[USER_BODY.DESCRIPTION] === null ? null : r.text(USER_BODY.DESCRIPTION, ROLE_DESCRIPTION_MAX);
   const grants = grantsOf(r);
+  if (!grants) r.bad(USER_BODY.GRANTS, 'FIELD_REQUIRED', USER_BODY.GRANTS);
   r.done();
-  return updateRole(req.params.key, { label, description, grants }, actor(req));
+  return updateRole(req.params.key, { grants: grants! }, actor(req));
 }));
 
 export default router;
