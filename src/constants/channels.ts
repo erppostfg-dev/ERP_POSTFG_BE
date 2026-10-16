@@ -11,6 +11,8 @@ export const CHANNELS = {
   RELIANCE: 'reliance',
   SCOOTSY: 'scootsy',
   PURPLLE: 'purplle',
+  /** Amazon FBA inbound shipments, from SP-API (no email, no OCR; 2026-10-16). */
+  AMAZON: 'amazon',
 } as const;
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS];
@@ -30,4 +32,6 @@ export const OCR_CHANNELS: Record<ChannelName, string> = {
   [CHANNELS.RELIANCE]: 'reliance',
   [CHANNELS.SCOOTSY]: 'scootsy',
   [CHANNELS.PURPLLE]: 'purplle',
+  /** Not OCR'd: Amazon comes from its API. Kept so every channel has an entry. */
+  [CHANNELS.AMAZON]: 'amazon',
 };

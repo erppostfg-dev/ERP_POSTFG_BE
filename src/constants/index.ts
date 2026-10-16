@@ -3,6 +3,7 @@
  * inline. Add a new value to its file here, never as a literal in the code.
  */
 export * from './auth';
+export * from './channel-api';
 export * from './channels';
 export * from './dates';
 export * from './db';

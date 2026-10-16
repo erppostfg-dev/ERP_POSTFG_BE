@@ -95,6 +95,18 @@ export const env = {
     // true: at server start, unfinished po_uploads rows are resumed (queued / extracting / processing).
     resumeOnStart: flag('PIPELINE_RESUME'),
   },
+  // Channel API connectors (2026-10-16): POs pulled from channel APIs into the same chain. Off by default, like the
+  // email listener; each connector also needs its own keys. Poll minutes: the connector's env value, else the constant.
+  channelApi: {
+    enabled: flag('CHANNEL_API_ENABLED'),
+    amazon: {
+      clientId: process.env.SPAPI_CLIENT_ID,
+      clientSecret: process.env.SPAPI_CLIENT_SECRET,
+      refreshToken: process.env.SPAPI_REFRESH_TOKEN,
+      region: (process.env.SPAPI_REGION ?? 'EU').toUpperCase(),
+      pollMinutes: process.env.AMAZON_POLL_MINUTES ? Number(process.env.AMAZON_POLL_MINUTES) : undefined,
+    },
+  },
   storage: {
     emailDir: process.env.EMAIL_STORAGE_DIR ?? 'storage/emails',
     gmailStateFile: process.env.GMAIL_STATE_FILE ?? 'storage/gmail-state.json',

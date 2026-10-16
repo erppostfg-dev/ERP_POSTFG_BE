@@ -5,6 +5,7 @@ import { env } from './config/env';
 import { startEmailListener } from './modules/email-intake/pubsub.listener';
 import { queueExtractPo } from './modules/ocr/extract-po.service';
 import { applyResume, planResume } from './modules/po-pipeline/resume.service';
+import { startChannelApis } from './modules/channel-api/scheduler';
 
 const start = async (): Promise<void> => {
   if (env.db.enabled) {
@@ -39,6 +40,11 @@ const start = async (): Promise<void> => {
     console.log('Email listener disabled (PUBSUB_ENABLED=false)');
   }
 
+  // Channel API connectors (Amazon SP-API ...): each polls on its own timer and feeds the same chain (2026-10-16).
+  let channelApis: { stop: () => void } | undefined;
+  if (env.channelApi.enabled && AppDataSource.isInitialized) channelApis = startChannelApis();
+  else console.log('Channel API connectors disabled (CHANNEL_API_ENABLED=false)');
+
   // Resume unfinished POs from po_uploads (PIPELINE_RESUME=true, database connected), within PIPELINE_LIMIT.
   // The OCR is queued only when OCR_ENABLED; otherwise those emails stay queued for the next start.
   if (env.pipeline.resumeOnStart && AppDataSource.isInitialized) {
@@ -57,6 +63,7 @@ const start = async (): Promise<void> => {
   const shutdown = async (signal: string): Promise<void> => {
     console.log(`${signal} received, shutting down...`);
     await listener?.stop();
+    channelApis?.stop();
     server.close(async () => {
       if (AppDataSource.isInitialized) await AppDataSource.destroy();
       process.exit(0);

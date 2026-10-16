@@ -102,6 +102,28 @@ export const emailValues = async (folder: string, channelDisplayName: string | n
     path.join(folder, FILES.METADATA),
   )) ?? {};
   const run = await readJson<OcrRun>(path.join(folder, FILES.OCR_RESULT));
+  // A channel API PO (2026-10-16): no email and no OCR; the "file" is the API's own JSON.
+  if (meta.provider === PROVIDERS.CHANNEL_API) {
+    return {
+      source: UPLOAD_SOURCE.API,
+      channel: channelDisplayName,
+      fileName: FILES.API_RAW,
+      fileUrl: s3UrlFor(folder, meta, FILES.API_RAW),
+      fileType: extOf(FILES.API_RAW),
+      emailMessageId: meta.messageId ?? null,
+      emailFrom: null,
+      // The channel's name for the PO (Amazon: "FBA STA (28/09/2026 08:03)-DEL5"), shown / copied like an email subject.
+      emailSubject: meta.subject?.slice(0, 500) ?? null,
+      emailReceivedAt: asDate(meta.receivedAt),
+      sourceSystem: meta.sourceSystem ?? null,
+      externalId: meta.externalId ?? null,
+      // Nothing to read with OCR: the data came structured, so its "extraction" is done.
+      ocrStatus: UPLOAD_OCR_STATUS.SUCCESS,
+      ocrStartedAt: null,
+      ocrFinishedAt: null,
+      ocrAttempts: 0,
+    };
+  }
   const fileName = pickPoFile(meta, run);
   const fromLabel = meta.provider === PROVIDERS.GMAIL_PUBSUB || !!meta.labels?.length;
   return {
@@ -124,6 +146,17 @@ export const emailValues = async (folder: string, channelDisplayName: string | n
 /** po_uploads.ocr_result for one PO: where its files are and what the OCR / processing reported (decided: a summary). */
 const ocrSummary = async (folder: string, fp: FolderPo): Promise<Record<string, unknown>> => {
   const meta = (await readJson<EmailMetadata>(path.join(folder, FILES.METADATA))) ?? {};
+  if (meta.provider === PROVIDERS.CHANNEL_API) {
+    return {
+      raw_output: s3UrlFor(folder, meta, FILES.API_RAW),
+      processed_json: s3UrlFor(folder, meta, fp.relPath),
+      input_type: fp.po.input_type,
+      source_system: meta.sourceSystem ?? null,
+      external_status: meta.externalStatus ?? null,
+      lines: fp.po.line_items.length,
+      processing_warnings: fp.po.warnings,
+    };
+  }
   const out = await readJson<OcrOutput>(path.join(folder, FILES.OCR_OUTPUT_RESULT));
   const run = await readJson<OcrRun>(path.join(folder, FILES.OCR_RESULT));
   return {

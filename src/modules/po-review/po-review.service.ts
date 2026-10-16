@@ -44,6 +44,8 @@ export interface PoReviewListItem {
   status: UploadStatus;
   ocrStatus: string;
   source: string;
+  /** The email's subject; for an API PO the channel's own name for it (Amazon: the shipment name). Copied on the screen. */
+  subject: string | null;
   fileName: string;
   poDate: string | null;
   receivedAt: string | null;
@@ -122,6 +124,7 @@ export const listPoReview = async (query: PoReviewListQuery): Promise<{ items: P
       status: u.status,
       ocrStatus: u.ocrStatus,
       source: u.source,
+      subject: u.emailSubject,
       fileName: u.fileName,
       poDate: po?.poDate ? String(po.poDate) : null,
       receivedAt: iso(u.emailReceivedAt ?? u.createdAt),

@@ -125,18 +125,39 @@ export const runFromProcessing = (folder: string): Promise<void> =>
       await markFailed(folder, { step: PIPELINE_STEP.PROCESSING, code: p.code ?? null, reason: p.reason ?? null }, false);
       return;
     }
+    await chain(folder);
+  });
+
+/**
+ * A folder that already has its processed.json (a channel API PO, 2026-10-16): the same chain from validation on.
+ * Unlike runFromProcessing it throws, so the connector counts the shipment as failed and tries it again next run.
+ */
+export const runChainFor = async (folder: string): Promise<{ poNumber: string; status: string; saleOrder?: string; error?: string }[]> => {
+  if (!on()) return [];
+  return chain(folder);
+};
+
+/** Step 1 (po_uploads + po_issues) then step 2 (PO tables + sale order + CSV) for every PO of the folder. */
+const chain = async (folder: string): Promise<{ poNumber: string; status: string; saleOrder?: string; error?: string }[]> => {
+  const out: { poNumber: string; status: string; saleOrder?: string; error?: string }[] = [];
+  {
     const plan = await planEmail(AppDataSource, new MasterDataReader(AppDataSource), folder);
     await applyPlan(AppDataSource, plan);
     for (const r of plan.rows) {
       log(folder, r.final ? `${r.poNumber}: already ${r.existing?.status}, unchanged` : `${r.poNumber}: ${r.status}${r.issues.create.length ? ` (${r.issues.create.length} new issue(s))` : ''}`);
+      out.push({ poNumber: r.poNumber, status: r.final ? (r.existing?.status ?? r.status) : r.status });
     }
 
     // Step 2 reads the rows step 1 just wrote.
     const fresh = await planEmail(AppDataSource, new MasterDataReader(AppDataSource), folder);
     for (const s of await applySave(AppDataSource, folder, await planSave(AppDataSource, fresh))) {
       log(folder, s.error ? `${s.poNumber}: save FAILED: ${s.error}` : `${s.poNumber}: completed, sale order ${s.code}, CSV ${s.csvUrl}`);
+      const o = out.find((x) => x.poNumber === s.poNumber);
+      if (o) Object.assign(o, s.error ? { status: UPLOAD_STATUS.FAILED, error: s.error } : { status: UPLOAD_STATUS.COMPLETED, saleOrder: s.code });
     }
-  });
+  }
+  return out;
+};
 
 /** The OCR finished (ok, skipped or failed). */
 export const ocrFinished = (folder: string, result: { status: string; code?: string; reason?: string }): Promise<void> =>

@@ -75,6 +75,10 @@ export const ERRORS = {
   GOOGLE_TOKEN_INVALID: define(401, () => 'Google sign-in could not be verified'),
   NOT_ALLOWED_DOMAIN: define(403, (domain: string) => `Only ${domain} accounts can sign in`),
   USER_NOT_FOUND: define(403, (email: string) => `${email} has no access to POST_FG yet; ask an admin`),
+  // --- Channel API connectors (2026-10-16) ---
+  SPAPI_LOGIN_FAILED: define(502, (reason: string) => `Amazon SP-API login refused: ${reason} (check SPAPI_* in .env; the client secret expires 180 days after issue)`),
+  SPAPI_CALL_FAILED: define(502, (status: number, path: string, reason: string) => `Amazon SP-API ${path} -> ${status}: ${reason}`),
+  CONNECTOR_UNKNOWN: define(400, (key: string, known: string) => `No channel API connector "${key}" (known: ${known})`),
   // --- Users & Roles admin (2026-10-15) ---
   NOT_A_USER_ADMIN: define(403, (roles: string) => `Only ${roles} can add or change users and roles`),
   USER_ID_NOT_FOUND: define(404, (id: string) => `No user ${id}`),

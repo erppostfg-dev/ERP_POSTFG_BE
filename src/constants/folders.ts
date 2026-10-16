@@ -23,11 +23,16 @@ export const FOLDERS = {
   NO_PO_NUMBER: 'no-po-number',
   /** po:validate reports, next to the email storage: storage/validation/. */
   VALIDATION: 'validation',
+  /** POs pulled from channel APIs (Amazon SP-API ...): storage/emails/channel-api/<date>_<external id>/ and the same
+   *  name as the first S3 folder (channel-api/FY.../<month>/<channel>/<PO number>/). */
+  CHANNEL_API: 'channel-api',
 } as const;
 
 /** Where an email came from (metadata.json "provider"). */
 export const PROVIDERS = {
   GMAIL_PUBSUB: 'gmail-pubsub',
   MANUAL: 'manual',
+  /** A PO pulled from a channel's API by a connector (modules/channel-api). */
+  CHANNEL_API: 'channel-api',
 } as const;
 export type Provider = (typeof PROVIDERS)[keyof typeof PROVIDERS];

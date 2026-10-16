@@ -22,6 +22,7 @@ import type { PoIssue } from './po-issue.entity';
 @Index('idx_po_uploads_status', ['status', 'createdAt'])
 @Index('idx_po_uploads_po_number', ['poNumber'])
 @Index('uq_po_uploads_message_po', ['emailMessageId', 'poNumber'], { unique: true })
+@Index('uq_po_uploads_source_external', ['sourceSystem', 'externalId'], { unique: true })
 export class PoUpload {
   @PrimaryGeneratedColumn({ name: 'id', type: 'bigint' })
   id: string;
@@ -57,6 +58,15 @@ export class PoUpload {
 
   @Column({ name: 'email_received_at', type: 'datetime', nullable: true })
   emailReceivedAt: Date | null;
+
+  // --- channel API only (2026-10-16): which connector and the channel's own id; both null for email / manual ---
+  /** The connector (constants SOURCE_SYSTEM, e.g. amazon_spapi). */
+  @Column({ name: 'source_system', type: 'varchar', length: 50, nullable: true })
+  sourceSystem: string | null;
+
+  /** The channel's id of this PO (Amazon: the FBA shipment id); unique per source_system, so it is never taken twice. */
+  @Column({ name: 'external_id', type: 'varchar', length: 100, nullable: true })
+  externalId: string | null;
 
   // --- manual upload only ---
   /** User email; null for email intake. */

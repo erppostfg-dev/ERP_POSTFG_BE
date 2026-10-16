@@ -1,6 +1,7 @@
 import path from 'path';
 import { env } from '../../config/env';
 import { OTHER_CHANNEL } from '../../constants/channels';
+import { PROVIDERS } from '../../constants/folders';
 import { monthFolder, yearFolder } from '../../constants/dates';
 import { detectChannel, emailInfo, StoredMetadata } from '../ocr/channel-detector';
 import { channelConfigs } from '../ocr/channels.config';
@@ -20,6 +21,19 @@ export interface EmailMetadata extends StoredMetadata {
   storedAt?: string;
   /** The S3 folder this email was given (set on its first upload). */
   s3Folder?: string;
+  /** Where it came from (constants PROVIDERS): gmail-pubsub, manual, channel-api. */
+  provider?: string;
+  // --- a PO from a channel API (provider channel-api, 2026-10-16): no sender / subject to detect it from ---
+  /** Our channel (constants CHANNELS), e.g. amazon. */
+  channel?: string;
+  /** The PO number (Amazon: the FBA shipment id). */
+  poNumber?: string;
+  /** constants SOURCE_SYSTEM, e.g. amazon_spapi. */
+  sourceSystem?: string;
+  /** The channel's own id of the PO (unique per source system). */
+  externalId?: string;
+  /** The channel's status of the PO when it was taken (Amazon: READY_TO_SHIP ...). */
+  externalStatus?: string;
 }
 
 const safeSegment = (s: string): string => s.trim().replace(/[^A-Za-z0-9._-]+/g, '_');
@@ -46,6 +60,10 @@ export const plannedS3Folder = (localFolder: string, meta: EmailMetadata): strin
   if (parent.endsWith(NOT_PO_SUFFIX)) return `${env.s3.prefix}${parent}/${notPoChannelFor(info.from)}/${name}`;
 
   const date = new Date(meta.receivedAt ?? meta.storedAt ?? Date.now());
+  // A channel API PO says its channel and PO number itself.
+  if (meta.provider === PROVIDERS.CHANNEL_API && meta.channel && meta.poNumber) {
+    return `${env.s3.prefix}${parent}/${yearFolder(date)}/${monthFolder(date)}/${meta.channel}/${safeSegment(meta.poNumber)}`;
+  }
   const detected = detectChannel(info);
   const config = 'config' in detected ? detected.config : undefined;
   const po = config?.poNumber ? info.subject?.match(config.poNumber)?.[1] : undefined;

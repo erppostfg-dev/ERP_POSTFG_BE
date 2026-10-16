@@ -30,7 +30,9 @@
     "auth:seed": "ts-node --transpile-only src/scripts/auth-seed.ts",
     "masters:load": "ts-node --transpile-only src/scripts/masters-load.ts",
     "masters:link": "ts-node --transpile-only src/scripts/masters-link.ts",
-    "auth:user": "ts-node --transpile-only src/scripts/auth-user.ts"
+    "auth:user": "ts-node --transpile-only src/scripts/auth-user.ts",
+    "amazon:check": "ts-node --transpile-only src/scripts/channel-api.ts check amazon_spapi",
+    "amazon:pull": "ts-node --transpile-only src/scripts/channel-api.ts pull amazon_spapi"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1146.0",

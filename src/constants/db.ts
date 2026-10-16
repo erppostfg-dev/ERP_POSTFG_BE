@@ -29,6 +29,7 @@ export const PEPIMS_TABLES = {
 
 /** Table names, exactly as in final_schema.sql. Never schema-qualified: queries always go to the connected database. */
 export const TABLES = {
+  CHANNEL_API_SYNC: 'channel_api_sync',
   MASTER_CHANNELS: 'master_channels',
   MASTER_SKUS: 'master_skus',
   MASTER_CHANNEL_SKUS: 'master_channel_skus',
