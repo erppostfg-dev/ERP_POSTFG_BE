@@ -3,6 +3,10 @@ import path from 'path';
 import { env } from '../../config/env';
 import { ERROR_CODES } from '../../constants';
 import { appError } from '../../utils/AppError';
+import { LOG_SOURCE } from '../../constants/logging';
+import { logCall } from '../../utils/log-call';
+import { logError } from '../../utils/classify-error';
+import { log } from '../../utils/logger';
 import { getGmail } from './gmail.client';
 import { LabelRoute, labelRoutes } from './label-routes';
 
@@ -45,7 +49,7 @@ export const writeState = async (patch: GmailState): Promise<void> => {
 
 /** Looks up the Gmail label id for every route. Fails if a label does not exist in the mailbox. */
 export const resolveRoutes = async (): Promise<ResolvedRoute[]> => {
-  const res = await getGmail().users.labels.list({ userId: 'me' });
+  const res = await logCall(LOG_SOURCE.GMAIL, 'labels.list', () => getGmail().users.labels.list({ userId: 'me' }));
   const byName = new Map((res.data.labels ?? []).map((l) => [(l.name ?? '').toLowerCase(), l.id ?? '']));
 
   return labelRoutes.map((route) => {
@@ -62,22 +66,22 @@ export const startWatch = async (routes: ResolvedRoute[]): Promise<void> => {
   const { projectId, topic } = env.pubsub;
   if (!projectId || !topic) throw appError(ERROR_CODES.GMAIL_WATCH_CONFIG_MISSING);
 
-  const res = await getGmail().users.watch({
+  const res = await logCall(LOG_SOURCE.GMAIL, 'watch', () => getGmail().users.watch({
     userId: 'me',
     requestBody: {
       topicName: `projects/${projectId}/topics/${topic}`,
       labelIds: [...new Set(routes.map((r) => r.labelId))],
       labelFilterBehavior: 'INCLUDE',
     },
-  });
+  }), { fields: { topic } });
 
   const expiration = res.data.expiration ? new Date(Number(res.data.expiration)).toISOString() : undefined;
   const state = await readState();
   // First run: start from now. Later runs keep the stored id so emails that came in while we were down are caught up.
   await writeState({ historyId: state.historyId ?? res.data.historyId ?? undefined, watchExpiration: expiration });
 
-  console.log(
-    `[gmail] watching ${env.gmail.mailbox} labels [${routes.map((r) => r.label).join(', ')}] -> ${topic} (until ${expiration})`,
+  log.info(LOG_SOURCE.GMAIL,
+    `watching ${env.gmail.mailbox} labels [${routes.map((r) => r.label).join(', ')}] -> ${topic} (until ${expiration})`,
   );
 };
 
@@ -85,7 +89,7 @@ export const startWatch = async (routes: ResolvedRoute[]): Promise<void> => {
 export const keepWatching = async (routes: ResolvedRoute[]): Promise<NodeJS.Timeout> => {
   await startWatch(routes);
   const timer = setInterval(() => {
-    startWatch(routes).catch((err) => console.error('[gmail] watch renewal failed', err));
+    startWatch(routes).catch((err) => logError(LOG_SOURCE.GMAIL, 'watch renewal failed (retried in 24 h; the watch lasts 7 days)', err));
   }, RENEW_EVERY_MS);
   timer.unref();
   return timer;

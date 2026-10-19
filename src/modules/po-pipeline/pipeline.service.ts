@@ -9,6 +9,9 @@ import { processPo } from '../po-processing/po-router';
 import { MasterDataReader } from '../po-validation/master-data';
 import { applySave, planSave } from './po-save.service';
 import { applyPlan, emailValues, planEmail } from './po-uploads.service';
+import { LOG_SOURCE } from '../../constants/logging';
+import { log as appLog } from '../../utils/logger';
+import { logError } from '../../utils/classify-error';
 
 /*
  * The chain from a stored email to a saved PO (user, 2026-10-08), with po_uploads updated at every step:
@@ -26,7 +29,7 @@ import { applyPlan, emailValues, planEmail } from './po-uploads.service';
 
 const on = (): boolean => AppDataSource.isInitialized;
 
-const log = (folder: string, msg: string): void => console.log(`[pipeline] ${path.basename(folder)}: ${msg}`);
+const log = (folder: string, msg: string): void => appLog.info(LOG_SOURCE.APP, `[pipeline] ${path.basename(folder)}: ${msg}`);
 
 const messageIdOf = async (folder: string): Promise<{ meta: StoredMetadata & { messageId?: string }; messageId: string | null }> => {
   const meta = JSON.parse(await fs.readFile(path.join(folder, FILES.METADATA), 'utf8')) as StoredMetadata & { messageId?: string };
@@ -41,7 +44,7 @@ const safely = async (folder: string, step: string, fn: () => Promise<void>): Pr
   try {
     await fn();
   } catch (err) {
-    console.error(`[pipeline] ${path.basename(folder)}: ${step} failed:`, err instanceof Error ? err.message : err);
+    logError(LOG_SOURCE.APP, `[pipeline] ${path.basename(folder)}: ${step} failed (po:resume takes it again)`, err, { step });
   }
 };
 

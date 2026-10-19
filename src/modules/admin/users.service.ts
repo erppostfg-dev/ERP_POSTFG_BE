@@ -20,6 +20,8 @@ import { ActivityLog, MasterFacility, Role, User, UserFacility, UserRole } from 
 import { AppError, appError } from '../../utils/AppError';
 import { resolveAllAccess } from '../auth/access.service';
 import { sendMail } from '../mail/mailer.service';
+import { LOG_SOURCE } from '../../constants/logging';
+import { log } from '../../utils/logger';
 
 /*
  * Users page (2026-10-15, user): admins / developers add a person with a role (which routes they may open / edit), a
@@ -163,7 +165,7 @@ export const createUser = async (input: UserInput, by: Actor): Promise<UserItem>
     await setFacilities(m, id, found ?? []);
     await audit(m, by, `users: added ${email} roles=${(input.roles ?? []).join('+') || '-'} team=${input.team ?? '-'} facilities=${(input.facilities ?? []).join('+') || '-'}`);
   });
-  console.log(`[users] ${by.email} added ${email}`);
+  log.info(LOG_SOURCE.APP, `[users] ${by.email} added ${email}`);
   if (input.sendEmail !== false) scheduleWelcome(id);
   return (await listUsers()).find((u) => u.id === id)!;
 };
@@ -189,7 +191,7 @@ export const updateUser = async (id: number, input: UserInput, by: Actor): Promi
     if (found) { await setFacilities(m, id, found); changes.push(`facilities=${input.facilities!.join('+') || '-'}`); }
     if (changes.length) await audit(m, by, `users: changed ${user.email} ${changes.join(' ')}`);
   });
-  if (changes.length) console.log(`[users] ${by.email} changed user ${id}: ${changes.join(' ')}`);
+  if (changes.length) log.info(LOG_SOURCE.APP, `[users] ${by.email} changed user ${id}: ${changes.join(' ')}`);
   const item = (await listUsers()).find((u) => u.id === id);
   if (!item) throw appError(ERROR_CODES.USER_ID_NOT_FOUND, String(id));
   return item;
@@ -239,12 +241,12 @@ export const sendWelcome = async (id: number): Promise<{ sent: boolean; error: s
   try {
     await sendMail(await welcomeMail(user));
     await AppDataSource.getRepository(User).update(id, { welcomeSentAt: new Date(), welcomeError: null });
-    console.log(`[users] welcome email sent to ${user.email}`);
+    log.info(LOG_SOURCE.APP, `[users] welcome email sent to ${user.email}`);
     return { sent: true, error: null };
   } catch (err) {
     const error = (err instanceof Error ? err.message : String(err)).slice(0, WELCOME_EMAIL.ERROR_MAX);
     await AppDataSource.getRepository(User).update(id, { welcomeError: error });
-    console.warn(`[users] welcome email to ${user.email} failed: ${error}`);
+    log.warn(LOG_SOURCE.MAIL, `[users] welcome email to ${user.email} failed (Send again on the Users page)`, { error });
     if (err instanceof AppError && err.code === ERROR_CODES.MAIL_SEND_NOT_ALLOWED) (err as AppError & { final?: boolean }).final = true;
     throw err;
   }

@@ -7,6 +7,10 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { env } from '../../config/env';
 import { ERROR_CODES, FILES, OWN_FILES } from '../../constants';
 import { appError } from '../../utils/AppError';
+import { LOG_SOURCE } from '../../constants/logging';
+import { logError } from '../../utils/classify-error';
+import { logCall } from '../../utils/log-call';
+import { log } from '../../utils/logger';
 import { emailInfo } from '../ocr/channel-detector';
 import { EmailMetadata, plannedS3Folder } from './s3-layout';
 
@@ -22,7 +26,26 @@ import { EmailMetadata, plannedS3Folder } from './s3-layout';
  */
 
 let client: S3Client | undefined;
-const s3 = (): S3Client => (client ??= new S3Client({ region: env.s3.region }));
+
+/**
+ * The S3 client, with every command timed and logged (2026-10-19): S3_CALL (debug), S3_SLOW, or S3_<FAILURE> with the
+ * reason (e.g. S3_ACCESS_DENIED: the key / role lacks the permission). A missing file is normal here (we check for
+ * corrected.json etc.), so NOT_FOUND is only a debug line. The same key read many times in one request is flagged.
+ */
+const s3 = (): S3Client => {
+  if (client) return client;
+  client = new S3Client({ region: env.s3.region });
+  client.middlewareStack.add(
+    (next, context) => async (args) => {
+      const key = (args.input as { Key?: string; Prefix?: string }).Key ?? (args.input as { Prefix?: string }).Prefix;
+      return logCall(LOG_SOURCE.S3, String(context.commandName ?? 'S3Command'), () => next(args), {
+        key, fields: { key, bucket: env.s3.bucket }, expected: ['NOT_FOUND'],
+      });
+    },
+    { step: 'initialize', name: 'postfgLogCall' },
+  );
+  return client;
+};
 
 const CONTENT_TYPES: Record<string, string> = {
   '.json': 'application/json',
@@ -240,7 +263,7 @@ const recordDuplicate = async (dir: string, s3Folder: string, firstFolder: strin
   await putBody(csvKey, csv, DUPLICATES_CSV);
   await fs.writeFile(path.join(labelDir, DUPLICATES_CSV), csv, 'utf8');
 
-  console.log(`[duplicate] ${path.posix.basename(firstFolder)} arrived again -> ${s3Folder}/ (${kind})`);
+  log.info(LOG_SOURCE.S3, `[duplicate] ${path.posix.basename(firstFolder)} arrived again -> ${s3Folder}/ (${kind})`);
 };
 
 /**
@@ -315,7 +338,7 @@ export const moveEmailInS3 = async (newDir: string): Promise<void> => {
     } catch (err) {
       if ((err as { name?: string }).name !== 'AccessDenied') throw err;
       deleteDenied = true;
-      console.warn(`[s3] no s3:DeleteObject permission: old copies stay in S3 (first one: ${key})`);
+      log.warn(LOG_SOURCE.S3, 'no s3:DeleteObject permission: old copies stay in S3 (ask the AWS admin for it)', { key });
       return;
     }
   }
@@ -324,5 +347,5 @@ export const moveEmailInS3 = async (newDir: string): Promise<void> => {
 /** Runs an S3 step without blocking or failing the caller; errors are logged (the next sync retries). */
 export const mirrorLater = (what: string, step: () => Promise<unknown>): void => {
   if (!env.s3.enabled) return;
-  step().catch((err) => console.error(`[s3] ${what} failed (retried by the next sync):`, (err as Error).message ?? err));
+  step().catch((err) => logError(LOG_SOURCE.S3, `${what} failed (retried by the next sync)`, err));
 };

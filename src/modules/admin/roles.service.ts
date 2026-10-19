@@ -11,6 +11,8 @@ import {
 } from '../../constants';
 import { ActivityLog, PagePermission, Role } from '../../entities';
 import { appError } from '../../utils/AppError';
+import { LOG_SOURCE } from '../../constants/logging';
+import { log } from '../../utils/logger';
 
 /*
  * Roles (2026-10-15, user: "based on the role he can only access a few routes"). A role = a label + page grants
@@ -89,6 +91,6 @@ export const updateRole = async (key: string, input: { grants: Grants }, by: { i
     await writeGrants(m, key, checkGrants(input.grants));
     await audit(m, by.id, `roles: page access of ${key} -> ${summary(input.grants)}`);
   });
-  console.log(`[roles] ${by.email} changed role ${key}`);
+  log.info(LOG_SOURCE.APP, `[roles] ${by.email} changed role ${key}`);
   return (await listRoles()).find((r) => r.key === key)!;
 };

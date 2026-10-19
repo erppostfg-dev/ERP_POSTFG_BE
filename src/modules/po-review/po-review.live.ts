@@ -2,6 +2,8 @@ import { EventEmitter } from 'events';
 import { Request, Response } from 'express';
 import { AppDataSource } from '../../config/data-source';
 import { LIVE, REVIEW_LIVE, TABLES } from '../../constants';
+import { LOG_SOURCE } from '../../constants/logging';
+import { logError } from '../../utils/classify-error';
 
 /*
  * Live PO Review + Approvals (2026-10-15, user: "on sync just like the live option on PO Overview"). The lists are small,
@@ -37,7 +39,7 @@ const check = (): Promise<string> => {
       return v;
     })
     .catch((err) => {
-      console.error('[review-live] version check failed:', err instanceof Error ? err.message : err);
+      logError(LOG_SOURCE.DB, '[review-live] version check failed (retried on the next check)', err);
       return version;
     })
     .finally(() => { checking = undefined; });

@@ -2,6 +2,10 @@ import { AppDataSource } from '../../config/data-source';
 import { CHANNEL_API } from '../../constants';
 import { recordRunFailure, runConnector } from './runner';
 import { CONNECTORS } from './registry';
+import { LOG_SOURCE } from '../../constants/logging';
+import { log } from '../../utils/logger';
+import { logError } from '../../utils/classify-error';
+import { runJob } from '../../utils/log-call';
 
 /*
  * Runs every configured channel API connector on its own timer inside the server (CHANNEL_API_ENABLED=true;
@@ -17,7 +21,7 @@ let stopped = false;
 export const startChannelApis = (): { stop: () => void } => {
   for (const c of CONNECTORS) {
     if (!c.configured()) {
-      console.log(`[channel-api] ${c.label}: no keys in .env, not started`);
+      log.info(LOG_SOURCE.AMAZON, `[channel-api] ${c.label}: no keys in .env, not started`);
       continue;
     }
     const loop = async (): Promise<void> => {
@@ -25,17 +29,17 @@ export const startChannelApis = (): { stop: () => void } => {
       let wait = c.pollMinutes() * 60_000;
       try {
         if (!AppDataSource.isInitialized) throw new Error('database not connected');
-        const { items } = await runConnector(c, { apply: true, saveCheckpoint: true });
+        const { items } = await runJob(`channel-api-${c.key}`, () => runConnector(c, { apply: true, saveCheckpoint: true }));
         const made = items.filter((i) => i.result);
-        console.log(`[channel-api] ${c.key}: ${items.length} changed, ${made.length} taken${made.length ? ` (${made.map((i) => `${i.externalId} ${i.result}${i.saleOrder ? ` ${i.saleOrder}` : ''}`).join(', ')})` : ''}`);
+        log.info(LOG_SOURCE.AMAZON, `[channel-api] ${c.key}: ${items.length} changed, ${made.length} taken${made.length ? ` (${made.map((i) => `${i.externalId} ${i.result}${i.saleOrder ? ` ${i.saleOrder}` : ''}`).join(', ')})` : ''}`);
       } catch (err) {
         const failures = await recordRunFailure(c, err).catch(() => 1);
         wait = Math.min(wait * 2 ** failures, CHANNEL_API.MAX_BACKOFF_MS);
-        console.error(`[channel-api] ${c.key}: run failed (${failures} in a row), next try in ${Math.round(wait / 60_000)} min:`, err instanceof Error ? err.message : err);
+        logError(LOG_SOURCE.AMAZON, `[channel-api] ${c.key}: run failed (${failures} in a row), next try in ${Math.round(wait / 60_000)} min`, err);
       }
       if (!stopped) timers.set(c.key, setTimeout(() => void loop(), wait));
     };
-    console.log(`[channel-api] ${c.label}: polling every ${c.pollMinutes()} min`);
+    log.info(LOG_SOURCE.AMAZON, `[channel-api] ${c.label}: polling every ${c.pollMinutes()} min`);
     void loop();
   }
   return {

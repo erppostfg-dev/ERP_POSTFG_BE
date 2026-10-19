@@ -8,6 +8,9 @@ import { AppError, appError } from '../utils/AppError';
 import { AppDataSource } from '../config/data-source';
 import { Role } from '../entities';
 import { In } from 'typeorm';
+import { LOG_SOURCE } from '../constants/logging';
+import { log } from '../utils/logger';
+import { logError } from '../utils/classify-error';
 
 /*
  * Login routes (API contract, 2026-10-09; prefg's flow):
@@ -55,12 +58,12 @@ router.get('/google/callback', async (req, res) => {
     const user = await allowedUser(profile);
     const { token, expiresAt } = await startSession(user, profile, clientInfo(req));
     res.cookie(AUTH.SESSION_COOKIE, token, cookieOptions(expiresAt.getTime() - Date.now()));
-    console.log(`[auth] login ${user.email} (user ${user.id})`);
+    log.info(LOG_SOURCE.GOOGLE_LOGIN, `[auth] login ${user.email} (user ${user.id})`);
     res.redirect(env.auth.redirectUrl);
   } catch (err) {
     const code = err instanceof AppError ? err.code : ERROR_CODES.INTERNAL;
-    console.log(`[auth] login refused: ${code}${err instanceof AppError ? ` (${err.message})` : ''}`);
-    if (!(err instanceof AppError)) console.error(err);
+    log.info(LOG_SOURCE.GOOGLE_LOGIN, `[auth] login refused: ${code}${err instanceof AppError ? ` (${err.message})` : ''}`);
+    if (!(err instanceof AppError)) logError(LOG_SOURCE.GOOGLE_LOGIN, '[auth] login failed unexpectedly', err);
     res.redirect(redirectWithError(code));
   }
 });
@@ -89,7 +92,7 @@ router.post('/logout', requireAuth, async (req, res, next) => {
   try {
     await endSession(req.auth!, clientInfo(req));
     res.clearCookie(AUTH.SESSION_COOKIE, { path: '/' });
-    console.log(`[auth] logout ${req.auth!.user.email}`);
+    log.info(LOG_SOURCE.GOOGLE_LOGIN, `[auth] logout ${req.auth!.user.email}`);
     res.status(204).end();
   } catch (err) {
     next(err);

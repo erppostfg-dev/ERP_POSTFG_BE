@@ -10,6 +10,8 @@ import { queueExtractPo } from '../modules/ocr/extract-po.service';
 import { emailStored, pipelineFull } from '../modules/po-pipeline/pipeline.service';
 import { ERROR_CODES, errorMessage, FILES, FOLDERS, INTAKE_STATUS, PROVIDERS } from '../constants';
 import { appError } from '../utils/AppError';
+import { LOG_SOURCE } from '../constants/logging';
+import { log } from '../utils/logger';
 
 const router = Router();
 
@@ -89,7 +91,7 @@ router.post('/email', requireWebhookSecret, upload.array('files', MAX_FILES), as
       files: files.map((f) => ({ filename: f.originalname, content: f.buffer })),
     });
 
-    console.log(
+    log.info(LOG_SOURCE.APP,
       `[po-intake] ${stored.duplicate ? 'repeat of' : 'stored'} ${body.label ?? FOLDERS.MANUAL} "${body.subject ?? ''}" -> ${stored.folder}`,
     );
 
@@ -99,7 +101,7 @@ router.post('/email', requireWebhookSecret, upload.array('files', MAX_FILES), as
     if (!stored.duplicate && body.label) {
       sort = await sortStoredEmail(stored.folder);
       folder = sort.folder;
-      if (!sort.isPo) console.log(`[sort] not a PO (${sort.code}): ${sort.reason} -> ${sort.folder}`);
+      if (!sort.isPo) log.info(LOG_SOURCE.APP, `[sort] not a PO (${sort.code}): ${sort.reason} -> ${sort.folder}`);
     }
 
     // Copy to S3 after sorting, so it goes straight to its final folder (S3 can't move without delete rights).
@@ -107,7 +109,7 @@ router.post('/email', requireWebhookSecret, upload.array('files', MAX_FILES), as
       const sortedFolder = folder;
       mirrorLater(`upload ${sortedFolder}`, async () => {
         const r = await syncEmailToS3(sortedFolder);
-        console.log(`[s3] ${r.uploaded} file(s) uploaded to ${r.s3Folder}/`);
+        log.info(LOG_SOURCE.APP, `[s3] ${r.uploaded} file(s) uploaded to ${r.s3Folder}/`);
       });
       if (sort && !sort.isPo) {
         mirrorLater(`upload ${FILES.NOT_PO_REPORT}`, () => uploadFileToS3(path.join(path.dirname(sortedFolder), FILES.NOT_PO_REPORT)));
@@ -120,7 +122,7 @@ router.post('/email', requireWebhookSecret, upload.array('files', MAX_FILES), as
 
     // Testing: straight to OCR. Later: upload to S3 and add a BullMQ job instead.
     if (env.ocr.enabled && inChain && !stored.duplicate && sort?.isPo !== false && !queueExtractPo(folder)) {
-      console.log(`[extractPo] OCR_RUN_LIMIT ${env.ocr.runLimit} reached; ${path.basename(folder)} waits for the next start`);
+      log.info(LOG_SOURCE.APP, `[extractPo] OCR_RUN_LIMIT ${env.ocr.runLimit} reached; ${path.basename(folder)} waits for the next start`);
     }
 
     res.status(202).json({

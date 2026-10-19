@@ -2,6 +2,9 @@ import { gmail_v1 } from 'googleapis';
 import { env } from '../../config/env';
 import { ERROR_CODES, PROVIDERS } from '../../constants';
 import { appError } from '../../utils/AppError';
+import { LOG_SOURCE } from '../../constants/logging';
+import { logCall } from '../../utils/log-call';
+import { log } from '../../utils/logger';
 import { getGmail } from './gmail.client';
 import { pipelineFull } from '../po-pipeline/pipeline.service';
 import { downloadAttachments, originalSender, readParts, toHeaderMap } from './gmail-message';
@@ -23,12 +26,14 @@ const newLabelledMessages = async (
   let pageToken: string | undefined;
 
   do {
-    const res = await gmail.users.history.list({
+    const page = pageToken;
+    // NOT_FOUND = the history id is too old: expected, the caller then searches the labels instead.
+    const res = await logCall(LOG_SOURCE.GMAIL, 'history.list', () => gmail.users.history.list({
       userId: 'me',
       startHistoryId,
       historyTypes: ['messageAdded', 'labelAdded'],
-      pageToken,
-    });
+      pageToken: page,
+    }), { fields: { startHistoryId }, expected: ['NOT_FOUND'] });
     for (const h of res.data.history ?? []) {
       for (const m of h.messagesAdded ?? []) {
         if (m.message?.id && m.message.labelIds?.some((l) => labelIds.has(l))) ids.add(m.message.id);
@@ -49,13 +54,14 @@ const labelMessageIds = async (gmail: gmail_v1.Gmail, labelId: string, after?: D
   const ids: string[] = [];
   let pageToken: string | undefined;
   do {
-    const res = await gmail.users.messages.list({
+    const page = pageToken;
+    const res = await logCall(LOG_SOURCE.GMAIL, 'messages.list', () => gmail.users.messages.list({
       userId: 'me',
       labelIds: [labelId],
       q: after ? `after:${Math.floor(after.getTime() / 1000)}` : undefined,
       maxResults: 100,
-      pageToken,
-    });
+      pageToken: page,
+    }), { fields: { labelId } });
     res.data.messages?.forEach((m) => m.id && ids.push(m.id));
     pageToken = res.data.nextPageToken ?? undefined;
   } while (pageToken);
@@ -70,7 +76,7 @@ const endpointUrl = (endpoint: string): string =>
  * Returns false when the email no longer carries a routed label.
  */
 export const forwardMessage = async (gmail: gmail_v1.Gmail, gmailId: string, routes: ResolvedRoute[]): Promise<boolean> => {
-  const full = await gmail.users.messages.get({ userId: 'me', id: gmailId, format: 'full' });
+  const full = await logCall(LOG_SOURCE.GMAIL, 'messages.get', () => gmail.users.messages.get({ userId: 'me', id: gmailId, format: 'full' }), { key: gmailId, fields: { gmailId } });
   const route = routes.find((r) => full.data.labelIds?.includes(r.labelId));
   if (!route) return false; // label removed again before we got to it
 
@@ -93,19 +99,20 @@ export const forwardMessage = async (gmail: gmail_v1.Gmail, gmailId: string, rou
   if (body.html) form.append('bodyHtml', body.html);
 
   const url = endpointUrl(route.endpoint);
-  const res = await fetch(url, {
+  // Our own intake endpoint (HTTP_*): a failure here is on our side (see its API_SERVER_ERROR line).
+  const res = await logCall(LOG_SOURCE.HTTP, 'intake POST', () => fetch(url, {
     method: 'POST',
     headers: env.intake.webhookSecret ? { 'X-Webhook-Secret': env.intake.webhookSecret } : {},
     body: form,
-  });
+  }), { fields: { url, gmailId }, failedStatus: (r) => ((r as Response).ok ? undefined : (r as Response).status) });
   const text = await res.text();
   // 5xx: throw so the email is retried. 4xx will not get better on a retry: log it and move on.
   if (res.status >= 500) throw appError(ERROR_CODES.ROUTE_FORWARD_FAILED, url, res.status, text);
   if (!res.ok) {
-    console.error(`[route] "${subject}" rejected by ${url}: ${res.status} ${text}`);
+    log.error(LOG_SOURCE.APP, `[route] "${subject}" rejected by the intake (not retried)`, { url, status: res.status, answer: text, gmailId });
     return true;
   }
-  console.log(`[route] "${subject}" (${route.label}, ${files.length} file(s)) -> ${url}: ${res.status}`);
+  log.info(LOG_SOURCE.APP, `[route] "${subject}" (${route.label}, ${files.length} file(s)) -> ${url}: ${res.status}`, { gmailId });
   return true;
 };
 
@@ -127,7 +134,7 @@ const forwardNew = async (gmail: gmail_v1.Gmail, ids: string[], routes: Resolved
     if (done.has(id)) continue;
     // PIPELINE_LIMIT reached: stop here, nothing more is downloaded or stored; the rest stay unsent for the next start.
     if (pipelineFull()) {
-      console.log(`[route] PIPELINE_LIMIT ${env.pipeline.limit} reached: intake stopped, ${ids.filter((i) => !done.has(i)).length} email(s) left in Gmail for the next start`);
+      log.warn(LOG_SOURCE.APP, `[route] PIPELINE_LIMIT ${env.pipeline.limit} reached: intake stopped, ${ids.filter((i) => !done.has(i)).length} email(s) left in Gmail for the next start`);
       break;
     }
     if (await forwardMessage(gmail, id, routes)) sent++;
@@ -141,7 +148,7 @@ const forwardNew = async (gmail: gmail_v1.Gmail, ids: string[], routes: Resolved
 const backfillLabel = async (gmail: gmail_v1.Gmail, route: ResolvedRoute, after?: Date): Promise<void> => {
   const ids = await labelMessageIds(gmail, route.labelId, after);
   const sent = await forwardNew(gmail, ids, [route]);
-  console.log(
+  log.info(LOG_SOURCE.GMAIL,
     `[backfill] ${route.label}: ${ids.length} email(s) in label${after ? ` since ${after.toISOString()}` : ''}, ${sent} newly sent`,
   );
 };
@@ -165,8 +172,8 @@ export const processGmailChanges = async (routes: ResolvedRoute[], notifiedHisto
     if ((err as { code?: number }).code !== 404) throw err;
 
     const since = new Date(new Date(state.lastSyncAt ?? 0).getTime() - RESYNC_MARGIN_MS);
-    console.warn(`[gmail] history ${startHistoryId} expired; searching labels for emails since ${since.toISOString()}`);
-    const profile = await gmail.users.getProfile({ userId: 'me' });
+    log.warn(LOG_SOURCE.GMAIL, `history ${startHistoryId} expired; searching labels for emails since ${since.toISOString()}`);
+    const profile = await logCall(LOG_SOURCE.GMAIL, 'getProfile', () => gmail.users.getProfile({ userId: 'me' }));
     for (const route of routes) await backfillLabel(gmail, route, since);
     if (pipelineFull()) return; // intake stopped: keep the old sync point (see below)
     await writeState({ historyId: profile.data.historyId ?? notifiedHistoryId, lastSyncAt: new Date().toISOString() });

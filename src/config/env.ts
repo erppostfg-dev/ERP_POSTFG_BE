@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import { ERROR_CODES } from '../constants/errors';
+import { LOG_DEFAULTS, LOG_FORMAT, LOG_LEVEL_RANK, type LogFormat, type LogLevel } from '../constants/logging';
 import { appError } from '../utils/AppError';
 
 dotenv.config();
@@ -13,6 +14,13 @@ const required = (key: string, fallback?: string): string => {
 };
 
 const flag = (key: string, fallback = 'false'): boolean => (process.env[key] ?? fallback) === 'true';
+
+const num = (key: string, fallback: number): number => {
+  const v = Number(process.env[key]);
+  return process.env[key] !== undefined && process.env[key] !== '' && Number.isFinite(v) ? v : fallback;
+};
+const logLevel = (process.env.LOG_LEVEL ?? LOG_DEFAULTS.LEVEL).toLowerCase() as LogLevel;
+const logFormat = (process.env.LOG_FORMAT ?? LOG_DEFAULTS.FORMAT).toLowerCase() as LogFormat;
 
 const port = Number(required('PORT', '3000'));
 const apiPrefix = required('API_PREFIX', '/api/v1');
@@ -106,6 +114,23 @@ export const env = {
       region: (process.env.SPAPI_REGION ?? 'EU').toUpperCase(),
       pollMinutes: process.env.AMAZON_POLL_MINUTES ? Number(process.env.AMAZON_POLL_MINUTES) : undefined,
     },
+  },
+  // Logging (2026-10-19; constants/logging.ts). EC2: LOG_FORMAT=json (the CloudWatch agent sends the pm2 log files to
+  // /mcaffeine-erp-post-fg/po-api-ec2/<env>), DB_LOGGING=false. Limits in ms unless named otherwise; 0 switches one off.
+  log: {
+    level: (LOG_LEVEL_RANK[logLevel] ? logLevel : LOG_DEFAULTS.LEVEL) as LogLevel,
+    format: (logFormat === LOG_FORMAT.JSON ? LOG_FORMAT.JSON : LOG_FORMAT.PRETTY) as LogFormat,
+    dbSlowMs: num('DB_SLOW_MS', LOG_DEFAULTS.DB_SLOW_MS),
+    apiSlowMs: num('API_SLOW_MS', LOG_DEFAULTS.API_SLOW_MS),
+    extSlowMs: num('EXT_SLOW_MS', LOG_DEFAULTS.EXT_SLOW_MS),
+    jobSlowMs: num('JOB_SLOW_MS', LOG_DEFAULTS.JOB_SLOW_MS),
+    dbQueriesWarn: num('DB_QUERIES_WARN', LOG_DEFAULTS.DB_QUERIES_WARN),
+    responseWarnKb: num('RESPONSE_WARN_KB', LOG_DEFAULTS.RESPONSE_WARN_KB),
+    repeatWarn: num('REPEAT_WARN', LOG_DEFAULTS.REPEAT_WARN),
+    eventLoopWarnMs: num('EVENT_LOOP_WARN_MS', LOG_DEFAULTS.EVENT_LOOP_WARN_MS),
+    memoryWarnMb: num('MEMORY_WARN_MB', LOG_DEFAULTS.MEMORY_WARN_MB),
+    monitorSeconds: num('MONITOR_SECONDS', LOG_DEFAULTS.MONITOR_SECONDS),
+    heartbeatMinutes: num('MONITOR_HEARTBEAT_MINUTES', LOG_DEFAULTS.HEARTBEAT_MINUTES),
   },
   storage: {
     emailDir: process.env.EMAIL_STORAGE_DIR ?? 'storage/emails',

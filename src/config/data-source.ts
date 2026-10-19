@@ -40,6 +40,8 @@ const options: DataSourceOptions = {
   migrations: [path.join(__dirname, '../migrations/*.{ts,js}').replace(/\\/g, '/')],
   logging: ['query', 'error', 'warn'],
   logger: new DbConsoleLogger(env.db.logging),
+  // A query slower than this is logged as DB_SLOW_QUERY, always (2026-10-19; DB_SLOW_MS, 0 = off).
+  ...(env.log.dbSlowMs > 0 ? { maxQueryExecutionTime: env.log.dbSlowMs } : {}),
   timezone: 'Z',
   charset: 'utf8mb4',
   // Glob needs forward slashes, so normalise Windows paths.

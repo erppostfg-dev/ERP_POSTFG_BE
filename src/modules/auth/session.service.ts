@@ -6,6 +6,8 @@ import { env } from '../../config/env';
 import { AUTH, DEVICE_TYPE, ERROR_CODES, SESSION_EVENT, USER_STATUS } from '../../constants';
 import { Session, SessionHistory, User, UserRole } from '../../entities';
 import { appError } from '../../utils/AppError';
+import { LOG_SOURCE } from '../../constants/logging';
+import { logCall } from '../../utils/log-call';
 
 /*
  * Google sign-in and sessions, the same flow as prefg (NextAuth + Google there, plain Express here):
@@ -45,8 +47,8 @@ export interface GoogleProfile {
 export const profileFromCode = async (code: string): Promise<GoogleProfile> => {
   const client = oauthClient();
   try {
-    const { tokens } = await client.getToken(code);
-    const ticket = await client.verifyIdToken({ idToken: tokens.id_token ?? '', audience: config().clientId });
+    const { tokens } = await logCall(LOG_SOURCE.GOOGLE_LOGIN, 'getToken', () => client.getToken(code));
+    const ticket = await logCall(LOG_SOURCE.GOOGLE_LOGIN, 'verifyIdToken', () => client.verifyIdToken({ idToken: tokens.id_token ?? '', audience: config().clientId }));
     const p = ticket.getPayload();
     if (!p?.email || !p.email_verified || !p.sub) throw new Error('no verified email');
     return { email: p.email.toLowerCase(), name: p.name ?? p.email, googleId: p.sub };

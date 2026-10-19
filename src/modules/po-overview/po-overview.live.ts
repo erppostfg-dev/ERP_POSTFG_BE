@@ -1,6 +1,8 @@
 import { EventEmitter } from 'events';
 import { AppDataSource } from '../../config/data-source';
 import { LIVE, SHIPMENT_LOG_ACTION, TABLES } from '../../constants';
+import { LOG_SOURCE } from '../../constants/logging';
+import { logError } from '../../utils/classify-error';
 
 /*
  * Live updates of the PO Overview (2026-10-14, self-healing design):
@@ -78,7 +80,7 @@ export const flushChanges = (): Promise<void> => {
       }
     } catch (err) {
       // Self-healing: a failed check is retried by the next watcher tick; screens fall back to polling meanwhile.
-      console.error('[live] flush failed:', err instanceof Error ? err.message : err);
+      logError(LOG_SOURCE.DB, '[live] flush failed (retried by the next watcher tick)', err);
     }
   });
   return flushing;

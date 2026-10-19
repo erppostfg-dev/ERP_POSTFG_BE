@@ -2,6 +2,8 @@ import { gmail_v1, google } from 'googleapis';
 import { env } from '../../config/env';
 import { ERROR_CODES } from '../../constants';
 import { appError } from '../../utils/AppError';
+import { LOG_SOURCE } from '../../constants/logging';
+import { logCall } from '../../utils/log-call';
 import { getAuthClient, GMAIL_SEND_SCOPE } from '../email-intake/gmail.client';
 
 /*
@@ -60,7 +62,7 @@ export const sendMail = async (mail: Mail): Promise<void> => {
     '',
   ].join('\r\n');
   try {
-    await client().users.messages.send({ userId: 'me', requestBody: { raw: Buffer.from(raw, 'utf8').toString('base64url') } });
+    await logCall(LOG_SOURCE.MAIL, 'messages.send', () => client().users.messages.send({ userId: 'me', requestBody: { raw: Buffer.from(raw, 'utf8').toString('base64url') } }));
   } catch (err) {
     const e = err as { code?: number; status?: number; message?: string; response?: { data?: { error?: string } } };
     const status = e.code ?? e.status;
