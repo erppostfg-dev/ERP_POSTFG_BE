@@ -32,7 +32,8 @@
     "masters:link": "ts-node --transpile-only src/scripts/masters-link.ts",
     "auth:user": "ts-node --transpile-only src/scripts/auth-user.ts",
     "amazon:check": "ts-node --transpile-only src/scripts/channel-api.ts check amazon_spapi",
-    "amazon:pull": "ts-node --transpile-only src/scripts/channel-api.ts pull amazon_spapi"
+    "amazon:pull": "ts-node --transpile-only src/scripts/channel-api.ts pull amazon_spapi",
+    "sale-orders:prefix": "ts-node --transpile-only src/scripts/sale-order-prefix.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1146.0",
