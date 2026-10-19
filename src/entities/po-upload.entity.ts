@@ -8,6 +8,7 @@ import {
   UploadSource,
   UploadStatus,
 } from '../constants/db';
+import { User } from './auth.entities';
 import { MasterChannel } from './master-channel.entity';
 import { MasterPurchaseOrder } from './master-purchase-order.entity';
 import type { PoIssue } from './po-issue.entity';
@@ -103,6 +104,22 @@ export class PoUpload {
   @Column({ name: 'uniware_csv_url', type: 'varchar', length: 500, nullable: true })
   uniwareCsvUrl: string | null;
 
+  // --- Uniware hand-off (2026-10-19): CSV downloaded, then marked uploaded into Uniware (then shown in PO Overview) ---
+  /** First download of the sale order CSV (later downloads keep this date). */
+  @Column({ name: 'csv_downloaded_at', type: 'datetime', nullable: true })
+  csvDownloadedAt: Date | null;
+
+  /** users.id of that first download. */
+  @Column({ name: 'csv_downloaded_by', type: 'int', nullable: true })
+  csvDownloadedBy: number | null;
+
+  /** When someone marked the CSV uploaded into Uniware; null = not yet (the PO stays out of PO Overview). */
+  @Column({ name: 'uniware_uploaded_at', type: 'datetime', nullable: true })
+  uniwareUploadedAt: Date | null;
+
+  @Column({ name: 'uniware_uploaded_by', type: 'int', nullable: true })
+  uniwareUploadedBy: number | null;
+
   @Column({ name: 'status', type: 'enum', enum: Object.values(UPLOAD_STATUS), default: UPLOAD_STATUS.QUEUED })
   status: UploadStatus;
 
@@ -125,6 +142,16 @@ export class PoUpload {
   @ManyToOne(() => MasterPurchaseOrder, { nullable: true })
   @JoinColumn({ name: 'po_uid', referencedColumnName: 'uid', foreignKeyConstraintName: 'fk_po_uploads_po' })
   purchaseOrder: MasterPurchaseOrder | null;
+
+  /** fk_po_uploads_csv_downloaded_by */
+  @ManyToOne(() => User, { nullable: true, onDelete: 'RESTRICT', onUpdate: 'CASCADE' })
+  @JoinColumn({ name: 'csv_downloaded_by', referencedColumnName: 'id', foreignKeyConstraintName: 'fk_po_uploads_csv_downloaded_by' })
+  csvDownloader: User | null;
+
+  /** fk_po_uploads_uniware_uploaded_by */
+  @ManyToOne(() => User, { nullable: true, onDelete: 'RESTRICT', onUpdate: 'CASCADE' })
+  @JoinColumn({ name: 'uniware_uploaded_by', referencedColumnName: 'id', foreignKeyConstraintName: 'fk_po_uploads_uniware_uploaded_by' })
+  uniwareUploader: User | null;
 
   /** fk_po_uploads_channel: channel -> master_channels.display_name. */
   @ManyToOne(() => MasterChannel, { nullable: true, onUpdate: 'CASCADE' })

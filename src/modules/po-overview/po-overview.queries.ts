@@ -75,6 +75,8 @@ const range = <T extends object>(qb: SelectQueryBuilder<T>, sql: string, from: s
 
 /** The shipment filters on alias `po` (and `d` for a line-level brand when `lineAlias` is given). */
 const applyFilters = async <T extends object>(qb: SelectQueryBuilder<T>, f: PoOverviewFilters, lineAlias?: string): Promise<void> => {
+  // Only POs whose sale order CSV was marked uploaded into Uniware (user, 2026-10-19); the rest wait on Processed.
+  qb.andWhere(`EXISTS (SELECT 1 FROM ${TABLES.PO_UPLOADS} hu WHERE hu.po_uid = po.uid AND hu.uniware_uploaded_at IS NOT NULL)`);
   if (f.q) qb.andWhere('(po.poNumber LIKE :q OR CAST(po.uid AS CHAR) LIKE :q)', { q: `%${f.q}%` });
   if (f.docketNo) qb.andWhere('(po.firstDocketNo LIKE :docket OR po.secondDocketNo LIKE :docket OR po.thirdDocketNo LIKE :docket)', { docket: `%${f.docketNo}%` });
   if (f.skuCode && lineAlias) qb.andWhere(`${lineAlias}.skuCode LIKE :sku`, { sku: `%${f.skuCode}%` });

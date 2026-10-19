@@ -75,6 +75,10 @@ export const ERRORS = {
   GOOGLE_TOKEN_INVALID: define(401, () => 'Google sign-in could not be verified'),
   NOT_ALLOWED_DOMAIN: define(403, (domain: string) => `Only ${domain} accounts can sign in`),
   USER_NOT_FOUND: define(403, (email: string) => `${email} has no access to POST_FG yet; ask an admin`),
+  // --- Uniware hand-off (2026-10-19) ---
+  UNIWARE_CSV_NOT_READY: define(409, (ids: string) => `No Uniware CSV yet for upload(s) ${ids}: only completed POs have one`),
+  UNIWARE_NOT_DOWNLOADED: define(409, (ids: string) => `Download the sale order CSV first: upload(s) ${ids} not downloaded yet`),
+  UPLOAD_IDS_REQUIRED: define(400, () => 'Pick at least one PO (uploadIds)'),
   // --- Channel API connectors (2026-10-16) ---
   SPAPI_LOGIN_FAILED: define(502, (reason: string) => `Amazon SP-API login refused: ${reason} (check SPAPI_* in .env; the client secret expires 180 days after issue)`),
   SPAPI_CALL_FAILED: define(502, (status: number, path: string, reason: string) => `Amazon SP-API ${path} -> ${status}: ${reason}`),

@@ -78,3 +78,20 @@ export const REVIEW_LIVE = {
   STATE: '/live-state',
 } as const;
 
+/*
+ * Uniware hand-off (user, 2026-10-19): a completed PO waits on the Processed tab until its sale order CSV is
+ * DOWNLOADED (amber, days counting) and then someone MARKS it uploaded into Uniware (green); only then does the PO
+ * appear in PO Overview. Not-yet-uploaded POs show on Processed whatever date range is picked.
+ */
+export const UNIWARE_HANDOFF = {
+  /** Routes under /po-review. */
+  CSV_ONE: '/:uploadId/uniware-csv',
+  CSV_MANY: '/uniware-csv',
+  MARK_UPLOADED: '/uniware-uploaded',
+  /** Most POs in one combined download / one mark. */
+  MAX_IDS: 500,
+  /** Body field names. */
+  BODY_IDS: 'uploadIds',
+  BODY_UNDO: 'undo',
+} as const;
+

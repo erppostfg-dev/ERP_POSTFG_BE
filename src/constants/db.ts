@@ -188,6 +188,9 @@ export const SHIPMENT_LOG_ACTION = {
   LINE_QTY_REQUESTED: 'line_qty_requested',
   LINE_QTY_APPROVED: 'line_qty_approved',
   LINE_QTY_REJECTED: 'line_qty_rejected',
+  /** The sale order CSV was uploaded into Uniware (marked by a person; 2026-10-19), or that mark was removed. */
+  UNIWARE_UPLOADED: 'uniware_uploaded',
+  UNIWARE_UPLOAD_UNDONE: 'uniware_upload_undone',
 } as const;
 export type ShipmentLogAction = (typeof SHIPMENT_LOG_ACTION)[keyof typeof SHIPMENT_LOG_ACTION];
 
