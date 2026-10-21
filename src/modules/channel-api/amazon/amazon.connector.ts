@@ -63,7 +63,7 @@ export const amazonConnector: ChannelConnector = {
   key: SOURCE_SYSTEM.AMAZON_SPAPI,
   channel: AMAZON.CHANNEL,
   label: 'Amazon SP-API (FBA inbound)',
-  pollMinutes: () => env.channelApi.amazon.pollMinutes || CHANNEL_API.DEFAULT_POLL_MINUTES,
+  pollMinutes: () => env.channelApi.amazon.pollMinutes || AMAZON.POLL_MINUTES,
   configured: spapiConfigured,
   isReady: (status) => (AMAZON.SALE_ORDER_STATUSES as readonly string[]).includes(status),
   isSkipped: (status) => (AMAZON.SKIP_STATUSES as readonly string[]).includes(status),

@@ -5,6 +5,7 @@
 export * from './channel-api-sync.entity';
 export * from './details-channel.entity';
 export * from './details-purchase-order.entity';
+export * from './inbound.entities';
 export * from './master-channel-sku.entity';
 export * from './master-appointment-remark.entity';
 export * from './master-channel.entity';

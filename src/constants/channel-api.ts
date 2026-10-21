@@ -34,8 +34,9 @@ export const CHANNEL_API = {
 
 /*
  * Amazon SP-API, FBA inbound (user, 2026-10-15/16): our stock sent to Amazon FCs. One shipment (FBA15...) = one PO.
- * India marketplace on the EU endpoint. The sale order is made from READY_TO_SHIP on (user: "sale order on ready to
- * ship"); a shipment first seen later (SHIPPED, IN_TRANSIT ...) is made too. WORKING ones wait (lines can still change).
+ * India marketplace on the EU endpoint. A shipment becomes a PO + sale order code at WORKING, as soon as we first see it
+ * (user, 2026-10-19: punched separately on its own date, maybe while still WORKING); lines that change later are caught
+ * by the inbound tracking (constants/inbound.ts). Polled every 2 hours by default (user, 2026-10-19).
  */
 export const AMAZON = {
   CHANNEL: CHANNELS.AMAZON,
@@ -48,10 +49,19 @@ export const AMAZON = {
   } as Record<string, string>,
   SHIPMENTS_PATH: '/fba/inbound/v0/shipments',
   ITEMS_PATH: (shipmentId: string) => `/fba/inbound/v0/shipments/${encodeURIComponent(shipmentId)}/items`,
+  /** Inbound plans (Fulfillment Inbound v2024-03-20). */
+  INBOUND_V2024_PATH: '/inbound/fba/2024-03-20/inboundPlans',
+  PLANS_PAGE_SIZE: 30,
+  /** v0 "shipments by id": at most this many ids per call. */
+  IDS_PER_CALL: 50,
+  /** Minutes between polls when AMAZON_POLL_MINUTES is not set (user: every 2 hours). */
+  POLL_MINUTES: 120,
+  /** Every status: the tracking also follows shipments that close or are cancelled. */
+  ALL_STATUSES: ['WORKING', 'READY_TO_SHIP', 'SHIPPED', 'IN_TRANSIT', 'DELIVERED', 'CHECKED_IN', 'RECEIVING', 'CLOSED', 'CANCELLED', 'DELETED'],
   /** Statuses the poll asks for (all but the final ones). */
   POLL_STATUSES: ['WORKING', 'READY_TO_SHIP', 'SHIPPED', 'IN_TRANSIT', 'DELIVERED', 'CHECKED_IN', 'RECEIVING'],
-  /** From these on, a shipment becomes a PO + sale order. */
-  SALE_ORDER_STATUSES: ['READY_TO_SHIP', 'SHIPPED', 'IN_TRANSIT', 'DELIVERED', 'CHECKED_IN', 'RECEIVING'],
+  /** In these a shipment becomes a PO + sale order code (from WORKING: user, 2026-10-19). */
+  SALE_ORDER_STATUSES: ['WORKING', 'READY_TO_SHIP', 'SHIPPED', 'IN_TRANSIT', 'DELIVERED', 'CHECKED_IN', 'RECEIVING'],
   /** Never made into a PO. */
   SKIP_STATUSES: ['CANCELLED', 'DELETED', 'CLOSED'],
   /** Calls: a short pause between them, retries on 429 (throttled) with a growing wait. */
@@ -60,6 +70,8 @@ export const AMAZON = {
   RETRY_BASE_MS: 2_000,
   /** Pages per list call at most (the shipment items API repeats its last page: stop when nothing new comes). */
   MAX_PAGES: 20,
+  /** Pages of the shipment change list at most (50 per page): 30 days of changes were more than 1,000 (2026-10-19). */
+  MAX_LIST_PAGES: 300,
   /** "FBA STA (28/09/2026 08:57)-LKO1" -> 28/09/2026: the shipment's creation date (the only date v0 gives). */
   NAME_DATE: /\((\d{2})\/(\d{2})\/(\d{4})/,
   /** input_type in processed.json for an API PO. */

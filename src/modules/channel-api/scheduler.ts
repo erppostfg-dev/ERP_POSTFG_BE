@@ -1,7 +1,7 @@
 import { AppDataSource } from '../../config/data-source';
 import { CHANNEL_API } from '../../constants';
 import { recordRunFailure, runConnector } from './runner';
-import { CONNECTORS } from './registry';
+import { CONNECTORS, TRACKERS } from './registry';
 import { LOG_SOURCE } from '../../constants/logging';
 import { log } from '../../utils/logger';
 import { logError } from '../../utils/classify-error';
@@ -29,8 +29,16 @@ export const startChannelApis = (): { stop: () => void } => {
       let wait = c.pollMinutes() * 60_000;
       try {
         if (!AppDataSource.isInitialized) throw new Error('database not connected');
+        const tracker = TRACKERS[c.key];
+        if (tracker) {
+          await runJob(`inbound-${c.key}`, tracker.run).catch(async (err) => {
+            await tracker.fail(err).catch(() => undefined);
+            logError(LOG_SOURCE.AMAZON, `[inbound] ${c.key}: tracking run failed (the next run asks from the same check point)`, err);
+          });
+        }
         const { items } = await runJob(`channel-api-${c.key}`, () => runConnector(c, { apply: true, saveCheckpoint: true }));
         const made = items.filter((i) => i.result);
+        if (tracker) await tracker.after().catch((err) => logError(LOG_SOURCE.AMAZON, '[inbound] linking POs failed (retried next run)', err));
         log.info(LOG_SOURCE.AMAZON, `[channel-api] ${c.key}: ${items.length} changed, ${made.length} taken${made.length ? ` (${made.map((i) => `${i.externalId} ${i.result}${i.saleOrder ? ` ${i.saleOrder}` : ''}`).join(', ')})` : ''}`);
       } catch (err) {
         const failures = await recordRunFailure(c, err).catch(() => 1);

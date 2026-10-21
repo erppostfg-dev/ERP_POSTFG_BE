@@ -61,6 +61,12 @@ export const TABLES = {
   // PO Overview team access (2026-10-14): what each team may do per column group, and each person's facilities.
   TEAM_COLUMN_ACCESS: 'team_column_access',
   USER_FACILITIES: 'user_facilities',
+  // Inbound plan + shipment tracking (2026-10-19, constants/inbound.ts).
+  INBOUND_PLANS: 'inbound_plans',
+  INBOUND_SHIPMENTS: 'inbound_shipments',
+  INBOUND_SHIPMENT_LINES: 'inbound_shipment_lines',
+  INBOUND_SHIPMENT_EVENTS: 'inbound_shipment_events',
+  INBOUND_STATUS_LIMITS: 'inbound_status_limits',
 } as const;
 
 /** TypeORM's own record of which migrations have run. */

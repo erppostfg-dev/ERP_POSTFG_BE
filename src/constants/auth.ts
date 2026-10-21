@@ -39,6 +39,8 @@ export const PAGES: readonly PageEntry[] = [
   { slug: '/operations/po-overview', label: 'PO Overview', section: 'B2B/B2C Operations' },
   { slug: '/operations/po-review', label: 'PO Processing & Review', section: 'B2B/B2C Operations' },
   { slug: '/operations/po-working', label: 'PO Working', section: 'B2B/B2C Operations' },
+  // Amazon inbound plans + shipments (2026-10-19). No grant rows: roles inherit /operations (admin / developer editor).
+  { slug: '/operations/amazon-inbound', label: 'Amazon Inbound', section: 'B2B/B2C Operations' },
   { slug: '/operations/skus-short', label: 'SKUs Short', section: 'B2B/B2C Operations' },
   { slug: '/operations/analytics', label: 'Analytics', section: 'B2B/B2C Operations' },
   { slug: '/planning', label: 'Demand Planning', section: 'Demand Planning' },
@@ -60,6 +62,7 @@ export const PAGE = {
   OPERATIONS: '/operations',
   PO_OVERVIEW: '/operations/po-overview',
   PO_REVIEW: '/operations/po-review',
+  AMAZON_INBOUND: '/operations/amazon-inbound',
   PLANNING: '/planning',
   APPROVALS: '/approvals',
   ADMIN: '/admin',

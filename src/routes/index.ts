@@ -1,5 +1,7 @@
 import { Router } from 'express';
+import { INBOUND_ROUTES } from '../constants';
 import adminRoutes from './admin.routes';
+import amazonInboundRoutes from './amazon-inbound.routes';
 import approvalsRoutes from './approvals.routes';
 import authRoutes from './auth.routes';
 import healthRoutes from './health.routes';
@@ -14,6 +16,7 @@ router.use('/health', healthRoutes);
 router.use('/auth', authRoutes);
 router.use('/approvals', approvalsRoutes);
 router.use('/admin', adminRoutes);
+router.use(INBOUND_ROUTES.BASE, amazonInboundRoutes);
 router.use('/masters', mastersRoutes);
 router.use('/po-intake', poIntakeRoutes);
 router.use('/po-overview', poOverviewRoutes);
