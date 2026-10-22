@@ -174,7 +174,7 @@ const ocrSummary = async (folder: string, fp: FolderPo): Promise<Record<string, 
 };
 
 /** po_issues.original_values: the PO's value and ours, so the reviewer sees both. */
-const originalValues = (issue: ValidationIssue, r: ValidationResult): Record<string, unknown> => {
+export const originalValues = (issue: ValidationIssue, r: ValidationResult): Record<string, unknown> => {
   const line = issue.lineNo === undefined || issue.lineNo === '' ? undefined : r.lines.find((l) => l.lineNo === issue.lineNo);
   const tolerances = CHANNEL_TOLERANCES[r.channel];
   const tolerance =

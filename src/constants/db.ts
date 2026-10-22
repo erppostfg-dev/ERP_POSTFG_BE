@@ -67,6 +67,10 @@ export const TABLES = {
   INBOUND_SHIPMENT_LINES: 'inbound_shipment_lines',
   INBOUND_SHIPMENT_EVENTS: 'inbound_shipment_events',
   INBOUND_STATUS_LIMITS: 'inbound_status_limits',
+  /** PO verification before the Uniware CSV (2026-10-22; constants/po-verify.ts). */
+  PO_VERIFICATIONS: 'po_verifications',
+  /** The verify switch per channel (2026-10-22). */
+  PO_VERIFY_CHANNEL_SETTINGS: 'po_verify_channel_settings',
 } as const;
 
 /** TypeORM's own record of which migrations have run. */

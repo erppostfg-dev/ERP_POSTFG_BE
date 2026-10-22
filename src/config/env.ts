@@ -103,6 +103,11 @@ export const env = {
     // true: at server start, unfinished po_uploads rows are resumed (queued / extracting / processing).
     resumeOnStart: flag('PIPELINE_RESUME'),
   },
+  // PO verification (2026-10-22): the Uniware CSV of a processed PO stays locked until a person verifies it against the
+  // original PO (constants/po-verify.ts). On unless PO_VERIFY_REQUIRED=false (the switch to drop the step later).
+  poVerify: {
+    required: flag('PO_VERIFY_REQUIRED', 'true'),
+  },
   // Channel API connectors (2026-10-16): POs pulled from channel APIs into the same chain. Off by default, like the
   // email listener; each connector also needs its own keys. Poll minutes: the connector's env value, else the constant.
   channelApi: {

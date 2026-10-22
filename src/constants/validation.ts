@@ -94,6 +94,8 @@ export const ISSUE_FIELDS = {
   EXPIRY_DATE: 'expiry_date',
   PO_TYPE: 'po_type',
   REVISED: 'revised',
+  /** A processed PO sent back to review by the person verifying it (constants/po-verify.ts). */
+  VERIFICATION: 'verification',
 } as const;
 export type IssueField = (typeof ISSUE_FIELDS)[keyof typeof ISSUE_FIELDS];
 
