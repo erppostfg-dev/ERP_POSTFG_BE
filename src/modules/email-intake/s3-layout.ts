@@ -34,6 +34,10 @@ export interface EmailMetadata extends StoredMetadata {
   externalId?: string;
   /** The channel's status of the PO when it was taken (Amazon: READY_TO_SHIP ...). */
   externalStatus?: string;
+  /** A manual upload of a structured file (Amazon shipment .tsv, 2026-10-22): no OCR; processed.json made from the file. */
+  structured?: boolean;
+  /** That file's name (the PO's file). */
+  sourceFile?: string;
 }
 
 const safeSegment = (s: string): string => s.trim().replace(/[^A-Za-z0-9._-]+/g, '_');
@@ -61,7 +65,7 @@ export const plannedS3Folder = (localFolder: string, meta: EmailMetadata): strin
 
   const date = new Date(meta.receivedAt ?? meta.storedAt ?? Date.now());
   // A channel API PO says its channel and PO number itself.
-  if (meta.provider === PROVIDERS.CHANNEL_API && meta.channel && meta.poNumber) {
+  if ((meta.provider === PROVIDERS.CHANNEL_API || meta.structured) && meta.channel && meta.poNumber) {
     return `${env.s3.prefix}${parent}/${yearFolder(date)}/${monthFolder(date)}/${meta.channel}/${safeSegment(meta.poNumber)}`;
   }
   const detected = detectChannel(info);

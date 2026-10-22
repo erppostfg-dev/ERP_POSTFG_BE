@@ -124,6 +124,26 @@ export const emailValues = async (folder: string, channelDisplayName: string | n
       ocrAttempts: 0,
     };
   }
+  // A manual upload of a structured file (Amazon shipment .tsv, 2026-10-22): no OCR, the file is the PO.
+  if (meta.provider === PROVIDERS.MANUAL && meta.structured && meta.sourceFile) {
+    return {
+      source: UPLOAD_SOURCE.MANUAL,
+      channel: channelDisplayName,
+      fileName: meta.sourceFile,
+      fileUrl: s3UrlFor(folder, meta, meta.sourceFile),
+      fileType: extOf(meta.sourceFile) || null,
+      emailMessageId: meta.messageId ?? null,
+      emailFrom: null,
+      emailSubject: meta.subject?.slice(0, 500) ?? null,
+      emailReceivedAt: asDate(meta.receivedAt),
+      sourceSystem: meta.sourceSystem ?? null,
+      externalId: meta.externalId ?? null,
+      ocrStatus: UPLOAD_OCR_STATUS.SUCCESS,
+      ocrStartedAt: null,
+      ocrFinishedAt: null,
+      ocrAttempts: 0,
+    };
+  }
   const fileName = pickPoFile(meta, run);
   const fromLabel = meta.provider === PROVIDERS.GMAIL_PUBSUB || !!meta.labels?.length;
   return {
@@ -146,9 +166,9 @@ export const emailValues = async (folder: string, channelDisplayName: string | n
 /** po_uploads.ocr_result for one PO: where its files are and what the OCR / processing reported (decided: a summary). */
 const ocrSummary = async (folder: string, fp: FolderPo): Promise<Record<string, unknown>> => {
   const meta = (await readJson<EmailMetadata>(path.join(folder, FILES.METADATA))) ?? {};
-  if (meta.provider === PROVIDERS.CHANNEL_API) {
+  if (meta.provider === PROVIDERS.CHANNEL_API || (meta.structured && meta.sourceFile)) {
     return {
-      raw_output: s3UrlFor(folder, meta, FILES.API_RAW),
+      raw_output: s3UrlFor(folder, meta, meta.structured && meta.sourceFile ? meta.sourceFile : FILES.API_RAW),
       processed_json: s3UrlFor(folder, meta, fp.relPath),
       input_type: fp.po.input_type,
       source_system: meta.sourceSystem ?? null,

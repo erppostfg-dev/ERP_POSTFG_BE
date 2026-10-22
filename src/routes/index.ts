@@ -1,11 +1,12 @@
 import { Router } from 'express';
-import { INBOUND_ROUTES, PO_VERIFY } from '../constants';
+import { INBOUND_ROUTES, MANUAL_UPLOAD, PO_VERIFY } from '../constants';
 import poVerifyGate from '../modules/po-verify/po-verify.gate';
 import adminRoutes from './admin.routes';
 import amazonInboundRoutes from './amazon-inbound.routes';
 import approvalsRoutes from './approvals.routes';
 import authRoutes from './auth.routes';
 import healthRoutes from './health.routes';
+import manualUploadRoutes from './manual-upload.routes';
 import mastersRoutes from './masters.routes';
 import poIntakeRoutes from './po-intake.routes';
 import poOverviewRoutes from './po-overview.routes';
@@ -26,5 +27,6 @@ router.use('/po-overview', poOverviewRoutes);
 router.use('/po-review', poVerifyGate);
 router.use('/po-review', poReviewRoutes);
 router.use(PO_VERIFY.BASE, poVerifyRoutes);
+router.use(MANUAL_UPLOAD.BASE, manualUploadRoutes);
 
 export default router;

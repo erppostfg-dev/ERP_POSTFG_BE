@@ -79,6 +79,15 @@ export const ERRORS = {
   UNIWARE_CSV_NOT_READY: define(409, (ids: string) => `No Uniware CSV yet for upload(s) ${ids}: only completed POs have one`),
   UNIWARE_NOT_DOWNLOADED: define(409, (ids: string) => `Download the sale order CSV first: upload(s) ${ids} not downloaded yet`),
   UPLOAD_IDS_REQUIRED: define(400, () => 'Pick at least one PO (uploadIds)'),
+  // --- Manual upload (2026-10-22, constants/manual-upload.ts) ---
+  MANUAL_CHANNEL_NOT_READABLE: define(400, (channel: string) => `Channel "${channel}" has no PO reader yet: only channels the app can read can be uploaded`),
+  MANUAL_FILE_TYPE: define(400, (name: string) => `${name}: only PDF, Excel (.xlsx / .xls) or CSV files can be uploaded`),
+  MANUAL_FILES_MISSING: define(400, (channel: string, need: string, got: string) => `${channel} needs ${need} for one PO; got ${got}`),
+  MANUAL_AMAZON_FILE: define(400, (name: string) => `${name} is not an Amazon shipment file: it needs "Shipment ID FBA…" at the top and the "Merchant SKU … Shipped" lines`),
+  MANUAL_DUPLICATE: define(409, (id: string, where: string) => `${id} is already ${where}: it is not processed twice`),
+  MANUAL_AMAZON_STATUS: define(409, (id: string, status: string) => `${id} is ${status} at Amazon: cancelled / deleted / closed shipments are not made into POs`),
+  MANUAL_UPLOAD_NOT_FOUND: define(404, (id: string) => `No manual upload ${id}`),
+  MANUAL_UPLOAD_WRONG_STATE: define(409, (id: string, status: string, action: string) => `Manual upload ${id} is ${status}: it cannot be ${action}`),
   // --- PO verification before Uniware (2026-10-22, constants/po-verify.ts) ---
   PO_NOT_VERIFIED: define(409, (ids: string) => `Verify the PO against the original first: upload(s) ${ids} not verified yet`),
   VERIFY_NOT_READY: define(409, (id: string, status: string) => `Upload ${id} cannot be verified: it is ${status}, only processed (completed) POs are checked`),

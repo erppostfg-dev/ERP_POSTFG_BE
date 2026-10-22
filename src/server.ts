@@ -6,6 +6,7 @@ import { startEmailListener } from './modules/email-intake/pubsub.listener';
 import { queueExtractPo } from './modules/ocr/extract-po.service';
 import { applyResume, planResume } from './modules/po-pipeline/resume.service';
 import { startChannelApis } from './modules/channel-api/scheduler';
+import { resumeManualQueue } from './modules/manual-upload/manual-upload.service';
 import { LOG_SOURCE } from './constants/logging';
 import { logError } from './utils/classify-error';
 import { runJob } from './utils/log-call';
@@ -57,6 +58,10 @@ const start = async (): Promise<void> => {
   let channelApis: { stop: () => void } | undefined;
   if (env.channelApi.enabled && AppDataSource.isInitialized) channelApis = startChannelApis();
   else log.info(LOG_SOURCE.AMAZON, 'channel API connectors disabled (CHANNEL_API_ENABLED=false)');
+
+  // Manual uploads (2026-10-22): ones queued by a Process click (or cut off while processing) continue, one at a time.
+  // "uploaded" ones wait for a Process click.
+  if (AppDataSource.isInitialized) void resumeManualQueue();
 
   // Resume unfinished POs from po_uploads (PIPELINE_RESUME=true, database connected), within PIPELINE_LIMIT.
   // The OCR is queued only when OCR_ENABLED; otherwise those emails stay queued for the next start.

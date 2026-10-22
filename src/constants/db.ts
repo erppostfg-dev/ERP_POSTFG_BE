@@ -71,6 +71,8 @@ export const TABLES = {
   PO_VERIFICATIONS: 'po_verifications',
   /** The verify switch per channel (2026-10-22). */
   PO_VERIFY_CHANNEL_SETTINGS: 'po_verify_channel_settings',
+  /** Manual upload queue (2026-10-22; constants/manual-upload.ts). */
+  MANUAL_UPLOADS: 'manual_uploads',
 } as const;
 
 /** TypeORM's own record of which migrations have run. */
