@@ -127,10 +127,9 @@ export const PO_TEAM_COLUMNS: Record<PoTeam, readonly ColumnDef[]> = {
   [PO_TEAM.LOGISTICS]: [
     c('statusLogistics', 'Status (Logistics)', K.STATUS),
     c('dispatchRemarksLogistics', 'Dispatch Remarks (Logistics)'),
+    // Only the current appointment date (user, 2026-10-21): every change of it is in the shipment's History
+    // (old -> new, who, when), so First / Second / Third are not shown. Their DB columns and values stay.
     c('currentAppointmentDate', 'Current Appointment Date', K.DATE),
-    c('firstAppointmentDate', 'First Appointment Date', K.DATE),
-    c('secondAppointmentDate', 'Second Appointment Date', K.DATE),
-    c('thirdAppointmentDate', 'Third Appointment Date', K.DATE),
     c('appointmentLetter', 'Appointment Letter / STN', K.LINK),
     c('deliveryDate', 'Delivery Date', K.DATE),
     c('rescheduleLag', 'Reschedule Lag', K.NUM),
