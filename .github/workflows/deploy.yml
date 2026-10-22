@@ -8,8 +8,8 @@
 #
 # Each GitHub Environment holds: secret AWS_ROLE_ARN (Terraform output app_deploy_role_arn),
 # variables ECR_REPOSITORY (app_ecr_repository_url) and EC2_INSTANCE_ID (app_instance_id).
-# Optional secret SUBMODULE_TOKEN: read access to the ocr-service submodule's repository.
 # The app's settings are not here: the instance reads /mcaffeine-erp-post-fg/<env>/api/env from SSM.
+# The OCR scripts are part of this repository (ocr-service/dev/scripts).
 name: deploy
 
 on:
@@ -40,9 +40,9 @@ jobs:
     if: github.ref_name == 'dev' || github.ref_name == 'main'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -72,27 +72,10 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@v4
-
-      - name: Fetch ocr-service (submodule)
-        if: inputs.image_tag == ''
-        env:
-          SUBMODULE_TOKEN: ${{ secrets.SUBMODULE_TOKEN }}
-        run: |
-          if [ ! -f .gitmodules ]; then
-            echo "No submodules: ocr-service is part of this repository."
-            exit 0
-          fi
-          if [ -z "$SUBMODULE_TOKEN" ]; then
-            echo "::warning::SUBMODULE_TOKEN is not set: the image is built without the ocr-service scripts (OCR will not run)."
-            exit 0
-          fi
-          git config --global url."https://x-access-token:${SUBMODULE_TOKEN}@github.com/".insteadOf "https://github.com/"
-          git submodule update --init --recursive
-          git config --global --unset url."https://x-access-token:${SUBMODULE_TOKEN}@github.com/".insteadOf
+      - uses: actions/checkout@v5
 
       - name: AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           role-session-name: gha-deploy-backend-${{ env.ENV_NAME }}-${{ github.run_id }}

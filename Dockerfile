@@ -34,7 +34,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 
-# The OCR scripts (empty folder when they are not in the build context).
+# The OCR scripts (ocr-service/dev/scripts, part of this repository).
 COPY ocr-service ./ocr-service
 
 RUN mkdir -p storage && chown node:node storage
