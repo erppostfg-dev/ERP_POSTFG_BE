@@ -66,7 +66,8 @@ export const amazonConnector: ChannelConnector = {
   pollMinutes: () => env.channelApi.amazon.pollMinutes || AMAZON.POLL_MINUTES,
   configured: spapiConfigured,
   isReady: (status) => (AMAZON.SALE_ORDER_STATUSES as readonly string[]).includes(status),
-  isSkipped: (status) => (AMAZON.SKIP_STATUSES as readonly string[]).includes(status),
+  // Past WORKING (or final) = tracking only, never a PO (user, 2026-10-21).
+  isSkipped: (status) => !(AMAZON.SALE_ORDER_STATUSES as readonly string[]).includes(status),
 
   async listChanged(since, until) {
     const q = `${AMAZON.SHIPMENTS_PATH}?MarketplaceId=${M}&QueryType=DATE_RANGE&ShipmentStatusList=${AMAZON.POLL_STATUSES.join(',')}` +

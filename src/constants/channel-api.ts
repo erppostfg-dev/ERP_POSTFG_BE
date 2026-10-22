@@ -34,8 +34,8 @@ export const CHANNEL_API = {
 
 /*
  * Amazon SP-API, FBA inbound (user, 2026-10-15/16): our stock sent to Amazon FCs. One shipment (FBA15...) = one PO.
- * India marketplace on the EU endpoint. A shipment becomes a PO + sale order code at WORKING, as soon as we first see it
- * (user, 2026-10-19: punched separately on its own date, maybe while still WORKING); lines that change later are caught
+ * India marketplace on the EU endpoint. A shipment becomes a PO + sale order code ONLY while WORKING, as soon as we first
+ * see it (user, 2026-10-19 / 21); past WORKING it is tracked only, never made a PO; lines that change later are caught
  * by the inbound tracking (constants/inbound.ts). Polled every 2 hours by default (user, 2026-10-19).
  */
 export const AMAZON = {
@@ -60,9 +60,12 @@ export const AMAZON = {
   ALL_STATUSES: ['WORKING', 'READY_TO_SHIP', 'SHIPPED', 'IN_TRANSIT', 'DELIVERED', 'CHECKED_IN', 'RECEIVING', 'CLOSED', 'CANCELLED', 'DELETED'],
   /** Statuses the poll asks for (all but the final ones). */
   POLL_STATUSES: ['WORKING', 'READY_TO_SHIP', 'SHIPPED', 'IN_TRANSIT', 'DELIVERED', 'CHECKED_IN', 'RECEIVING'],
-  /** In these a shipment becomes a PO + sale order code (from WORKING: user, 2026-10-19). */
-  SALE_ORDER_STATUSES: ['WORKING', 'READY_TO_SHIP', 'SHIPPED', 'IN_TRANSIT', 'DELIVERED', 'CHECKED_IN', 'RECEIVING'],
-  /** Never made into a PO. */
+  /**
+   * Only in WORKING does a shipment become a PO + sale order code (user, 2026-10-21: "work on shipments when it's in
+   * working phase only"). A shipment first seen in any later status is tracking only (Amazon Inbound page), never a PO.
+   */
+  SALE_ORDER_STATUSES: ['WORKING'],
+  /** Never made into a PO: final statuses (the connector also skips everything past WORKING, see above). */
   SKIP_STATUSES: ['CANCELLED', 'DELETED', 'CLOSED'],
   /** Calls: a short pause between them, retries on 429 (throttled) with a growing wait. */
   CALL_GAP_MS: 600,
