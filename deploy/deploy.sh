@@ -56,11 +56,6 @@ umask 077
 cat > "${NGINX_CONF}.new" <<EOF
 # Written by deploy.sh on every deploy; edits here are overwritten.
 # CloudFront adds ${ORIGIN_HEADER} to /api/* requests; anything else is refused.
-map \$http_x_origin_verify \$post_fg_from_cloudfront {
-    default 0;
-    "${ORIGIN_SECRET}" 1;
-}
-
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
@@ -69,7 +64,7 @@ server {
     client_max_body_size 25m;
 
     location / {
-        if (\$post_fg_from_cloudfront = 0) {
+        if (\$http_x_origin_verify != "${ORIGIN_SECRET}") {
             return 403;
         }
 
@@ -89,8 +84,16 @@ server {
 }
 EOF
 umask 022
+# Swap the new config in, but put the previous one back if nginx rejects it, so a bad
+# config never stays behind for the next restart or reboot.
+[ -f "$NGINX_CONF" ] && cp -f "$NGINX_CONF" "${NGINX_CONF}.previous"
 mv -f "${NGINX_CONF}.new" "$NGINX_CONF"
-nginx -t
+if ! nginx -t; then
+  log "ERROR: nginx rejected the new config; restoring the previous one"
+  if [ -f "${NGINX_CONF}.previous" ]; then mv -f "${NGINX_CONF}.previous" "$NGINX_CONF"; else rm -f "$NGINX_CONF"; fi
+  exit 1
+fi
+rm -f "${NGINX_CONF}.previous"
 systemctl enable --now nginx
 systemctl reload nginx
 
