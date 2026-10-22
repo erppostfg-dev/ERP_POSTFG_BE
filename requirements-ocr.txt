@@ -1,0 +1,8 @@
+# Python packages of the OCR scripts (ocr-service/run_po.py and its extract_*.py), installed
+# into the image's venv (/opt/venv, PYTHON_BIN) by the Dockerfile. Pinned to the versions the
+# working OCR runs with (po-api on the erp-app-test instance, 2026-10-23). Add a package here
+# when the OCR scripts start importing a new one.
+boto3==1.42.97
+pymupdf==1.26.5
+openpyxl==3.1.5
+xlrd==2.0.2

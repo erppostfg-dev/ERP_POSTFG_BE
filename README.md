@@ -87,6 +87,30 @@ src/
 ocr-service/     Python OCR (git submodule)
 ```
 
+## Deployment (Docker -> ECR -> EC2)
+
+```
+push to dev   -> .github/workflows/deploy.yml -> GitHub Environment "dev"  -> ECR ...-api-ecr-dev  -> dev instance
+push to main  -> .github/workflows/deploy.yml -> GitHub Environment "prod" -> ECR ...-api-ecr-prod -> prod instance (after approval)
+```
+
+- **Flow:** `dev` and `main` hold the same code; the branch picks the environment. Changes go to `dev`, are checked on the dev site, then reach prod through a PR `dev` -> `main`.
+- **Pipeline:** typecheck -> `docker build` (`Dockerfile`: compiled app + Python with the OCR packages pinned in `requirements-ocr.txt` + `ocr-service/`) -> push `<ECR>:<git sha>` -> SSM Run Command runs `deploy/deploy.sh` on the instance.
+- **On the instance** (`deploy/deploy.sh`): writes `/opt/post-fg/.env` from SSM, configures nginx (port 80, only requests with CloudFront's `X-Origin-Verify` header), pulls the image, runs migrations when `DB_ENABLED=true`, replaces the `post-fg-api` container (`127.0.0.1:3000`, `/opt/post-fg/storage` mounted as `/app/storage`) and checks `/api/v1/health`. If the new container is not healthy, the previous image is started again and the run fails.
+- **Settings:** no `.env` in the repository. Each environment's whole `.env` is one SecureString in SSM, `/mcaffeine-erp-post-fg/<env>/api/env`, read on every deploy. To change a setting: edit that parameter (Systems Manager -> Parameter Store), then run the workflow again.
+- **Users reach the API through CloudFront** (`https://<distribution>.cloudfront.net/api/v1/...`), together with the frontend; the instance has no public port besides CloudFront's.
+- **GitHub Environment settings** (repository Settings -> Environments; `dev` allows branch `dev`, `prod` branch `main`):
+
+  | Name | Kind | Value (Terraform output of the infra repo) |
+  | --- | --- | --- |
+  | `AWS_ROLE_ARN` | secret | `app_deploy_role_arn` |
+  | `ECR_REPOSITORY` | variable | `app_ecr_repository_url` |
+  | `EC2_INSTANCE_ID` | variable | `app_instance_id` |
+  | `SUBMODULE_TOKEN` | secret, optional | token with read access to the `ocr-service` repository; without it the image has no OCR scripts |
+
+- **Redeploy / rollback:** Actions -> deploy -> Run workflow on the branch, `image_tag` = an earlier commit's SHA (the image is not rebuilt).
+- **Logs / shell:** Systems Manager -> Session Manager on the instance, then `docker logs -f post-fg-api`. Scripts inside the container run from `dist/`, e.g. `docker exec post-fg-api node dist/scripts/ocr-run.js --folder <email folder>`.
+
 ## Adding an API
 
 1. Add the entity in `src/entities/`. Its columns must match the DB design doc.
