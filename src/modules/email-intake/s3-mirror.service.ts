@@ -13,6 +13,7 @@ import { logCall } from '../../utils/log-call';
 import { log } from '../../utils/logger';
 import { emailInfo } from '../ocr/channel-detector';
 import { EmailMetadata, plannedS3Folder } from './s3-layout';
+import { recordEmail } from './intake-emails.service';
 
 /*
  * Copies the local email storage to S3 in the folder layout of s3-layout.ts:
@@ -288,7 +289,38 @@ export const syncEmailToS3 = async (dir: string): Promise<{ s3Folder: string; up
     await putBody(key, body, file);
     uploaded++;
   }
+  await recordEmail(dir); // the DB row gets its S3 folder (intake_emails, 2026-10-23)
   return { s3Folder, uploaded, same };
+};
+
+/**
+ * Local cleanup check (2026-10-23): is EVERY local file of this folder in its S3 folder with the same content (MD5 vs
+ * ETag)? Missing / different files are listed; nothing is uploaded here.
+ */
+export const verifyInS3 = async (dir: string): Promise<{ s3Folder: string | null; missing: string[] }> => {
+  const meta = await readMeta(dir);
+  if (!env.s3.enabled || !meta.s3Folder) return { s3Folder: meta.s3Folder ?? null, missing: ['(not uploaded yet)'] };
+  const remote = await listPrefix(`${meta.s3Folder}/`);
+  const missing: string[] = [];
+  for (const file of await localFiles(dir)) {
+    const rel = path.relative(dir, file).split(path.sep).join('/');
+    if (remote.get(`${meta.s3Folder}/${rel}`) !== md5(await fs.readFile(file))) missing.push(rel);
+  }
+  return { s3Folder: meta.s3Folder, missing };
+};
+
+/** Copies every file of an S3 folder into a local folder (an email whose local copy was removed is needed again). */
+export const downloadS3Folder = async (s3Folder: string, dir: string): Promise<number> => {
+  let n = 0;
+  for (const key of (await listPrefix(`${s3Folder}/`)).keys()) {
+    const rel = key.slice(s3Folder.length + 1);
+    const out = path.join(dir, ...rel.split('/'));
+    await fs.mkdir(path.dirname(out), { recursive: true });
+    const body = await (await s3().send(new GetObjectCommand({ Bucket: env.s3.bucket, Key: key }))).Body?.transformToByteArray();
+    await fs.writeFile(out, Buffer.from(body ?? new Uint8Array()));
+    n++;
+  }
+  return n;
 };
 
 /** Uploads one file kept directly in a label folder (report.csv, duplicates.csv). */

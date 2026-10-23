@@ -1,7 +1,9 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { AppDataSource } from '../../config/data-source';
 import { env } from '../../config/env';
-import { ERROR_CODES } from '../../constants';
+import { APP_STATE_KEY, ERROR_CODES } from '../../constants';
+import { AppState } from '../../entities';
 import { appError } from '../../utils/AppError';
 import { LOG_SOURCE } from '../../constants/logging';
 import { logCall } from '../../utils/log-call';
@@ -30,7 +32,7 @@ const RENEW_EVERY_MS = 24 * 60 * 60 * 1000; // the watch lasts 7 days; renew dai
 
 const statePath = (): string => path.resolve(env.storage.gmailStateFile);
 
-export const readState = async (): Promise<GmailState> => {
+const readFileState = async (): Promise<GmailState> => {
   try {
     return JSON.parse(await fs.readFile(statePath(), 'utf8')) as GmailState;
   } catch {
@@ -38,13 +40,41 @@ export const readState = async (): Promise<GmailState> => {
   }
 };
 
-export const writeState = async (patch: GmailState): Promise<void> => {
-  const next = { ...(await readState()), ...patch };
+const writeFileState = async (next: GmailState): Promise<void> => {
   await fs.mkdir(path.dirname(statePath()), { recursive: true });
   // Write a temp file and rename it, so a stop mid-write never leaves a broken state file.
   const tmp = `${statePath()}.tmp`;
   await fs.writeFile(tmp, JSON.stringify(next, null, 2), 'utf8');
   await fs.rename(tmp, statePath());
+};
+
+/**
+ * The Gmail sync point lives in the DB (app_state "gmail", 2026-10-23), so a deploy or a new server continues where
+ * the old one stopped. The first time, the old storage/gmail-state.json is copied in (the file is then not used).
+ * Without a DB, or before the LocalStorageDb migration, the file is used as before.
+ */
+const stateRepo = () => AppDataSource.getRepository(AppState);
+const dbState = async (): Promise<AppState | null | 'no-db'> => {
+  if (!AppDataSource.isInitialized) return 'no-db';
+  return stateRepo().findOneBy({ key: APP_STATE_KEY.GMAIL }).catch((err: { code?: string }) => {
+    if (err.code === 'ER_NO_SUCH_TABLE') return 'no-db' as const;
+    throw err;
+  });
+};
+
+export const readState = async (): Promise<GmailState> => {
+  const row = await dbState();
+  if (row === 'no-db') return readFileState();
+  if (row) return row.value as GmailState;
+  const fromFile = await readFileState();
+  await stateRepo().save({ key: APP_STATE_KEY.GMAIL, value: fromFile as Record<string, unknown>, updatedAt: new Date() });
+  return fromFile;
+};
+
+export const writeState = async (patch: GmailState): Promise<void> => {
+  const next = { ...(await readState()), ...patch };
+  if ((await dbState()) === 'no-db') return writeFileState(next);
+  await stateRepo().save({ key: APP_STATE_KEY.GMAIL, value: next as Record<string, unknown>, updatedAt: new Date() });
 };
 
 /** Looks up the Gmail label id for every route. Fails if a label does not exist in the mailbox. */

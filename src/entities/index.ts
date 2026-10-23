@@ -4,6 +4,8 @@
  */
 export * from './channel-api-sync.entity';
 export * from './channel-intake-setting.entity';
+export * from './intake-email.entity';
+export * from './app-state.entity';
 export * from './details-channel.entity';
 export * from './details-purchase-order.entity';
 export * from './inbound.entities';

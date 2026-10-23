@@ -146,6 +146,8 @@ export const env = {
   storage: {
     emailDir: process.env.EMAIL_STORAGE_DIR ?? 'storage/emails',
     gmailStateFile: process.env.GMAIL_STATE_FILE ?? 'storage/gmail-state.json',
+    // Remove finished emails' local folders once their files are confirmed in S3 (constants LOCAL_CLEANUP; 2026-10-23).
+    cleanupEnabled: flag('LOCAL_CLEANUP_ENABLED'),
   },
   // Copy of the email storage in S3: <prefix><label>/<folder>/<file>, the same layout as EMAIL_STORAGE_DIR.
   // Local storage stays; S3 is written after it. Credentials come from AWS_* (later the EC2 IAM role).

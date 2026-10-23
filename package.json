@@ -13,6 +13,7 @@
     "email:route": "ts-node --transpile-only src/scripts/route-label.ts",
     "email:sort": "ts-node --transpile-only src/scripts/sort-emails.ts",
     "s3:sync": "ts-node --transpile-only src/scripts/s3-sync.ts",
+    "storage:cleanup": "ts-node --transpile-only src/scripts/storage-cleanup.ts",
     "typeorm": "typeorm-ts-node-commonjs",
     "migration:generate": "npm run typeorm -- migration:generate -d src/config/data-source.ts",
     "migration:create": "typeorm-ts-node-commonjs migration:create",

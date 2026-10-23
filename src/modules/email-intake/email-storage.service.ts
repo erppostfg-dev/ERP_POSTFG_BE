@@ -1,8 +1,8 @@
-import crypto from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
 import { env } from '../../config/env';
 import { FILES, FOLDERS, Provider } from '../../constants';
+import { knownEmail, messageKey, recordEmail } from './intake-emails.service';
 
 export interface InboundEmail {
   /** Top folder under EMAIL_STORAGE_DIR: the Gmail label, or "manual". */
@@ -27,8 +27,6 @@ export interface StoredEmail {
 
 const safeName = (name: string): string => name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').trim();
 
-/** Short, stable key for a Message-ID (Message-IDs are long and full of <>@). */
-const messageKey = (messageId: string): string => crypto.createHash('sha1').update(messageId).digest('hex').slice(0, 16);
 
 /** Emails of a group that are not POs are moved to <group>-not-po/ (see email-sorter.service.ts). */
 export const NOT_PO_SUFFIX = FOLDERS.NOT_PO_SUFFIX;
@@ -57,6 +55,16 @@ export const storedFolderOf = async (group: string, messageId: string): Promise<
   return (await findStored(groupDirFor(group), key)) ?? (await findStored(groupDirFor(`${group}${NOT_PO_SUFFIX}`), key));
 };
 
+/**
+ * POST_FG already has this email: its folder is on the disk, or the DB remembers it (the local copy was removed after
+ * the PO finished; 2026-10-23). The folder when it is still on the disk.
+ */
+export const alreadyStored = async (group: string, messageId: string): Promise<{ folder?: string } | null> => {
+  const folder = await storedFolderOf(group, messageId);
+  if (folder) return { folder };
+  return (await knownEmail(messageId)) ? {} : null;
+};
+
 export const storeInboundEmail = async (email: InboundEmail): Promise<StoredEmail> => {
   const groupDir = groupDirFor(email.group);
   const key = messageKey(email.messageId);
@@ -70,6 +78,9 @@ export const storeInboundEmail = async (email: InboundEmail): Promise<StoredEmai
     };
     return { folder, duplicate: true, files: meta.files ?? [] };
   }
+  // Not on the disk any more (finished, files in S3): the DB still knows it -> a repeat, nothing stored again.
+  const known = await knownEmail(email.messageId);
+  if (known) return { folder: `s3:${known.s3Folder ?? known.folderName}`, duplicate: true, files: (known.files ?? []).map((filename) => ({ filename, size: 0 })) };
 
   const prefix = (email.receivedAt ?? new Date().toISOString()).slice(0, 10);
   const folder = path.join(groupDir, `${safeName(prefix)}_${key}`);
@@ -90,6 +101,7 @@ export const storeInboundEmail = async (email: InboundEmail): Promise<StoredEmai
     JSON.stringify({ ...meta, files, storedAt: new Date().toISOString() }, null, 2),
     'utf8',
   );
+  await recordEmail(folder);
 
   return { folder, duplicate: false, files };
 };

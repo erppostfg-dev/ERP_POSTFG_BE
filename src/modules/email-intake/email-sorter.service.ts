@@ -4,6 +4,9 @@ import { FILES } from '../../constants';
 import { detectChannel, emailInfo, NotPoCode, StoredMetadata } from '../ocr/channel-detector';
 import { NOT_PO_SUFFIX } from './email-storage.service';
 import { EmailMetadata, plannedS3Folder } from './s3-layout';
+import { groupOfFolder, markLocal, notPoRows, recordEmail } from './intake-emails.service';
+import { downloadS3Folder } from './s3-mirror.service';
+import { INTAKE_EMAIL_KIND } from '../../constants';
 
 const REASON_FILE = FILES.NOT_PO_REASON;
 const REPORT_FILE = FILES.NOT_PO_REPORT;
@@ -44,6 +47,15 @@ export const writeNotPoReport = async (notPoDir: string): Promise<number> => {
       // a folder without reason.json is not ours
     }
   }
+  // Not-PO emails whose local copy was removed (files in S3) are still listed, from the DB (2026-10-23).
+  const onDisk = new Set(rows.map((r) => r.folder));
+  for (const r of await notPoRows(groupOfFolder(path.join(notPoDir, '_')).groupName)) {
+    if (onDisk.has(r.folderName)) continue;
+    rows.push({
+      code: (r.notPoCode ?? '') as NotPoCode, reason: r.notPoReason ?? '', from: r.fromAddress ?? undefined, subject: r.subject ?? undefined,
+      receivedAt: r.receivedAt?.toISOString(), files: r.files ?? [], sortedAt: '', folder: r.folderName, s3Folder: r.s3Folder ? `${r.s3Folder}/` : '',
+    });
+  }
   rows.sort((a, b) => (b.receivedAt ?? '').localeCompare(a.receivedAt ?? ''));
 
   const header = ['receivedAt', 'from', 'subject', 'code', 'reason', 'files', 'folder', 's3_folder'];
@@ -82,6 +94,7 @@ export const sortStoredEmail = async (folder: string): Promise<SortResult> => {
   await fs.mkdir(notPoDir, { recursive: true });
   await fs.writeFile(path.join(dir, REASON_FILE), JSON.stringify(reason, null, 2), 'utf8');
   await fs.rename(dir, target);
+  await recordEmail(target);
   await writeNotPoReport(notPoDir);
   return { isPo: false, code: detected.code, reason: detected.reason, folder: target };
 };
@@ -103,6 +116,19 @@ export const recheckNotPo = async (groupDir: string): Promise<{ folder: string; 
     const to = path.join(groupDir, d.name);
     await fs.rm(path.join(from, REASON_FILE), { force: true });
     await fs.rename(from, to);
+    moved.push({ folder: to, channel: detected.config.channel });
+    await recordEmail(to);
+  }
+  // Not-PO emails whose local copy was removed: a PO now -> brought back from S3 into <group>/ (2026-10-23).
+  for (const r of await notPoRows(path.basename(groupDir))) {
+    if (!r.localRemovedAt || !r.s3Folder) continue;
+    const detected = detectChannel({ from: r.fromAddress ?? '', subject: r.subject ?? '' });
+    if (!('config' in detected)) continue;
+    const to = path.join(groupDir, r.folderName);
+    await downloadS3Folder(r.s3Folder, to);
+    await fs.rm(path.join(to, REASON_FILE), { force: true });
+    await markLocal(r.messageKey, false, INTAKE_EMAIL_KIND.PO);
+    await recordEmail(to);
     moved.push({ folder: to, channel: detected.config.channel });
   }
   await writeNotPoReport(notPoDir);

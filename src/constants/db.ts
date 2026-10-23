@@ -75,6 +75,10 @@ export const TABLES = {
   MANUAL_UPLOADS: 'manual_uploads',
   /** PO intake ON / OFF + limit per day per channel (2026-10-23; constants/intake.ts). */
   CHANNEL_INTAKE_SETTINGS: 'channel_intake_settings',
+  /** Every stored email / API / manual PO folder, PO or not (2026-10-23; constants/local-storage.ts). */
+  INTAKE_EMAILS: 'intake_emails',
+  /** Small server state kept across deploys, e.g. the Gmail sync point (2026-10-23). */
+  APP_STATE: 'app_state',
 } as const;
 
 /** TypeORM's own record of which migrations have run. */

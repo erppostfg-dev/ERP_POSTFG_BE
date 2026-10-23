@@ -12,7 +12,7 @@ import { downloadAttachments, originalSender, readParts, toHeaderMap } from './g
 import { readState, resolveRoutes, ResolvedRoute, writeState } from './gmail-watch.service';
 import { detectChannel } from '../ocr/channel-detector';
 import { intakeGate } from '../po-intake-control/intake-settings.service';
-import { storedFolderOf } from './email-storage.service';
+import { alreadyStored } from './email-storage.service';
 
 const ALL_FILES = /./;
 const MAX_FORWARDED_IDS = 5000;
@@ -100,10 +100,11 @@ export const forwardMessage = async (gmail: gmail_v1.Gmail, gmailId: string, rou
       return 'later';
     }
   }
-  const stored = await storedFolderOf(route.label, headers['message-id'] ?? `gmail-${gmailId}`);
+  // Already in POST_FG: on the disk, or remembered in the DB after its local copy was removed (2026-10-23).
+  const stored = await alreadyStored(route.label, headers['message-id'] ?? `gmail-${gmailId}`);
   if (stored) {
-    // Already on our server (an earlier run) but never in the chain: in now (start / duplicate / switch / limit checks).
-    if ((await admitToOcr(stored)) && env.ocr.enabled) queueExtractPo(stored);
+    // On the disk from an earlier run but never in the chain: in now (start / duplicate / switch / limit checks).
+    if (stored.folder && (await admitToOcr(stored.folder)) && env.ocr.enabled) queueExtractPo(stored.folder);
     return true;
   }
   const { attachments, body } = readParts(full.data.payload);

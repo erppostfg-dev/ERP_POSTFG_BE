@@ -12,6 +12,7 @@ export * from './files';
 export * from './folders';
 export * from './inbound';
 export * from './intake';
+export * from './local-storage';
 export * from './logging';
 export * from './manual-upload';
 export * from './masters';

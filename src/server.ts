@@ -9,7 +9,8 @@ import { startChannelApis } from './modules/channel-api/scheduler';
 import { resumeManualQueue } from './modules/manual-upload/manual-upload.service';
 import { recheckInReview } from './modules/po-review/recheck.service';
 import { holdForIntake, kickRelease } from './modules/po-intake-control/intake-release.service';
-import { PO_INTAKE, REVIEW_RECHECK } from './constants';
+import { runLocalCleanup } from './modules/email-intake/local-cleanup.service';
+import { LOCAL_CLEANUP, PO_INTAKE, REVIEW_RECHECK } from './constants';
 import { LOG_SOURCE } from './constants/logging';
 import { logError } from './utils/classify-error';
 import { runJob } from './utils/log-call';
@@ -88,6 +89,14 @@ const start = async (): Promise<void> => {
     releaseTimer = setInterval(kickRelease, PO_INTAKE.RELEASE_EVERY_MINUTES * 60_000);
   }
 
+  // Local disk = working area (2026-10-23): finished emails' folders go once their files are confirmed in S3.
+  let cleanupTimer: NodeJS.Timeout | undefined;
+  if (env.storage.cleanupEnabled && AppDataSource.isInitialized) {
+    const clean = () => void runJob('local-cleanup', () => runLocalCleanup({ apply: true })).catch(() => undefined);
+    setTimeout(clean, LOCAL_CLEANUP.FIRST_DELAY_MS);
+    cleanupTimer = setInterval(clean, LOCAL_CLEANUP.EVERY_HOURS * 3_600_000);
+  }
+
   // Resume unfinished POs from po_uploads (PIPELINE_RESUME=true, database connected), within PIPELINE_LIMIT.
   // The OCR is queued only when OCR_ENABLED; otherwise those emails stay queued for the next start.
   if (env.pipeline.resumeOnStart && AppDataSource.isInitialized) {
@@ -113,6 +122,7 @@ const start = async (): Promise<void> => {
     channelApis?.stop();
     if (recheckTimer) clearInterval(recheckTimer);
     if (releaseTimer) clearInterval(releaseTimer);
+    if (cleanupTimer) clearInterval(cleanupTimer);
     server.close(async () => {
       if (AppDataSource.isInitialized) await AppDataSource.destroy();
       process.exit(0);
