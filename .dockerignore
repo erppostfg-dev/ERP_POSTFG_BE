@@ -1,0 +1,16 @@
+# Keep the build context to what the Dockerfile copies; never send secrets or local data.
+.git
+.github
+.vscode
+node_modules
+dist
+storage
+secrets
+.env
+.env.*
+*.log
+deploy
+ocr-service/.git
+ocr-service/.venv*
+**/__pycache__
+**/*.pyc
