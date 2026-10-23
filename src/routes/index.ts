@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { INBOUND_ROUTES, MANUAL_UPLOAD, PO_VERIFY } from '../constants';
+import { INBOUND_ROUTES, MANUAL_UPLOAD, PO_ISSUES, PO_VERIFY } from '../constants';
 import poVerifyGate from '../modules/po-verify/po-verify.gate';
 import adminRoutes from './admin.routes';
 import amazonInboundRoutes from './amazon-inbound.routes';
@@ -9,6 +9,7 @@ import healthRoutes from './health.routes';
 import manualUploadRoutes from './manual-upload.routes';
 import mastersRoutes from './masters.routes';
 import poIntakeRoutes from './po-intake.routes';
+import poIssuesRoutes from './po-issues.routes';
 import poOverviewRoutes from './po-overview.routes';
 import poReviewRoutes from './po-review.routes';
 import poVerifyRoutes from './po-verify.routes';
@@ -18,6 +19,8 @@ const router = Router();
 router.use('/health', healthRoutes);
 router.use('/auth', authRoutes);
 router.use('/approvals', approvalsRoutes);
+// Before /admin: its own sub-path (Users & Roles -> PO issues).
+router.use(PO_ISSUES.BASE, poIssuesRoutes);
 router.use('/admin', adminRoutes);
 router.use(INBOUND_ROUTES.BASE, amazonInboundRoutes);
 router.use('/masters', mastersRoutes);

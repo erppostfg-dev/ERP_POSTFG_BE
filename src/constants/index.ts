@@ -14,6 +14,7 @@ export * from './inbound';
 export * from './logging';
 export * from './manual-upload';
 export * from './masters';
+export * from './po-issues';
 export * from './po-overview';
 export * from './po-overview-columns';
 export * from './po-review';
