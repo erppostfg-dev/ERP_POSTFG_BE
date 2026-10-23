@@ -31,6 +31,7 @@ import {
 } from '../../entities';
 import { flushChanges } from '../po-overview/po-overview.live';
 import { bumpReview } from './po-review.live';
+import { editRules, lockedChanges } from './review-edit-rules';
 import { AppError, appError } from '../../utils/AppError';
 import { readS3Json, siblingS3Url, writeS3Text } from '../email-intake/s3-mirror.service';
 import { ProcessedPo } from '../po-processing/common/processed-po';
@@ -256,7 +257,18 @@ const savePo = async (
 };
 
 /** The reviewer submits the fixed PO for approval: it must pass completely; nothing goes to the PO tables yet. */
-export const submitForApproval = async (uploadId: string, body: ResubmitBody, by: Actor): Promise<{ status: string; submissionId: string }> => {
+export const submitForApproval = async (
+  uploadId: string,
+  body: ResubmitBody,
+  by: Actor,
+  /** The person may change any value (CAPABILITY.PO_REVIEW_EDIT_ALL); else only the values with an open error. */
+  editAll = false,
+): Promise<{ status: string; submissionId: string }> => {
+  if (!editAll) {
+    const open = await AppDataSource.getRepository(PoIssue).findBy({ uploadId, status: ISSUE_STATUS.OPEN });
+    const locked = lockedChanges(editRules(open), body);
+    if (locked.length) throw appError(ERROR_CODES.REVIEW_FIELD_LOCKED, locked.join(', ')).withDetails({ locked });
+  }
   const p = await prepare(uploadId, body, UPLOAD_STATUS.NEEDS_REVIEW);
   const fixes = fixesOf(p, body);
   let submissionId = '';

@@ -51,6 +51,25 @@ export const PAGES: readonly PageEntry[] = [
   { slug: '/admin', label: 'Users & Roles', section: 'General' },
 ];
 
+/**
+ * Special permissions (2026-10-22): on / off per role in the Roles tab, stored as page_permissions rows (editor = on,
+ * none = off) under a key without "/" so it never inherits from a page (a role with PO Review editor does NOT get it).
+ * Admin and developer always have every one (USER_ADMIN_ROLES).
+ */
+export const CAPABILITY = {
+  /** In PO Review, change any value of a PO, not only the ones that show an error (user, 2026-10-22). */
+  PO_REVIEW_EDIT_ALL: 'po-review:edit-all',
+} as const;
+export type Capability = (typeof CAPABILITY)[keyof typeof CAPABILITY];
+export const CAPABILITIES: readonly { key: Capability; label: string; description: string }[] = [
+  {
+    key: CAPABILITY.PO_REVIEW_EDIT_ALL,
+    label: 'PO Review: edit all fields',
+    description: 'Without it, a reviewer can change only the values that show an error.',
+  },
+];
+export const CAPABILITY_SECTION = 'Special permissions';
+
 /** Page keys the API guards name (so routes never type a slug). */
 export const PAGE = {
   MASTERS: '/masters',

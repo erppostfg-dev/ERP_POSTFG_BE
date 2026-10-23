@@ -110,6 +110,7 @@ export const ERRORS = {
   ROLE_NOT_FOUND: define(400, (role: string) => `No role "${role}"`),
   ROLE_EXISTS: define(409, (role: string) => `A role "${role}" already exists`),
   ROLE_IS_SYSTEM: define(403, (role: string) => `"${role}" is a built-in role with full access; it cannot be changed here`),
+  REVIEW_FIELD_LOCKED: define(403, (fields: string) => `Only the values with an error can be changed: ${fields} has no error (ask an admin for "PO Review: edit all fields")`),
   ROLE_PAGE_NOT_ALLOWED: define(400, (page: string) => `A role cannot be given ${page} here`),
   FACILITY_NOT_FOUND: define(400, (codes: string) => `Unknown facility code(s): ${codes} (codes are case-sensitive)`),
   CANNOT_CHANGE_OWN_ACCESS: define(400, () => 'You cannot switch yourself off or remove your own admin / developer role'),

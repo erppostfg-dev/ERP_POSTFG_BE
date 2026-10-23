@@ -5,6 +5,8 @@ import {
   AccessLevel,
   ERROR_CODES,
   IST_OFFSET_MS,
+  CAPABILITIES,
+  CAPABILITY_SECTION,
   PAGES,
   ROLE_EXCLUDED_PAGES,
   TABLES,
@@ -34,14 +36,19 @@ export interface RoleItem {
 }
 
 /** Pages a custom role can be given, in sidebar order (section first, then its pages). */
-export const rolePages = () =>
-  PAGES.filter((p) => !ROLE_EXCLUDED_PAGES.includes(p.slug)).map((p) => ({
+export const rolePages = () => [
+  ...PAGES.filter((p) => !ROLE_EXCLUDED_PAGES.includes(p.slug)).map((p) => ({
     slug: p.slug,
     label: p.label,
     section: p.section,
     /** A section row ("/operations") vs one of its pages ("/operations/po-overview"). */
     isSection: p.slug.split('/').length === 2,
-  }));
+    isCapability: false,
+    description: null as string | null,
+  })),
+  // Special permissions (2026-10-22): on / off (editor / none), last in the list.
+  ...CAPABILITIES.map((c) => ({ slug: c.key as string, label: c.label, section: CAPABILITY_SECTION, isSection: false, isCapability: true, description: c.description as string | null })),
+];
 
 export const listRoles = async (): Promise<RoleItem[]> => {
   const [roles, grants, counts] = await Promise.all([
@@ -64,6 +71,8 @@ const checkGrants = (grants: Grants): Grants => {
   const known = new Set(rolePages().map((p) => p.slug));
   for (const [slug, level] of Object.entries(grants)) {
     if (!known.has(slug)) throw appError(ERROR_CODES.ROLE_PAGE_NOT_ALLOWED, slug);
+    // A special permission is on (editor) or off (none), never "viewer".
+    if (CAPABILITIES.some((c) => c.key === slug) && level === ACCESS_LEVEL.VIEWER) throw appError(ERROR_CODES.FIELD_NOT_ONE_OF, slug, `${ACCESS_LEVEL.NONE}, ${ACCESS_LEVEL.EDITOR}`);
     if (!(Object.values(ACCESS_LEVEL) as string[]).includes(level)) throw appError(ERROR_CODES.FIELD_NOT_ONE_OF, slug, Object.values(ACCESS_LEVEL).join(', '));
   }
   return grants;

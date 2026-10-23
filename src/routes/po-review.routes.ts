@@ -1,6 +1,7 @@
 import { Request, Response, Router } from 'express';
 import {
   ACCESS_LEVEL,
+  CAPABILITY,
   DAY_PATTERN,
   ERROR_CODES,
   errorMessage,
@@ -16,6 +17,7 @@ import {
   UploadStatus,
 } from '../constants';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
+import { hasCapability } from '../modules/auth/access.service';
 import { getPoFile, getPoReview, listPoReview, PoReviewListQuery } from '../modules/po-review/po-review.service';
 import { reviewEvents, reviewVersion } from '../modules/po-review/po-review.live';
 import { downloadCombined, downloadOne, markUploaded } from '../modules/po-review/uniware-handoff.service';
@@ -245,7 +247,9 @@ const uploadIdOf = (req: Request): string => {
 router.post('/:uploadId/submit', requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
   try {
     const uploadId = uploadIdOf(req);
-    res.json({ data: await submitForApproval(uploadId, parseResubmit(req.body), { id: req.auth!.user.id, email: req.auth!.user.email }) });
+    // Only the values with an error, unless the person's role has "PO Review: edit all fields" (2026-10-22).
+    const editAll = await hasCapability(req.auth!.user.id, req.auth!.roles, CAPABILITY.PO_REVIEW_EDIT_ALL);
+    res.json({ data: await submitForApproval(uploadId, parseResubmit(req.body), { id: req.auth!.user.id, email: req.auth!.user.email }, editAll) });
   } catch (err) {
     next(err);
   }

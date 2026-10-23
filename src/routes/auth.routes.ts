@@ -1,7 +1,7 @@
 import { CookieOptions, Router } from 'express';
 import { env } from '../config/env';
 import { AUTH, ERROR_CODES } from '../constants';
-import { resolveAllAccess } from '../modules/auth/access.service';
+import { resolveAllAccess, resolveCapabilities } from '../modules/auth/access.service';
 import { clientInfo, requireAuth } from '../modules/auth/auth.middleware';
 import { allowedUser, endSession, googleSignInUrl, newState, profileFromCode, startSession } from '../modules/auth/session.service';
 import { AppError, appError } from '../utils/AppError';
@@ -81,6 +81,8 @@ router.get('/me', requireAuth, async (req, res, next) => {
           roleLabels: roles.length ? await AppDataSource.getRepository(Role).findBy({ key: In(roles) }).then((rs) => Object.fromEntries(rs.map((r) => [r.key, r.label]))).catch(() => ({})) : {},
         },
         access: await resolveAllAccess(user.id, roles),
+        // Special permissions (on / off), e.g. po-review:edit-all (2026-10-22).
+        capabilities: await resolveCapabilities(user.id, roles),
       },
     });
   } catch (err) {
