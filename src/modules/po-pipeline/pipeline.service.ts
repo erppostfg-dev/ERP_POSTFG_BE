@@ -7,7 +7,7 @@ import { PoUpload } from '../../entities';
 import { detectChannel, emailInfo, StoredMetadata } from '../ocr/channel-detector';
 import { processPo } from '../po-processing/po-router';
 import { MasterDataReader } from '../po-validation/master-data';
-import { alreadyHavePo, processFromOf, shouldHold } from '../po-intake-control/intake-settings.service';
+import { alreadyHavePo, intakeGate, processFromOf, shouldHold } from '../po-intake-control/intake-settings.service';
 import { applySave, planSave } from './po-save.service';
 import { applyPlan, emailValues, planEmail } from './po-uploads.service';
 import { LOG_SOURCE } from '../../constants/logging';
@@ -132,8 +132,13 @@ export const emailStored = async (folder: string): Promise<boolean> => {
  */
 export const admitToOcr = async (folder: string): Promise<boolean> => {
   if (!on()) return false;
-  const { messageId } = await messageIdOf(folder).catch(() => ({ messageId: null }));
-  if (!messageId || (await rowsOf(messageId)).length) return false;
+  const read = await messageIdOf(folder).catch(() => null);
+  if (!read?.messageId || (await rowsOf(read.messageId)).length) return false;
+  // Channel OFF / before its start: no row either (user: "OFF channels never reach the DB"); switching the channel on
+  // takes it then (the catch-up finds it stored and comes back here).
+  const detected = detectChannel(emailInfo(read.meta));
+  const received = (read.meta as { receivedAt?: string }).receivedAt;
+  if ('config' in detected && (await intakeGate(detected.config.channel, received && !Number.isNaN(Date.parse(received)) ? new Date(received) : null)) !== 'take') return false;
   return emailStored(folder);
 };
 
