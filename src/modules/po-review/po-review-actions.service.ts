@@ -7,6 +7,7 @@ import {
   FILES,
   ISSUE_ACTION,
   ISSUE_STATUS,
+  SYSTEM_ACTOR,
   PO_REVIEW_REMARK_MAX,
   REVIEW_FIX_FIELD,
   REVIEW_SUBMISSION_STATUS,
@@ -254,6 +255,19 @@ const savePo = async (
   log.info(LOG_SOURCE.APP, `[po-review] ${uploadId} ${v.poNumber}: saved (reviewer ${reviewer}), sale order ${code}, CSV ${csvUrl}`);
   void flushChanges();
   return { status: UPLOAD_STATUS.COMPLETED, poUid, saleOrderCode: code, uniwareCsv: csvUrl, resolvedIssues: open.map((i) => String(i.id)) };
+};
+
+/**
+ * A PO whose open issues were all fixed in the master (re-check, 2026-10-22): it passes as it is now, so it is saved
+ * like an approved one (PO rows + sale order + Uniware CSV), by the system. Throws REVIEW_INCOMPLETE when something is
+ * still left (then it simply stays in review).
+ */
+export const completeAfterRecheck = async (uploadId: string, remark: string): Promise<ResubmitResult> => {
+  const body: ResubmitBody = { lines: [], accept: [], remark };
+  const p = await prepare(uploadId, body, UPLOAD_STATUS.NEEDS_REVIEW);
+  const result = await savePo(p, body, UPLOAD_STATUS.NEEDS_REVIEW, SYSTEM_ACTOR, null);
+  bumpReview();
+  return result;
 };
 
 /** The reviewer submits the fixed PO for approval: it must pass completely; nothing goes to the PO tables yet. */

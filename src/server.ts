@@ -7,6 +7,8 @@ import { queueExtractPo } from './modules/ocr/extract-po.service';
 import { applyResume, planResume } from './modules/po-pipeline/resume.service';
 import { startChannelApis } from './modules/channel-api/scheduler';
 import { resumeManualQueue } from './modules/manual-upload/manual-upload.service';
+import { recheckInReview } from './modules/po-review/recheck.service';
+import { REVIEW_RECHECK } from './constants';
 import { LOG_SOURCE } from './constants/logging';
 import { logError } from './utils/classify-error';
 import { runJob } from './utils/log-call';
@@ -63,6 +65,20 @@ const start = async (): Promise<void> => {
   // "uploaded" ones wait for a Process click.
   if (AppDataSource.isInitialized) void resumeManualQueue();
 
+  // Re-check of POs in review after master fixes (2026-10-22): every RECHECK_MINUTES (0 = off), first one a minute after
+  // start. A run never overlaps the previous one.
+  let recheckTimer: NodeJS.Timeout | undefined;
+  if (env.recheck.minutes > 0 && AppDataSource.isInitialized) {
+    let running = false;
+    const tick = () => {
+      if (running) return;
+      running = true;
+      void runJob('recheck', () => recheckInReview({ trigger: REVIEW_RECHECK.TRIGGER.TIMER })).catch(() => undefined).finally(() => { running = false; });
+    };
+    setTimeout(tick, REVIEW_RECHECK.FIRST_DELAY_MS);
+    recheckTimer = setInterval(tick, env.recheck.minutes * 60_000);
+  }
+
   // Resume unfinished POs from po_uploads (PIPELINE_RESUME=true, database connected), within PIPELINE_LIMIT.
   // The OCR is queued only when OCR_ENABLED; otherwise those emails stay queued for the next start.
   if (env.pipeline.resumeOnStart && AppDataSource.isInitialized) {
@@ -83,6 +99,7 @@ const start = async (): Promise<void> => {
     monitor.stop();
     await listener?.stop();
     channelApis?.stop();
+    if (recheckTimer) clearInterval(recheckTimer);
     server.close(async () => {
       if (AppDataSource.isInitialized) await AppDataSource.destroy();
       process.exit(0);

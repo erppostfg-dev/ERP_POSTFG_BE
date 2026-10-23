@@ -11,6 +11,7 @@ import {
   PO_REVIEW_REMARK_MAX,
   PO_REVIEW_QUERY,
   REVIEW_LIVE,
+  REVIEW_RECHECK,
   UNIWARE_HANDOFF,
   UPLOAD_ID_PATTERN,
   UPLOAD_STATUS,
@@ -20,6 +21,7 @@ import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
 import { hasCapability } from '../modules/auth/access.service';
 import { getPoFile, getPoReview, listPoReview, PoReviewListQuery } from '../modules/po-review/po-review.service';
 import { reviewEvents, reviewVersion } from '../modules/po-review/po-review.live';
+import { recheckInReview } from '../modules/po-review/recheck.service';
 import { downloadCombined, downloadOne, markUploaded } from '../modules/po-review/uniware-handoff.service';
 import { LineCorrection, rejectPo, ResubmitBody, submitForApproval } from '../modules/po-review/po-review-actions.service';
 import { appError } from '../utils/AppError';
@@ -262,6 +264,17 @@ router.post('/:uploadId/reject', requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS
     const remark = bodyReader(problems).remark((req.body as Record<string, unknown> | undefined)?.[B.REMARK], B.REMARK, true);
     if (problems.length || !remark) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails(problems);
     res.json({ data: await rejectPo(uploadId, remark, { id: req.auth!.user.id, email: req.auth!.user.email }) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---- Re-check after a master fix (2026-10-22, REVIEW_RECHECK) ------------------------------------------------------
+
+/** POST /po-review/recheck: re-check every PO in review now (the timer does it every RECHECK_MINUTES too). Editor. */
+router.post(REVIEW_RECHECK.ROUTE, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (_req, res, next) => {
+  try {
+    res.json({ data: await recheckInReview({ trigger: REVIEW_RECHECK.TRIGGER.BUTTON }) });
   } catch (err) {
     next(err);
   }

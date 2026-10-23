@@ -14,7 +14,8 @@ import 'reflect-metadata';
 import fs from 'fs';
 import path from 'path';
 import { AppDataSource } from '../config/data-source';
-import { ERROR_CODES, MASTER_LOAD_TYPES, MASTER_SOURCE, MasterLoadType, MasterSource } from '../constants';
+import { ERROR_CODES, MASTER_LOAD_TYPES, MASTER_SOURCE, MasterLoadType, MasterSource, REVIEW_RECHECK } from '../constants';
+import { recheckInReview } from '../modules/po-review/recheck.service';
 import { LoadPlan, missingColumns, planMasterLoad } from '../modules/masters/master-load.service';
 import { readPepimsMasters, SourceRows } from '../modules/masters/pepims-source';
 import { csvRecords } from '../utils/csv';
@@ -86,6 +87,12 @@ const main = async (): Promise<void> => {
       } else print(await plan(), i.from);
     }
     if (!APPLY && inputs.length > 1) console.log('\nNote: in a dry run, types that depend on an earlier one (courier-rates on courier-partner, status on status-values) are checked against what is in our DB NOW.');
+    if (APPLY) {
+      // POs in review whose problems this load fixed pass now (2026-10-22, REVIEW_RECHECK).
+      const r = await recheckInReview({ trigger: REVIEW_RECHECK.TRIGGER.MASTER_LOAD });
+      const passed = r.completed.map((c) => `${c.poNumber} -> ${c.saleOrder}`).join(', ');
+      console.log(`\nRe-check of POs in review: ${r.checked} checked, ${r.issuesClosed} issue(s) fixed by the master, ${r.completed.length} PO(s) passed${passed ? `: ${passed}` : ''}, ${r.partly} partly fixed.`);
+    }
     console.log(APPLY ? '\nDone. Next: npm run masters:link' : '\nDry run only. Add --apply to write.');
   } finally {
     await AppDataSource.destroy();

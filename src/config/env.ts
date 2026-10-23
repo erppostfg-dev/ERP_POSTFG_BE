@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 import { ERROR_CODES } from '../constants/errors';
 import { LOG_DEFAULTS, LOG_FORMAT, LOG_LEVEL_RANK, type LogFormat, type LogLevel } from '../constants/logging';
+import { REVIEW_RECHECK } from '../constants/po-review';
 import { appError } from '../utils/AppError';
 
 dotenv.config();
@@ -107,6 +108,11 @@ export const env = {
   // original PO (constants/po-verify.ts). On unless PO_VERIFY_REQUIRED=false (the switch to drop the step later).
   poVerify: {
     required: flag('PO_VERIFY_REQUIRED', 'true'),
+  },
+  // Re-check of POs in review after a master fix (2026-10-22, constants/po-review REVIEW_RECHECK): minutes between
+  // automatic runs; 0 = only after masters:load and on the button.
+  recheck: {
+    minutes: Number(process.env.RECHECK_MINUTES ?? REVIEW_RECHECK.DEFAULT_MINUTES),
   },
   // Channel API connectors (2026-10-16): POs pulled from channel APIs into the same chain. Off by default, like the
   // email listener; each connector also needs its own keys. Poll minutes: the connector's env value, else the constant.

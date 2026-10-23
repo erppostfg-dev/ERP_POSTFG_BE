@@ -95,3 +95,23 @@ export const UNIWARE_HANDOFF = {
   BODY_UNDO: 'undo',
 } as const;
 
+
+/**
+ * Re-check of POs in review after a master fix (user, 2026-10-22: "they directly pass and the issue resolves").
+ * Validation runs again on each In Review PO (processed.json from S3, today's master). Only issues the master can fix
+ * are closed by it; when nothing is left the PO is saved like an approved one (sale order + Uniware CSV, then Verify if
+ * its channel is ON). Everything that needs a person (expired, FOC / revised, duplicate, OCR, qty, a Verify remark)
+ * always waits. Runs after `masters:load --apply`, every RECHECK_MINUTES in the server (0 = off), and on the
+ * "Re-check now" button (In Review tab). Later (backlog 4i): timer off + re-check right after each Masters page save.
+ */
+export const REVIEW_RECHECK = {
+  /** Issue types a master change can fix (the rest are never closed by a re-check). */
+  FIXABLE: ['SKU_NOT_MAPPED', 'LOCATION_NOT_MAPPED', 'MRP_MISMATCH', 'PRICE_MISMATCH', 'TOTAL_MISMATCH'] as readonly string[],
+  /** Minutes between automatic re-checks when RECHECK_MINUTES is not set. */
+  DEFAULT_MINUTES: 30,
+  /** First automatic run this long after the server starts. */
+  FIRST_DELAY_MS: 60_000,
+  REMARK: 'Fixed in master, re-checked automatically',
+  ROUTE: '/recheck',
+  TRIGGER: { TIMER: 'timer', MASTER_LOAD: 'master_load', BUTTON: 'button' },
+} as const;
