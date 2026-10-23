@@ -11,6 +11,7 @@ export * from './errors';
 export * from './files';
 export * from './folders';
 export * from './inbound';
+export * from './intake';
 export * from './logging';
 export * from './manual-upload';
 export * from './masters';

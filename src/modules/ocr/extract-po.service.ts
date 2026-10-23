@@ -207,12 +207,17 @@ export const foldersWithoutOcr = async (groupDir: string): Promise<string[]> => 
 };
 
 /** Queues every stored email of the label folders that was never run through OCR (OCR_BACKLOG). */
-export const queueOcrBacklog = async (groupDirs: string[]): Promise<{ found: number; queued: number }> => {
+export const queueOcrBacklog = async (
+  groupDirs: string[],
+  admit: (folder: string) => Promise<boolean> = async () => true,
+): Promise<{ found: number; queued: number }> => {
   let found = 0;
   let queuedNow = 0;
   for (const groupDir of groupDirs) {
     for (const dir of await foldersWithoutOcr(groupDir)) {
       found++;
+      // PO intake (2026-10-23): the admin switch / limit / process-from decide, not the .env flag alone.
+      if (!(await admit(dir))) continue;
       if (queueExtractPo(dir)) queuedNow++;
     }
   }

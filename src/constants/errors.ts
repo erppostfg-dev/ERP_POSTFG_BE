@@ -92,6 +92,7 @@ export const ERRORS = {
   PO_NOT_VERIFIED: define(409, (ids: string) => `Verify the PO against the original first: upload(s) ${ids} not verified yet`),
   VERIFY_NOT_READY: define(409, (id: string, status: string) => `Upload ${id} cannot be verified: it is ${status}, only processed (completed) POs are checked`),
   ALREADY_VERIFIED: define(409, (id: string) => `Upload ${id} is already verified`),
+  INTAKE_CHANNEL_NOT_FOUND: define(404, (channel: string) => `No channel "${channel}" that comes by email or API`),
   VERIFY_CHANNEL_NOT_FOUND: define(404, (channel: string) => `No channel "${channel}" in master_channels`),
   ALREADY_IN_UNIWARE: define(409, (id: string) => `Upload ${id} is already marked uploaded into Uniware: undo that first, then send it back`),
   // --- Channel API connectors (2026-10-16) ---

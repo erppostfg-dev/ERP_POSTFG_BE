@@ -8,7 +8,8 @@ import { applyResume, planResume } from './modules/po-pipeline/resume.service';
 import { startChannelApis } from './modules/channel-api/scheduler';
 import { resumeManualQueue } from './modules/manual-upload/manual-upload.service';
 import { recheckInReview } from './modules/po-review/recheck.service';
-import { REVIEW_RECHECK } from './constants';
+import { holdForIntake, kickRelease } from './modules/po-intake-control/intake-release.service';
+import { PO_INTAKE, REVIEW_RECHECK } from './constants';
 import { LOG_SOURCE } from './constants/logging';
 import { logError } from './utils/classify-error';
 import { runJob } from './utils/log-call';
@@ -79,6 +80,14 @@ const start = async (): Promise<void> => {
     recheckTimer = setInterval(tick, env.recheck.minutes * 60_000);
   }
 
+  // PO intake per channel (2026-10-23): held POs of channels that are ON with room today go on, one by one; a new day
+  // frees the limit, so this looks again every RELEASE_EVERY_MINUTES.
+  let releaseTimer: NodeJS.Timeout | undefined;
+  if (AppDataSource.isInitialized) {
+    setTimeout(kickRelease, PO_INTAKE.RELEASE_FIRST_DELAY_MS);
+    releaseTimer = setInterval(kickRelease, PO_INTAKE.RELEASE_EVERY_MINUTES * 60_000);
+  }
+
   // Resume unfinished POs from po_uploads (PIPELINE_RESUME=true, database connected), within PIPELINE_LIMIT.
   // The OCR is queued only when OCR_ENABLED; otherwise those emails stay queued for the next start.
   if (env.pipeline.resumeOnStart && AppDataSource.isInitialized) {
@@ -86,11 +95,14 @@ const start = async (): Promise<void> => {
       const items = await planResume(AppDataSource);
       log.info(LOG_SOURCE.APP, `[resume] ${items.length} unfinished email(s) in po_uploads`);
       await applyResume(AppDataSource, items, {
+        // OCR work waits for the admin's PO intake switch + limit (held -> released one by one), not .env alone.
+        holdOcr: holdForIntake,
         runOcr: async (folder) => {
           if (env.ocr.enabled) queueExtractPo(folder);
           else log.info(LOG_SOURCE.OCR, `[resume] OCR_ENABLED=false: ${folder} stays queued`);
         },
       });
+      kickRelease();
     }).catch(() => undefined); // JOB_FAILED is logged by runJob; the next start resumes again
   }
 
@@ -100,6 +112,7 @@ const start = async (): Promise<void> => {
     await listener?.stop();
     channelApis?.stop();
     if (recheckTimer) clearInterval(recheckTimer);
+    if (releaseTimer) clearInterval(releaseTimer);
     server.close(async () => {
       if (AppDataSource.isInitialized) await AppDataSource.destroy();
       process.exit(0);

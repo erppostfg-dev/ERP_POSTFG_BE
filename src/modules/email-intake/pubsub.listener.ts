@@ -13,6 +13,7 @@ import { groupDirFor, NOT_PO_SUFFIX } from './email-storage.service';
 import { catchUpOnStart, processGmailChanges } from './label-router.service';
 import { mirrorLater, syncLabelToS3 } from './s3-mirror.service';
 import { queueOcrBacklog } from '../ocr/extract-po.service';
+import { admitToOcr } from '../po-pipeline/pipeline.service';
 
 const pubsubClient = (): PubSub => {
   const { projectId, keyFile } = env.pubsub;
@@ -44,8 +45,8 @@ export const startEmailListener = async (): Promise<{ stop: () => Promise<void> 
   // Then: OCR for stored POs that never had it (OCR_ENABLED + OCR_BACKLOG; only <label>/, never <label>-not-po/).
   void queue.then(async () => {
     if (!env.ocr.enabled || !env.ocr.backlog) return;
-    const b = await queueOcrBacklog(routes.map((r) => groupDirFor(r.label)));
-    const waitingNote = b.found > b.queued ? `; ${b.found - b.queued} wait for the next start (OCR_RUN_LIMIT ${env.ocr.runLimit})` : '';
+    const b = await queueOcrBacklog(routes.map((r) => groupDirFor(r.label)), admitToOcr);
+    const waitingNote = b.found > b.queued ? `; ${b.found - b.queued} not now (held / before process-from / already in POST_FG / OCR_RUN_LIMIT)` : '';
     log.info(LOG_SOURCE.OCR, `backlog: ${b.found} stored email(s) without OCR, ${b.queued} queued${waitingNote}`);
   }).catch((err) => logError(LOG_SOURCE.OCR, 'OCR backlog failed (the next start tries again)', err));
 

@@ -106,6 +106,8 @@ export interface ResumeOptions {
   runOcr: (folder: string) => Promise<void>;
   /** Most emails to resume in this run (on top of PIPELINE_LIMIT); 0 = all. */
   max?: number;
+  /** Server start (PO intake, 2026-10-23): true = this OCR item was handed to the intake release (held), skip it here. */
+  holdOcr?: (item: ResumeItem) => Promise<boolean>;
 }
 
 /** Resumes the planned emails one at a time; stops when PIPELINE_LIMIT or `max` is reached. Returns how many ran. */
@@ -114,6 +116,7 @@ export const applyResume = async (db: DataSource, items: ResumeItem[], opts: Res
   for (const item of items) {
     if (item.action === RESUME_ACTION.SKIP || !item.folder) continue;
     if (opts.max && done >= opts.max) break;
+    if (item.action === RESUME_ACTION.OCR && opts.holdOcr && (await opts.holdOcr(item))) continue;
     if (!takeSlot()) {
       log.info(LOG_SOURCE.APP, `[resume] PIPELINE_LIMIT reached; the rest wait for the next run`);
       break;

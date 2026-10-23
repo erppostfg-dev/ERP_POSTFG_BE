@@ -6,9 +6,13 @@ import { LOG_SOURCE } from '../../constants/logging';
 import { logCall } from '../../utils/log-call';
 import { log } from '../../utils/logger';
 import { getGmail } from './gmail.client';
-import { pipelineFull } from '../po-pipeline/pipeline.service';
+import { admitToOcr, pipelineFull } from '../po-pipeline/pipeline.service';
+import { queueExtractPo } from '../ocr/extract-po.service';
 import { downloadAttachments, originalSender, readParts, toHeaderMap } from './gmail-message';
-import { readState, ResolvedRoute, writeState } from './gmail-watch.service';
+import { readState, resolveRoutes, ResolvedRoute, writeState } from './gmail-watch.service';
+import { detectChannel } from '../ocr/channel-detector';
+import { intakeGate } from '../po-intake-control/intake-settings.service';
+import { storedFolderOf } from './email-storage.service';
 
 const ALL_FILES = /./;
 const MAX_FORWARDED_IDS = 5000;
@@ -73,15 +77,35 @@ const endpointUrl = (endpoint: string): string =>
 
 /**
  * Downloads one labelled email with all its attachments and POSTs it to the label's endpoint (multipart).
- * Returns false when the email no longer carries a routed label.
+ * Returns false when the email no longer carries a routed label, and "later" when its channel is OFF or it came before
+ * the channel's start (PO intake, 2026-10-23): it stays in Gmail, not downloaded and not marked done, so switching the
+ * channel on (or an earlier start) takes it then. `only` = a one-channel catch-up: other channels' emails are left
+ * for their own. An email already stored is not downloaded again (true).
  */
-export const forwardMessage = async (gmail: gmail_v1.Gmail, gmailId: string, routes: ResolvedRoute[]): Promise<boolean> => {
+export const forwardMessage = async (gmail: gmail_v1.Gmail, gmailId: string, routes: ResolvedRoute[], only?: string): Promise<boolean | 'later'> => {
   const full = await logCall(LOG_SOURCE.GMAIL, 'messages.get', () => gmail.users.messages.get({ userId: 'me', id: gmailId, format: 'full' }), { key: gmailId, fields: { gmailId } });
   const route = routes.find((r) => full.data.labelIds?.includes(r.labelId));
   if (!route) return false; // label removed again before we got to it
 
   const headers = toHeaderMap(full.data.payload?.headers ?? []);
   const subject = headers['subject'] ?? '';
+  const receivedAt = full.data.internalDate ? new Date(Number(full.data.internalDate)) : null;
+  const detected = detectChannel({ from: originalSender(headers), subject });
+  const channel = 'config' in detected ? detected.config.channel : null;
+  if (only && channel !== only) return 'later';
+  if (channel) {
+    const gate = await intakeGate(channel, receivedAt);
+    if (gate !== 'take') {
+      log.info(LOG_SOURCE.APP, `[route] "${subject}": ${channel} ${gate === 'off' ? 'is OFF' : 'start is later'}: left in Gmail`, { gmailId });
+      return 'later';
+    }
+  }
+  const stored = await storedFolderOf(route.label, headers['message-id'] ?? `gmail-${gmailId}`);
+  if (stored) {
+    // Already on our server (an earlier run) but never in the chain: in now (start / duplicate / switch / limit checks).
+    if ((await admitToOcr(stored)) && env.ocr.enabled) queueExtractPo(stored);
+    return true;
+  }
   const { attachments, body } = readParts(full.data.payload);
   const files = await downloadAttachments(gmail, gmailId, attachments, ALL_FILES);
   const from = originalSender(headers);
@@ -126,7 +150,7 @@ const rememberForwarded = async (id: string): Promise<void> => {
  * Sends each id not sent before, and saves it right after it is sent, so a stop in the middle loses nothing.
  * Stops at the first error (the rest is retried later).
  */
-const forwardNew = async (gmail: gmail_v1.Gmail, ids: string[], routes: ResolvedRoute[]): Promise<number> => {
+const forwardNew = async (gmail: gmail_v1.Gmail, ids: string[], routes: ResolvedRoute[], only?: string): Promise<number> => {
   const done = new Set((await readState()).forwardedIds ?? []);
   let sent = 0;
 
@@ -137,19 +161,36 @@ const forwardNew = async (gmail: gmail_v1.Gmail, ids: string[], routes: Resolved
       log.warn(LOG_SOURCE.APP, `[route] PIPELINE_LIMIT ${env.pipeline.limit} reached: intake stopped, ${ids.filter((i) => !done.has(i)).length} email(s) left in Gmail for the next start`);
       break;
     }
-    if (await forwardMessage(gmail, id, routes)) sent++;
+    const r = await forwardMessage(gmail, id, routes, only);
+    if (r === 'later') continue; // channel OFF / before its start: not marked done, switching on takes it
+    if (r) sent++;
     done.add(id);
     await rememberForwarded(id);
   }
   return sent;
 };
 
-/** Sends every email in the route's label (or only those after `after`) that was not sent before. */
-const backfillLabel = async (gmail: gmail_v1.Gmail, route: ResolvedRoute, after?: Date): Promise<void> => {
+/**
+ * One-time catch-up for ONE channel (PO intake, 2026-10-23): switched on, or its start moved earlier -> its labelled
+ * emails from `after` until now that POST_FG does not have yet. Other channels are not touched. Runs one after
+ * another (a second channel switched on meanwhile waits its turn, never dropped).
+ */
+let backfillQueue: Promise<void> = Promise.resolve();
+export const backfillSince = (after: Date, channel: string): Promise<void> => {
+  const run = backfillQueue.then(async () => {
+    const gmail = getGmail();
+    for (const route of await resolveRoutes()) await backfillLabel(gmail, route, after, channel);
+  });
+  backfillQueue = run.catch(() => undefined);
+  return run;
+};
+
+/** Sends every email in the route's label (or only those after `after`; only one channel's) that was not sent before. */
+const backfillLabel = async (gmail: gmail_v1.Gmail, route: ResolvedRoute, after?: Date, only?: string): Promise<void> => {
   const ids = await labelMessageIds(gmail, route.labelId, after);
-  const sent = await forwardNew(gmail, ids, [route]);
+  const sent = await forwardNew(gmail, ids, [route], only);
   log.info(LOG_SOURCE.GMAIL,
-    `[backfill] ${route.label}: ${ids.length} email(s) in label${after ? ` since ${after.toISOString()}` : ''}, ${sent} newly sent`,
+    `[backfill] ${route.label}${only ? ` (${only})` : ''}: ${ids.length} email(s) in label${after ? ` since ${after.toISOString()}` : ''}, ${sent} newly sent`,
   );
 };
 

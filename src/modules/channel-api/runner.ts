@@ -2,13 +2,16 @@ import fs from 'fs/promises';
 import path from 'path';
 import { AppDataSource } from '../../config/data-source';
 import { env } from '../../config/env';
-import { CHANNEL_API, FILES, FOLDERS, PROVIDERS, UPLOAD_STATUS } from '../../constants';
+import { CHANNEL_API, FILES, FOLDERS, IST_OFFSET_MS, PROVIDERS, UPLOAD_STATUS } from '../../constants';
 import { ChannelApiSync, PoUpload } from '../../entities';
 import { syncEmailToS3 } from '../email-intake/s3-mirror.service';
 import { runChainFor, takeSlot } from '../po-pipeline/pipeline.service';
+import { emailValues } from '../po-pipeline/po-uploads.service';
+import { intakeGate, processFromOf, shouldHold } from '../po-intake-control/intake-settings.service';
 import { MasterDataReader } from '../po-validation/master-data';
 import { validatePo } from '../po-validation/validate-po';
 import { ChannelConnector, ExternalPo, ExternalRef } from './connector';
+import { CONNECTORS } from './registry';
 
 /*
  * One run of a channel API connector (2026-10-16), shared by every channel:
@@ -66,8 +69,8 @@ const decide = async (c: ChannelConnector, ref: ExternalRef): Promise<Decision> 
 const folderOf = (po: ExternalPo) =>
   path.resolve(env.storage.emailDir, FOLDERS.CHANNEL_API, `${po.createdAt}_${po.externalId.replace(/[^A-Za-z0-9._-]+/g, '_')}`);
 
-/** Writes the PO as an email-like folder, copies it to S3 and runs the chain. */
-const ingest = async (c: ChannelConnector, po: ExternalPo, master: Awaited<ReturnType<MasterDataReader['forChannel']>>) => {
+/** Writes the PO as an email-like folder (metadata, api-raw, processed.json) and copies it to S3. */
+const writeFolder = async (c: ChannelConnector, po: ExternalPo, master: Awaited<ReturnType<MasterDataReader['forChannel']>>): Promise<string> => {
   const folder = folderOf(po);
   await fs.mkdir(folder, { recursive: true });
   const metaFile = path.join(folder, FILES.METADATA);
@@ -89,7 +92,18 @@ const ingest = async (c: ChannelConnector, po: ExternalPo, master: Awaited<Retur
   await fs.writeFile(path.join(folder, FILES.API_RAW), `${JSON.stringify(po.rawFull, null, 2)}\n`);
   await fs.writeFile(path.join(folder, FILES.PROCESSED), `${JSON.stringify(c.toProcessed(po, master), null, 2)}\n`);
   await syncEmailToS3(folder); // before the chain: the review screen reads processed.json from S3
-  return runChainFor(folder);
+  return folder;
+};
+
+/** Writes the PO's folder and runs the chain. */
+const ingest = async (c: ChannelConnector, po: ExternalPo, master: Awaited<ReturnType<MasterDataReader['forChannel']>>) =>
+  runChainFor(await writeFolder(c, po, master));
+
+/** PO intake OFF / over today's limit (2026-10-23): the folder is written and S3 has it, the row waits as "held". */
+const hold = async (c: ChannelConnector, po: ExternalPo, master: Awaited<ReturnType<MasterDataReader['forChannel']>>) => {
+  const folder = await writeFolder(c, po, master);
+  const repo = AppDataSource.getRepository(PoUpload);
+  await repo.save(repo.create({ ...(await emailValues(folder, master?.channel.displayName ?? null)), poNumber: po.poNumber, status: UPLOAD_STATUS.HELD }));
 };
 
 export const runConnector = async (c: ChannelConnector, opts: RunOptions): Promise<{ items: RunItem[]; until: Date; since: Date }> => {
@@ -117,8 +131,13 @@ export const runConnector = async (c: ChannelConnector, opts: RunOptions): Promi
     const item: RunItem = { externalId: ref.externalId, status: ref.status, label: ref.label, decision: await decide(c, ref) };
     items.push(item);
     if (item.decision !== 'ready') continue;
+    // PO intake OFF (2026-10-23): not even fetched; switching on rewinds the check point to its start (rewindTo).
+    if (opts.apply && (await intakeGate(c.channel, null)) === 'off') { item.result = 'off'; continue; }
     try {
       const po = await c.fetch(ref);
+      // Before the channel's "process from" day (2026-10-23): not taken (tracking still sees it).
+      const from = await processFromOf(c.channel);
+      if (from && po.createdAt < new Date(from.getTime() + IST_OFFSET_MS).toISOString().slice(0, 10)) { item.result = 'before start'; continue; }
       const processed = c.toProcessed(po, master);
       item.lines = processed.line_items.length;
       if (!opts.apply) {
@@ -128,6 +147,7 @@ export const runConnector = async (c: ChannelConnector, opts: RunOptions): Promi
         continue;
       }
       if (opts.max !== undefined && done >= opts.max) { item.result = 'not taken (max reached)'; continue; }
+      if (await shouldHold(c.channel)) { await hold(c, po, master); item.result = UPLOAD_STATUS.HELD; continue; }
       if (!takeSlot()) { item.result = 'not taken (PIPELINE_LIMIT reached)'; failed.push(ref.externalId); continue; }
       done++;
       const out = await ingest(c, po, master);
@@ -143,9 +163,12 @@ export const runConnector = async (c: ChannelConnector, opts: RunOptions): Promi
 
   if (opts.saveCheckpoint) {
     const count = (d: Decision) => items.filter((i) => i.decision === d).length;
+    // Rewound while this run was going (a channel switched on): keep the rewound point, the next run reads from it.
+    const now = await syncStateOf(c);
+    const rewound = !!now.syncedUntil && (!state.syncedUntil || now.syncedUntil < state.syncedUntil);
     await syncRepo().save({
       ...state,
-      syncedUntil: until,
+      syncedUntil: rewound ? now.syncedUntil : until,
       lastRunAt: new Date(),
       lastSuccessAt: new Date(),
       failures: 0,
@@ -154,6 +177,17 @@ export const runConnector = async (c: ChannelConnector, opts: RunOptions): Promi
     });
   }
   return { items, until, since };
+};
+
+/**
+ * PO intake (2026-10-23): a channel switched on, or its start moved earlier -> its connectors read again from `to`
+ * on the next run (only ever moved back, never forward).
+ */
+export const rewindTo = async (channel: string, to: Date): Promise<void> => {
+  for (const c of CONNECTORS.filter((x) => x.channel === channel)) {
+    const state = await syncStateOf(c);
+    if (!state.syncedUntil || state.syncedUntil > to) await syncRepo().save({ ...state, syncedUntil: to });
+  }
 };
 
 /** A run that failed as a whole (the channel's API down, login refused): counted for the back-off; check point kept. */

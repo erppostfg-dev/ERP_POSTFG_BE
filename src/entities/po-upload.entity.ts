@@ -120,6 +120,10 @@ export class PoUpload {
   @Column({ name: 'uniware_uploaded_by', type: 'int', nullable: true })
   uniwareUploadedBy: number | null;
 
+  /** PO intake (2026-10-23): when a HELD PO was let go; it counts against THAT day's limit, not its arrival day's. */
+  @Column({ name: 'released_at', type: 'datetime', nullable: true })
+  releasedAt: Date | null;
+
   @Column({ name: 'status', type: 'enum', enum: Object.values(UPLOAD_STATUS), default: UPLOAD_STATUS.QUEUED })
   status: UploadStatus;
 

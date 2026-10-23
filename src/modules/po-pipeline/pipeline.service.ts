@@ -2,11 +2,12 @@ import fs from 'fs/promises';
 import path from 'path';
 import { AppDataSource } from '../../config/data-source';
 import { env } from '../../config/env';
-import { ChannelName, FILES, PIPELINE_STEP, RESULT_STATUS, UPLOAD_OCR_STATUS, UPLOAD_STATUS } from '../../constants';
+import { ChannelName, FILES, PIPELINE_STEP, PO_INTAKE, PROVIDERS, RESULT_STATUS, UPLOAD_OCR_STATUS, UPLOAD_STATUS } from '../../constants';
 import { PoUpload } from '../../entities';
 import { detectChannel, emailInfo, StoredMetadata } from '../ocr/channel-detector';
 import { processPo } from '../po-processing/po-router';
 import { MasterDataReader } from '../po-validation/master-data';
+import { alreadyHavePo, processFromOf, shouldHold } from '../po-intake-control/intake-settings.service';
 import { applySave, planSave } from './po-save.service';
 import { applyPlan, emailValues, planEmail } from './po-uploads.service';
 import { LOG_SOURCE } from '../../constants/logging';
@@ -73,10 +74,42 @@ export const takeSlot = (): boolean => {
  */
 export const emailStored = async (folder: string): Promise<boolean> => {
   if (!on()) return true;
-  let allowed = true;
+  // Fails closed (2026-10-23): any error here = no OCR now; the email has no row, so the next start's backlog takes it.
+  let allowed = false;
   await safely(folder, 'emailStored', async () => {
     const { meta, messageId } = await messageIdOf(folder);
-    if (!messageId || (await rowsOf(messageId)).length) return;
+    if (!messageId || (await rowsOf(messageId)).length) { allowed = true; return; }
+    // PO intake per channel (2026-10-23): OFF or over today's limit -> stored, row "held", no OCR. A person's manual
+    // upload is never held.
+    const detectedFirst = detectChannel(emailInfo(meta));
+    const heldChannel = 'config' in detectedFirst && (meta as { provider?: string }).provider !== PROVIDERS.MANUAL ? detectedFirst.config.channel : null;
+    if (heldChannel) {
+      // Older than the channel's "process from" (an email stored before the start was set): no row, no OCR.
+      const from = await processFromOf(heldChannel);
+      const received = (meta as { receivedAt?: string }).receivedAt;
+      if (from && received && !Number.isNaN(Date.parse(received)) && new Date(received) < from) {
+        allowed = false;
+        log(folder, `received before ${heldChannel}'s process-from (${from.toISOString()}): not taken`);
+        return;
+      }
+      const config = 'config' in detectedFirst ? detectedFirst.config : null;
+      const poNumber = config?.poNumber ? meta.subject?.match(config.poNumber)?.[1] : undefined;
+      const body = await fs.readFile(path.join(folder, FILES.BODY_TEXT), 'utf8').catch(() => '');
+      const have = poNumber && !PO_INTAKE.REVISED_HINT.test(`${meta.subject ?? ''} ${body}`) ? await alreadyHavePo(heldChannel, poNumber) : null;
+      if (have) {
+        allowed = false;
+        log(folder, `PO ${poNumber} is already in POST_FG (${have}): no OCR, not taken again`);
+        return;
+      }
+    }
+    if (heldChannel && (await shouldHold(heldChannel))) {
+      const master = await new MasterDataReader(AppDataSource).forChannel(heldChannel as ChannelName);
+      const repo = AppDataSource.getRepository(PoUpload);
+      const row = await repo.save(repo.create({ ...(await emailValues(folder, master?.channel.displayName ?? null)), status: UPLOAD_STATUS.HELD }));
+      allowed = false;
+      log(folder, `po_uploads ${row.id} held: ${heldChannel} is off or over its limit today`);
+      return;
+    }
     if (!takeSlot()) {
       allowed = false;
       log(folder, `PIPELINE_LIMIT ${env.pipeline.limit} reached: stored as files only (no po_uploads row, no OCR)`);
@@ -88,8 +121,20 @@ export const emailStored = async (folder: string): Promise<boolean> => {
     const repo = AppDataSource.getRepository(PoUpload);
     const row = await repo.save(repo.create({ ...(await emailValues(folder, master?.channel.displayName ?? null)), status: UPLOAD_STATUS.QUEUED }));
     log(folder, `po_uploads ${row.id} queued`);
+    allowed = true;
   });
   return allowed;
+};
+
+/**
+ * Start-up OCR backlog (stored emails with no OCR result): only an email POST_FG has no row for goes through
+ * emailStored (process-from, duplicate, ON / OFF + limit -> held); an email with a row is resume's / release's job.
+ */
+export const admitToOcr = async (folder: string): Promise<boolean> => {
+  if (!on()) return false;
+  const { messageId } = await messageIdOf(folder).catch(() => ({ messageId: null }));
+  if (!messageId || (await rowsOf(messageId)).length) return false;
+  return emailStored(folder);
 };
 
 /** The OCR started on this email. */

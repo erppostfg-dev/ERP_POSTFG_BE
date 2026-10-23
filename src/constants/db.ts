@@ -73,6 +73,8 @@ export const TABLES = {
   PO_VERIFY_CHANNEL_SETTINGS: 'po_verify_channel_settings',
   /** Manual upload queue (2026-10-22; constants/manual-upload.ts). */
   MANUAL_UPLOADS: 'manual_uploads',
+  /** PO intake ON / OFF + limit per day per channel (2026-10-23; constants/intake.ts). */
+  CHANNEL_INTAKE_SETTINGS: 'channel_intake_settings',
 } as const;
 
 /** TypeORM's own record of which migrations have run. */
@@ -125,6 +127,8 @@ export const UPLOAD_STATUS = {
   COMPLETED: 'completed',
   REJECTED: 'rejected',
   FAILED: 'failed',
+  /** Received and stored, waiting: its channel is OFF or over its limit today (constants/intake.ts, 2026-10-23). */
+  HELD: 'held',
 } as const;
 export type UploadStatus = (typeof UPLOAD_STATUS)[keyof typeof UPLOAD_STATUS];
 
