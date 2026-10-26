@@ -42,6 +42,7 @@ export const PAGES: readonly PageEntry[] = [
   { slug: '/planning', label: 'Demand Planning', section: 'Demand Planning' },
   { slug: '/planning/inventory', label: 'Inventory Calculation', section: 'Demand Planning' },
   { slug: '/planning/drr-aging', label: 'DRR & Aging', section: 'Demand Planning' },
+  { slug: '/planning/intransit-stock', label: 'In-transit Stock', section: 'Demand Planning' },
   { slug: '/planning/analytics', label: 'Analytics', section: 'Demand Planning' },
   { slug: '/approvals', label: 'Approvals', section: 'General' },
   { slug: '/admin', label: 'Admin', section: 'General' },
@@ -58,6 +59,8 @@ export const PAGE = {
   PO_OVERVIEW: '/operations/po-overview',
   PO_REVIEW: '/operations/po-review',
   PLANNING: '/planning',
+  INVENTORY: '/planning/inventory',
+  INTRANSIT_STOCK: '/planning/intransit-stock',
   APPROVALS: '/approvals',
   ADMIN: '/admin',
 } as const;

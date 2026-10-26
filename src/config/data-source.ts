@@ -42,6 +42,7 @@ const options: DataSourceOptions = {
   logger: new DbConsoleLogger(env.db.logging),
   timezone: 'Z',
   charset: 'utf8mb4',
+  extra: { connectionLimit: env.db.poolSize },
   // Glob needs forward slashes, so normalise Windows paths.
   entities: [path.join(__dirname, '../entities/**/*.{ts,js}').replace(/\\/g, '/')],
 };

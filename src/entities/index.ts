@@ -4,6 +4,9 @@
  */
 export * from './details-channel.entity';
 export * from './details-purchase-order.entity';
+export * from './intransit-channel-sku-map.entity';
+export * from './intransit-master-change.entity';
+export * from './intransit-run.entity';
 export * from './master-channel-sku.entity';
 export * from './master-appointment-remark.entity';
 export * from './master-channel.entity';
@@ -13,6 +16,7 @@ export * from './master-facility.entity';
 export * from './master-final-status-map.entity';
 export * from './master-purchase-order.entity';
 export * from './master-shipment-status.entity';
+export * from './master-sku-component.entity';
 export * from './master-sku.entity';
 export * from './po-issue-action.entity';
 export * from './po-issue.entity';

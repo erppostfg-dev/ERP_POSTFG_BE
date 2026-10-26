@@ -2,9 +2,10 @@ import crypto from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
 import { Readable } from 'stream';
-import { DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { env } from '../../config/env';
+import { s3Client } from '../../config/s3';
 import { ERROR_CODES, FILES, OWN_FILES } from '../../constants';
 import { appError } from '../../utils/AppError';
 import { emailInfo } from '../ocr/channel-detector';
@@ -21,8 +22,7 @@ import { EmailMetadata, plannedS3Folder } from './s3-layout';
  * Anything missed (S3 down, server stopped) is uploaded at startup or by `npm run s3:sync`.
  */
 
-let client: S3Client | undefined;
-const s3 = (): S3Client => (client ??= new S3Client({ region: env.s3.region }));
+const s3 = s3Client;
 
 const CONTENT_TYPES: Record<string, string> = {
   '.json': 'application/json',

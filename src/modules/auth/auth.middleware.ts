@@ -50,6 +50,22 @@ export const requirePage = (pageSlug: string, level: AccessLevel) =>
     }
   };
 
+/** Like requirePage, for data shown on several pages: access at `level` on any one of them is enough. */
+export const requireAnyPage = (pageSlugs: string[], level: AccessLevel) =>
+  async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!req.auth) throw appError(ERROR_CODES.UNAUTHENTICATED);
+      let have: AccessLevel | undefined;
+      for (const slug of pageSlugs) {
+        have = await resolveAccess(req.auth.user.id, req.auth.roles, slug);
+        if (allows(have, level)) return next();
+      }
+      throw appError(ERROR_CODES.FORBIDDEN_PAGE, pageSlugs.join(' or '), level, have ?? 'none').withDetails({ page: pageSlugs, needed: level, have });
+    } catch (err) {
+      next(err);
+    }
+  };
+
 /**
  * One activity_log row for every request that changes something (not GET / HEAD / OPTIONS), written after the
  * response is sent. A failed log write never fails the request (as prefg).

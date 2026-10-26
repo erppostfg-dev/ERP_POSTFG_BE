@@ -8,8 +8,10 @@
  * Databases the app may connect to. A temporary safety net: the current DB login can also reach other schemas
  * (prod, inv ...), so the connection is refused for any database not listed here.
  * When dedicated logins exist: add 'mcaff_postfg_prod' for production, or remove this check.
+ * TEST_DATABASE is used only by `npm test` (user, 2026-10-25): the tests refuse any other database.
  */
-export const ALLOWED_DATABASES: readonly string[] = ['mcaff_postfg_dev'];
+export const TEST_DATABASE = 'mcaff_postfg_test';
+export const ALLOWED_DATABASES: readonly string[] = ['mcaff_postfg_dev', TEST_DATABASE];
 
 /**
  * PEPIMS's database: masters:load --pepims READS its master tables (inside START TRANSACTION READ ONLY, separate
@@ -59,7 +61,21 @@ export const TABLES = {
   // PO Overview team access (2026-10-14): what each team may do per column group, and each person's facilities.
   TEAM_COLUMN_ACCESS: 'team_column_access',
   USER_FACILITIES: 'user_facilities',
+  // In-transit stock (2026-10-15): every report build and connector fetch.
+  INTRANSIT_RUNS: 'intransit_runs',
+  // In-transit masters (2026-10-22): the parts of each combo (Split1 / Split2).
+  MASTER_SKU_COMPONENTS: 'master_sku_components',
+  // Temporary home of the in-transit Channel SKU Mapping (2026-10-22), until merged into master_channel_skus.
+  INTRANSIT_CHANNEL_SKU_MAP: 'intransit_channel_sku_map',
+  // The app's small shared state (another team's table, 2026-10-23): the in-transit caches live here.
+  APP_STATE: 'app_state',
+  // Every change of an in-transit master in the database (2026-10-25).
+  INTRANSIT_MASTER_CHANGES: 'intransit_master_changes',
 } as const;
+
+/** master_sku_components.stage: which split file a combo's parts come from (the report splits in two stages). */
+export const SKU_COMPONENT_STAGE = { SPLIT1: 'split1', SPLIT2: 'split2' } as const;
+export type SkuComponentStage = (typeof SKU_COMPONENT_STAGE)[keyof typeof SKU_COMPONENT_STAGE];
 
 /** TypeORM's own record of which migrations have run. */
 export const MIGRATIONS_TABLE = 'migrations';

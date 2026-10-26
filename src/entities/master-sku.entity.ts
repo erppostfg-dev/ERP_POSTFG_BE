@@ -65,4 +65,32 @@ export class MasterSku {
 
   @Column({ name: 'shelf_life', type: 'int', nullable: true })
   shelfLife: number | null;
+
+  // ---- In-transit Stock masters (2026-10-22, migration IntransitMasters) ----
+
+  /** Final SKU Mapping: the SKU this listing SKU is counted as (null = itself). */
+  @Column({ name: 'final_pep_code', type: 'varchar', length: 100, nullable: true })
+  finalPepCode: string | null;
+
+  /** false = in SKU-Not To Consider (left out of the report's totals). */
+  @Column({ name: 'intransit_consider', type: 'boolean', default: true })
+  intransitConsider: boolean;
+
+  /** Sheet35(2) (the report's SKU sheet): kept apart from product_name / product_type / mrp, which differ for some SKUs. */
+  @Column({ name: 'intransit_name', type: 'varchar', length: 500, nullable: true })
+  intransitName: string | null;
+
+  @Column({ name: 'intransit_type', type: 'varchar', length: 50, nullable: true })
+  intransitType: string | null;
+
+  /** Sheet35(2) "Count": the product category (Body Scrub, Face Wash ...). */
+  @Column({ name: 'intransit_category', type: 'varchar', length: 100, nullable: true })
+  intransitCategory: string | null;
+
+  @Column({ name: 'intransit_mrp', type: 'decimal', precision: 10, scale: 2, nullable: true, transformer: decimal })
+  intransitMrp: number | null;
+
+  /** Sheet35(2) "COGS (With TAX)". */
+  @Column({ name: 'intransit_cogs', type: 'decimal', precision: 10, scale: 2, nullable: true, transformer: decimal })
+  intransitCogs: number | null;
 }
