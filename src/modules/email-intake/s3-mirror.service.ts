@@ -2,14 +2,14 @@ import crypto from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
 import { Readable } from 'stream';
-import { DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { env } from '../../config/env';
+import { s3Client } from '../../config/s3';
 import { ERROR_CODES, FILES, OWN_FILES } from '../../constants';
 import { appError } from '../../utils/AppError';
 import { LOG_SOURCE } from '../../constants/logging';
 import { logError } from '../../utils/classify-error';
-import { logCall } from '../../utils/log-call';
 import { log } from '../../utils/logger';
 import { emailInfo } from '../ocr/channel-detector';
 import { EmailMetadata, plannedS3Folder } from './s3-layout';
@@ -26,27 +26,8 @@ import { recordEmail } from './intake-emails.service';
  * Anything missed (S3 down, server stopped) is uploaded at startup or by `npm run s3:sync`.
  */
 
-let client: S3Client | undefined;
-
-/**
- * The S3 client, with every command timed and logged (2026-10-19): S3_CALL (debug), S3_SLOW, or S3_<FAILURE> with the
- * reason (e.g. S3_ACCESS_DENIED: the key / role lacks the permission). A missing file is normal here (we check for
- * corrected.json etc.), so NOT_FOUND is only a debug line. The same key read many times in one request is flagged.
- */
-const s3 = (): S3Client => {
-  if (client) return client;
-  client = new S3Client({ region: env.s3.region });
-  client.middlewareStack.add(
-    (next, context) => async (args) => {
-      const key = (args.input as { Key?: string; Prefix?: string }).Key ?? (args.input as { Prefix?: string }).Prefix;
-      return logCall(LOG_SOURCE.S3, String(context.commandName ?? 'S3Command'), () => next(args), {
-        key, fields: { key, bucket: env.s3.bucket }, expected: ['NOT_FOUND'],
-      });
-    },
-    { step: 'initialize', name: 'postfgLogCall' },
-  );
-  return client;
-};
+/** The app's one S3 client (config/s3.ts), every command timed and logged there. */
+const s3 = s3Client;
 
 const CONTENT_TYPES: Record<string, string> = {
   '.json': 'application/json',

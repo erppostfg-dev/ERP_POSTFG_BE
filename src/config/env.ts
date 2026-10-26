@@ -1,10 +1,39 @@
 import dotenv from 'dotenv';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { ERROR_CODES } from '../constants/errors';
 import { LOG_DEFAULTS, LOG_FORMAT, LOG_LEVEL_RANK, type LogFormat, type LogLevel } from '../constants/logging';
 import { REVIEW_RECHECK } from '../constants/po-review';
 import { appError } from '../utils/AppError';
 
 dotenv.config();
+
+/**
+ * A list setting: "A,B,C" or "[A, B, C]". A bracketed list may also run over several lines of .env, as the Python
+ * in-transit tool's .env allowed (user, 2026-10-16):
+ *   UNIWARE_FACILITY=[A ,
+ *    B ,
+ *    C]
+ * dotenv keeps only the first line of such a value, so the following lines are read from .env here, up to the "]"
+ * (stopping at the next KEY= line if the "]" is missing).
+ */
+const list = (key: string): string[] => {
+  let value = process.env[key] ?? '';
+  if (value.trim().startsWith('[') && !value.includes(']')) {
+    try {
+      const lines = fs.readFileSync(path.resolve(process.cwd(), '.env'), 'utf8').split(/\r?\n/);
+      const start = lines.findIndex((l) => new RegExp(`^\\s*${key}\\s*=`).test(l));
+      for (let i = start + 1; start >= 0 && i < lines.length && !value.includes(']'); i++) {
+        if (/^\s*[A-Za-z_][A-Za-z0-9_]*\s*=/.test(lines[i])) break;
+        value += `,${lines[i]}`;
+      }
+    } catch {
+      // no readable .env (variables set by the host): keep what the environment gave
+    }
+  }
+  return value.replace(/[[\]]/g, '').split(',').map((v) => v.trim()).filter(Boolean);
+};
 
 const required = (key: string, fallback?: string): string => {
   const value = process.env[key] ?? fallback;
@@ -40,6 +69,8 @@ export const env = {
     name: required('DB_NAME'),
     synchronize: flag('DB_SYNCHRONIZE'),
     logging: flag('DB_LOGGING'),
+    // connections in the pool (the in-transit store holds one briefly per upload lock, 2026-10-25)
+    poolSize: Number(process.env.DB_POOL_SIZE ?? 20),
   },
   // Optional at startup; checked when the Gmail client is created.
   gmail: {
@@ -103,6 +134,58 @@ export const env = {
     limit: Number(process.env.PIPELINE_LIMIT ?? 0),
     // true: at server start, unfinished po_uploads rows are resumed (queued / extracting / processing).
     resumeOnStart: flag('PIPELINE_RESUME'),
+  },
+  // Demand Planning > In-transit Stock (TypeScript port of the Python tool). Runs in a child process, one at a time.
+  intransit: {
+    // inputs/ (the 19 CSVs + template), runs/<id>/ (each report), exports/ (connector downloads), cache/
+    dir: process.env.INTRANSIT_DIR ?? 'storage/intransit',
+    runTimeoutMs: Number(process.env.INTRANSIT_RUN_TIMEOUT_MS ?? 15 * 60 * 1000),
+    // Connectors wait on Uniware export jobs (up to an hour each) and Amazon's pacing.
+    connectorTimeoutMs: Number(process.env.INTRANSIT_CONNECTOR_TIMEOUT_MS ?? 2 * 60 * 60 * 1000),
+    // Heap of the child process that builds the report (~100 MB of CSVs in, ~40 MB workbook out).
+    workerMaxMemoryMb: Number(process.env.INTRANSIT_WORKER_MAX_MEMORY_MB ?? 3072),
+    // Default start date of a report: shipments with an earlier Entry Date are left out. "2026-08-01" (fixed),
+    // "79" (the last 79 days before as-of; the team's choice, 2026-10-21) or blank (all). A run can override it.
+    // Open Uniware POs are never cut by it (stage combined_intransit).
+    fromDate: process.env.INTRANSIT_FROM_DATE ?? '',
+    // Shipment_Status / PO_Format: 'pepims' = read from PEPIMS at each build for today; anything else = uploaded
+    poSource: (process.env.INTRANSIT_PO_SOURCE ?? 'upload').trim().toLowerCase() === 'pepims' ? 'pepims' : 'upload',
+    // The 7 masters + Channel SKU Mapping: 'db' = written from the database into each build's snapshot; else the files
+    mastersSource: (process.env.INTRANSIT_MASTERS_SOURCE ?? 'files').trim().toLowerCase() === 'db' ? 'db' : 'files',
+    // The upload page warns when the daily inputs were saved more than this many hours apart.
+    inputSpreadWarnHours: Number(process.env.INTRANSIT_INPUT_SPREAD_WARN_HOURS ?? 6),
+    amazon: {
+      clientId: process.env.SPAPI_CLIENT_ID,
+      clientSecret: process.env.SPAPI_CLIENT_SECRET,
+      refreshToken: process.env.SPAPI_REFRESH_TOKEN,
+    },
+    flipkart: {
+      appId: process.env.FLIPKART_APP_ID,
+      appSecret: process.env.FLIPKART_APP_SECRET,
+    },
+    uniware: {
+      // tenant name, or the address copied from the browser (https://<tenant>.unicommerce.com/...)
+      tenant: process.env.UNIWARE_TENANT,
+      username: process.env.UNIWARE_USERNAME,
+      password: process.env.UNIWARE_PASSWORD,
+      // OLD, optional: the facilities to export now come from master_facilities.uniware_export (2026-10-26). This list
+      // ("A,B,C" or "[A, B, C]", may span lines) is used only where the database has no such column or none is connected.
+      facilities: list('UNIWARE_FACILITY'),
+      // export jobs at a time (10 measured fine on 19-Oct: 58 jobs in 44 s, no throttling)
+      parallel: Number(process.env.UNIWARE_PARALLEL ?? 10),
+    },
+    // This machine's name in the shared database: its runs carry it, so a restart only closes its own runs.
+    hostId: (process.env.INTRANSIT_HOST_ID ?? '').trim() || os.hostname(),
+    // Every in-transit file is kept in S3 (user, 2026-10-26; bucket S3_BUCKET): the live server under inventory/, test
+    // machines under inventory-test/ (reading inventory/ too). Off = the disk store under INTRANSIT_DIR, as before.
+    s3Enabled: flag('INTRANSIT_S3_ENABLED'),
+    // A test machine (user, 2026-10-26: one shared test folder): INTRANSIT_TEST=true, or unset on a machine that is
+    // not NODE_ENV=production - a laptop that forgot the flag never writes the live reports.
+    test: (process.env.INTRANSIT_TEST ?? '').trim()
+      ? flag('INTRANSIT_TEST')
+      : (process.env.NODE_ENV ?? 'development') !== 'production',
+    // Files waiting on this server while S3 cannot be reached (and kept job folders): past this, new work is refused.
+    spoolMaxMb: Number(process.env.INTRANSIT_SPOOL_MAX_MB ?? 5000),
   },
   // PO verification (2026-10-22): the Uniware CSV of a processed PO stays locked until a person verifies it against the
   // original PO (constants/po-verify.ts). On unless PO_VERIFY_REQUIRED=false (the switch to drop the step later).

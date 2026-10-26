@@ -97,6 +97,13 @@ export class DetailsChannel {
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive: boolean;
 
+  /**
+   * In-transit Stock (2026-10-22): the report's location of this channel location (Location Master "Final Location",
+   * MyntraWHIDs "WH location"). In-transit-only rows are added inactive, so PO matching never uses them.
+   */
+  @Column({ name: 'intransit_location', type: 'varchar', length: 100, nullable: true })
+  intransitLocation: string | null;
+
   @Column({ name: 'final_shipping_address_embedding', type: 'json', nullable: true })
   finalShippingAddressEmbedding: unknown;
 
