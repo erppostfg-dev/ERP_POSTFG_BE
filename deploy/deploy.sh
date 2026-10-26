@@ -8,12 +8,17 @@
 #   1. .env      SSM /mcaffeine-erp-post-fg/<environment>/api/env (the whole file) -> /opt/post-fg/.env
 #   2. nginx     port 80 -> the container; only requests carrying CloudFront's secret header
 #                (SSM /mcaffeine-erp-post-fg/<environment>/cloudfront/origin-verify) get through
-#   3. pull      the image from ECR (the instance role)
-#   4. migrate   TypeORM migrations, only when the .env has DB_ENABLED=true
-#   5. replace   the post-fg-api container (127.0.0.1:3000, .env and storage mounted)
-#   6. check     /api/v1/health directly and through nginx; on failure the previous image is
+#   3. logs      CloudWatch: the container's output -> /mcaffeine-erp-post-fg/<environment>/api
+#                (Docker awslogs driver); the CloudWatch agent sends nginx -> /nginx,
+#                /var/log/messages + cloud-init -> /system, and memory / swap / disk usage
+#                as metrics (CWAgent). The log groups come from Terraform; without them the
+#                container logs stay local and the deploy goes on.
+#   4. pull      the image from ECR (the instance role)
+#   5. migrate   TypeORM migrations, only when the .env has DB_ENABLED=true
+#   6. replace   the post-fg-api container (127.0.0.1:3000, .env and storage mounted)
+#   7. check     /api/v1/health directly and through nginx; on failure the previous image is
 #                started again and the deploy fails
-#   7. clean     unused images older than 3 days
+#   8. clean     unused images older than 3 days
 set -euo pipefail
 
 ENV_NAME="${1:?usage: deploy.sh <environment> <image URI> <region>}"
@@ -30,6 +35,8 @@ ORIGIN_HEADER="X-Origin-Verify"
 ENV_PARAM="/${PROJECT}/${ENV_NAME}/api/env"
 ORIGIN_PARAM="/${PROJECT}/${ENV_NAME}/cloudfront/origin-verify"
 NGINX_CONF="/etc/nginx/conf.d/post-fg.conf"
+LOG_PREFIX="/${PROJECT}/${ENV_NAME}" # CloudWatch log groups: ${LOG_PREFIX}/{api,deploy,nginx,system}
+CW_AGENT_CONF="/opt/aws/amazon-cloudwatch-agent/etc/post-fg.json"
 
 log() { echo "[deploy $(date -u +%H:%M:%S)] $*"; }
 ssm_value() { aws ssm get-parameter --region "$REGION" --name "$1" --with-decryption --query Parameter.Value --output text; }
@@ -97,13 +104,69 @@ rm -f "${NGINX_CONF}.previous"
 systemctl enable --now nginx
 systemctl reload nginx
 
-# 3. pull --------------------------------------------------------------------
+# 3. logs --------------------------------------------------------------------
+# Container output: Docker's awslogs driver, one stream per image (post-fg-api/<git sha>).
+# non-blocking: the app never waits on CloudWatch; `docker logs` keeps working.
+LOG_OPTS=()
+if [ "$(aws logs describe-log-groups --region "$REGION" --log-group-name-prefix "${LOG_PREFIX}/api" \
+      --query "length(logGroups[?logGroupName=='${LOG_PREFIX}/api'])" --output text 2>/dev/null)" = "1" ]; then
+  LOG_OPTS=(--log-driver awslogs
+    --log-opt "awslogs-region=${REGION}"
+    --log-opt "awslogs-group=${LOG_PREFIX}/api"
+    --log-opt mode=non-blocking
+    --log-opt max-buffer-size=4m)
+  log "container logs -> CloudWatch ${LOG_PREFIX}/api"
+else
+  log "WARNING: log group ${LOG_PREFIX}/api not found (Terraform not applied?): container logs stay on the instance"
+fi
+
+# nginx + system logs and memory / disk metrics: the CloudWatch agent (installed once,
+# config rewritten on every deploy). /var/log/messages needs rsyslog on Amazon Linux 2023.
+setup_cloudwatch_agent() {
+  rpm -q rsyslog >/dev/null 2>&1 || dnf install -y -q rsyslog || return 1
+  systemctl enable --now rsyslog || return 1
+  rpm -q amazon-cloudwatch-agent >/dev/null 2>&1 || dnf install -y -q amazon-cloudwatch-agent || return 1
+  cat > "$CW_AGENT_CONF" <<EOF || return 1
+{
+  "agent": { "metrics_collection_interval": 60, "run_as_user": "root" },
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+          { "file_path": "/var/log/nginx/access.log", "log_group_name": "${LOG_PREFIX}/nginx", "log_stream_name": "{instance_id}/access" },
+          { "file_path": "/var/log/nginx/error.log", "log_group_name": "${LOG_PREFIX}/nginx", "log_stream_name": "{instance_id}/error" },
+          { "file_path": "/var/log/messages", "log_group_name": "${LOG_PREFIX}/system", "log_stream_name": "{instance_id}/messages" },
+          { "file_path": "/var/log/cloud-init-output.log", "log_group_name": "${LOG_PREFIX}/system", "log_stream_name": "{instance_id}/cloud-init" }
+        ]
+      }
+    }
+  },
+  "metrics": {
+    "namespace": "CWAgent",
+    "append_dimensions": { "InstanceId": "\${aws:InstanceId}" },
+    "metrics_collected": {
+      "mem": { "measurement": ["mem_used_percent", "mem_available"] },
+      "swap": { "measurement": ["swap_used_percent"] },
+      "disk": { "measurement": ["used_percent"], "resources": ["/"], "drop_device": true }
+    }
+  }
+}
+EOF
+  /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c "file:${CW_AGENT_CONF}" >/dev/null || return 1
+}
+if setup_cloudwatch_agent; then
+  log "CloudWatch agent: nginx -> ${LOG_PREFIX}/nginx, system -> ${LOG_PREFIX}/system, memory/disk metrics -> CWAgent"
+else
+  log "WARNING: CloudWatch agent setup failed: nginx/system logs and memory/disk metrics are not sent"
+fi
+
+# 4. pull --------------------------------------------------------------------
 REGISTRY="${IMAGE%%/*}"
 log "pulling from ${REGISTRY}"
 aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$REGISTRY" >/dev/null
 docker pull --quiet "$IMAGE"
 
-# 4. migrate -----------------------------------------------------------------
+# 5. migrate -----------------------------------------------------------------
 if grep -Eq "^[[:space:]]*DB_ENABLED[[:space:]]*=[[:space:]]*[\"']?true" "${APP_DIR}/.env"; then
   log "DB_ENABLED=true: running migrations"
   docker run --rm \
@@ -113,8 +176,11 @@ else
   log "DB_ENABLED is not true: migrations skipped"
 fi
 
-# 5. replace -----------------------------------------------------------------
+# 6. replace -----------------------------------------------------------------
 run_container() {
+  local stream=()
+  # One CloudWatch stream per image: post-fg-api/<git sha>.
+  [ ${#LOG_OPTS[@]} -gt 0 ] && stream=(--log-opt "awslogs-stream=${CONTAINER}/${1##*:}")
   docker run -d \
     --name "$CONTAINER" \
     --restart unless-stopped \
@@ -123,6 +189,7 @@ run_container() {
     -e "PORT=${APP_PORT}" \
     -v "${APP_DIR}/.env:/app/.env:ro" \
     -v "${APP_DIR}/storage:/app/storage" \
+    "${LOG_OPTS[@]}" "${stream[@]}" \
     "$1" >/dev/null
 }
 
@@ -135,7 +202,7 @@ fi
 log "starting ${CONTAINER}"
 run_container "$IMAGE"
 
-# 6. check -------------------------------------------------------------------
+# 7. check -------------------------------------------------------------------
 healthy() {
   for _ in $(seq 1 30); do
     if curl -fsS -m 5 "http://127.0.0.1:${APP_PORT}${HEALTH_PATH}" >/dev/null 2>&1; then
@@ -166,6 +233,6 @@ if [ "$WITHOUT_HEADER" != "403" ]; then
 fi
 log "nginx refuses requests without the CloudFront header (403)"
 
-# 7. clean -------------------------------------------------------------------
+# 8. clean -------------------------------------------------------------------
 docker image prune -af --filter "until=72h" >/dev/null || true
 log "done: ${CONTAINER} runs ${IMAGE}"
