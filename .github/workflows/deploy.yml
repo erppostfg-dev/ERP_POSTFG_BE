@@ -119,6 +119,7 @@ jobs:
             --document-name AWS-RunShellScript \
             --comment "post-fg backend ${ENV_NAME} ${IMAGE_TAG:0:12}" \
             --parameters "$PARAMS" \
+            --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=/mcaffeine-erp-post-fg/${ENV_NAME}/deploy" \
             --query Command.CommandId --output text)"
           echo "SSM command $COMMAND_ID on $EC2_INSTANCE_ID"
 
