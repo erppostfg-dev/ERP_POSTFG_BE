@@ -3,6 +3,8 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { ERROR_CODES } from '../constants/errors';
+import { LOG_DEFAULTS, LOG_FORMAT, LOG_LEVEL_RANK, type LogFormat, type LogLevel } from '../constants/logging';
+import { REVIEW_RECHECK } from '../constants/po-review';
 import { appError } from '../utils/AppError';
 
 dotenv.config();
@@ -42,6 +44,13 @@ const required = (key: string, fallback?: string): string => {
 };
 
 const flag = (key: string, fallback = 'false'): boolean => (process.env[key] ?? fallback) === 'true';
+
+const num = (key: string, fallback: number): number => {
+  const v = Number(process.env[key]);
+  return process.env[key] !== undefined && process.env[key] !== '' && Number.isFinite(v) ? v : fallback;
+};
+const logLevel = (process.env.LOG_LEVEL ?? LOG_DEFAULTS.LEVEL).toLowerCase() as LogLevel;
+const logFormat = (process.env.LOG_FORMAT ?? LOG_DEFAULTS.FORMAT).toLowerCase() as LogFormat;
 
 const port = Number(required('PORT', '3000'));
 const apiPrefix = required('API_PREFIX', '/api/v1');
@@ -126,7 +135,7 @@ export const env = {
     // true: at server start, unfinished po_uploads rows are resumed (queued / extracting / processing).
     resumeOnStart: flag('PIPELINE_RESUME'),
   },
-  // Demand Planning > In-transit Stock (TypeScript port of intransit-service/). Runs in a child process, one at a time.
+  // Demand Planning > In-transit Stock (TypeScript port of the Python tool). Runs in a child process, one at a time.
   intransit: {
     // inputs/ (the 19 CSVs + template), runs/<id>/ (each report), exports/ (connector downloads), cache/
     dir: process.env.INTRANSIT_DIR ?? 'storage/intransit',
@@ -178,9 +187,50 @@ export const env = {
     // Files waiting on this server while S3 cannot be reached (and kept job folders): past this, new work is refused.
     spoolMaxMb: Number(process.env.INTRANSIT_SPOOL_MAX_MB ?? 5000),
   },
+  // PO verification (2026-10-22): the Uniware CSV of a processed PO stays locked until a person verifies it against the
+  // original PO (constants/po-verify.ts). On unless PO_VERIFY_REQUIRED=false (the switch to drop the step later).
+  poVerify: {
+    required: flag('PO_VERIFY_REQUIRED', 'true'),
+  },
+  // Re-check of POs in review after a master fix (2026-10-22, constants/po-review REVIEW_RECHECK): minutes between
+  // automatic runs; 0 = only after masters:load and on the button.
+  recheck: {
+    minutes: Number(process.env.RECHECK_MINUTES ?? REVIEW_RECHECK.DEFAULT_MINUTES),
+  },
+  // Channel API connectors (2026-10-16): POs pulled from channel APIs into the same chain. Off by default, like the
+  // email listener; each connector also needs its own keys. Poll minutes: the connector's env value, else the constant.
+  channelApi: {
+    enabled: flag('CHANNEL_API_ENABLED'),
+    amazon: {
+      clientId: process.env.SPAPI_CLIENT_ID,
+      clientSecret: process.env.SPAPI_CLIENT_SECRET,
+      refreshToken: process.env.SPAPI_REFRESH_TOKEN,
+      region: (process.env.SPAPI_REGION ?? 'EU').toUpperCase(),
+      pollMinutes: process.env.AMAZON_POLL_MINUTES ? Number(process.env.AMAZON_POLL_MINUTES) : undefined,
+    },
+  },
+  // Logging (2026-10-19; constants/logging.ts). EC2: LOG_FORMAT=json (the CloudWatch agent sends the pm2 log files to
+  // /mcaffeine-erp-post-fg/po-api-ec2/<env>), DB_LOGGING=false. Limits in ms unless named otherwise; 0 switches one off.
+  log: {
+    level: (LOG_LEVEL_RANK[logLevel] ? logLevel : LOG_DEFAULTS.LEVEL) as LogLevel,
+    format: (logFormat === LOG_FORMAT.JSON ? LOG_FORMAT.JSON : LOG_FORMAT.PRETTY) as LogFormat,
+    dbSlowMs: num('DB_SLOW_MS', LOG_DEFAULTS.DB_SLOW_MS),
+    apiSlowMs: num('API_SLOW_MS', LOG_DEFAULTS.API_SLOW_MS),
+    extSlowMs: num('EXT_SLOW_MS', LOG_DEFAULTS.EXT_SLOW_MS),
+    jobSlowMs: num('JOB_SLOW_MS', LOG_DEFAULTS.JOB_SLOW_MS),
+    dbQueriesWarn: num('DB_QUERIES_WARN', LOG_DEFAULTS.DB_QUERIES_WARN),
+    responseWarnKb: num('RESPONSE_WARN_KB', LOG_DEFAULTS.RESPONSE_WARN_KB),
+    repeatWarn: num('REPEAT_WARN', LOG_DEFAULTS.REPEAT_WARN),
+    eventLoopWarnMs: num('EVENT_LOOP_WARN_MS', LOG_DEFAULTS.EVENT_LOOP_WARN_MS),
+    memoryWarnMb: num('MEMORY_WARN_MB', LOG_DEFAULTS.MEMORY_WARN_MB),
+    monitorSeconds: num('MONITOR_SECONDS', LOG_DEFAULTS.MONITOR_SECONDS),
+    heartbeatMinutes: num('MONITOR_HEARTBEAT_MINUTES', LOG_DEFAULTS.HEARTBEAT_MINUTES),
+  },
   storage: {
     emailDir: process.env.EMAIL_STORAGE_DIR ?? 'storage/emails',
     gmailStateFile: process.env.GMAIL_STATE_FILE ?? 'storage/gmail-state.json',
+    // Remove finished emails' local folders once their files are confirmed in S3 (constants LOCAL_CLEANUP; 2026-10-23).
+    cleanupEnabled: flag('LOCAL_CLEANUP_ENABLED'),
   },
   // Copy of the email storage in S3: <prefix><label>/<folder>/<file>, the same layout as EMAIL_STORAGE_DIR.
   // Local storage stays; S3 is written after it. Credentials come from AWS_* (later the EC2 IAM role).

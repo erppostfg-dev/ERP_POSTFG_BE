@@ -21,6 +21,8 @@ import { editOptions, FieldChanges, saveShipment, shipmentHistory } from '../mod
 import { changesSince, lastLogId, onShipmentChange, startLive } from '../modules/po-overview/po-overview.live';
 import { getColumns, getFilterOptions, getShipment, hiddenFields, listLines, listShipments } from '../modules/po-overview/po-overview.service';
 import { appError } from '../utils/AppError';
+import { LOG_SOURCE } from '../constants/logging';
+import { logError } from '../utils/classify-error';
 
 /*
  * PO Overview routes (read-only, viewer on /operations/po-overview):
@@ -241,7 +243,7 @@ router.get(PO_OVERVIEW_ROUTES.EVENTS, ...viewer, async (req, res) => {
     if (Number.isFinite(after)) for (const c of await changesSince(after)) send(LIVE.EVENT_SHIPMENT, { ...c, fields: c.fields.filter((f) => !hidden.has(f)) }, c.logId);
     send(LIVE.EVENT_PING, { lastId: String(await lastLogId()) });
   } catch (err) {
-    console.error('[live] stream start failed:', err instanceof Error ? err.message : err);
+    logError(LOG_SOURCE.DB, '[live] stream start failed (the screen falls back to polling)', err);
   }
   const off = onShipmentChange((c) => send(LIVE.EVENT_SHIPMENT, { ...c, fields: c.fields.filter((f) => !hidden.has(f)) }, c.logId));
   const beat = setInterval(() => send(LIVE.EVENT_PING, { at: Date.now() }), LIVE.HEARTBEAT_MS);

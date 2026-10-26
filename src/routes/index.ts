@@ -1,22 +1,39 @@
 import { Router } from 'express';
+import { INBOUND_ROUTES, MANUAL_UPLOAD, PO_INTAKE, PO_ISSUES, PO_VERIFY } from '../constants';
+import poVerifyGate from '../modules/po-verify/po-verify.gate';
+import adminRoutes from './admin.routes';
+import amazonInboundRoutes from './amazon-inbound.routes';
 import approvalsRoutes from './approvals.routes';
 import authRoutes from './auth.routes';
 import healthRoutes from './health.routes';
 import intransitRoutes from './intransit.routes';
+import manualUploadRoutes from './manual-upload.routes';
 import mastersRoutes from './masters.routes';
 import poIntakeRoutes from './po-intake.routes';
+import poIntakeControlRoutes from './po-intake-control.routes';
+import poIssuesRoutes from './po-issues.routes';
 import poOverviewRoutes from './po-overview.routes';
 import poReviewRoutes from './po-review.routes';
+import poVerifyRoutes from './po-verify.routes';
 
 const router = Router();
 
 router.use('/health', healthRoutes);
 router.use('/auth', authRoutes);
 router.use('/approvals', approvalsRoutes);
+// Before /admin: its own sub-path (Users & Roles -> PO issues).
+router.use(PO_ISSUES.BASE, poIssuesRoutes);
+router.use(PO_INTAKE.BASE, poIntakeControlRoutes);
+router.use('/admin', adminRoutes);
+router.use(INBOUND_ROUTES.BASE, amazonInboundRoutes);
 router.use('/intransit', intransitRoutes);
 router.use('/masters', mastersRoutes);
 router.use('/po-intake', poIntakeRoutes);
 router.use('/po-overview', poOverviewRoutes);
+// The verification gate runs first and only for the Uniware hand-off calls; the review routes are unchanged.
+router.use('/po-review', poVerifyGate);
 router.use('/po-review', poReviewRoutes);
+router.use(PO_VERIFY.BASE, poVerifyRoutes);
+router.use(MANUAL_UPLOAD.BASE, manualUploadRoutes);
 
 export default router;

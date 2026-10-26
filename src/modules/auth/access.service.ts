@@ -1,6 +1,7 @@
 import { In } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
-import { ACCESS_LEVEL, AccessLevel, PAGES } from '../../constants';
+import { ACCESS_LEVEL, AccessLevel, CAPABILITIES, Capability, PAGES } from '../../constants';
+import { USER_ADMIN_ROLES } from '../../constants/users';
 import { PagePermission, UserPagePermission } from '../../entities';
 
 /*
@@ -38,6 +39,17 @@ export const resolveAccess = async (userId: number, roles: string[], pageSlug: s
     }
   }
   return ACCESS_LEVEL.NONE;
+};
+
+/** A special permission (CAPABILITY): admin / developer always; else the role grant (or the person's override) = editor. */
+export const hasCapability = async (userId: number, roles: string[], key: Capability): Promise<boolean> =>
+  roles.some((r) => (USER_ADMIN_ROLES as readonly string[]).includes(r)) || (await resolveAccess(userId, roles, key)) === ACCESS_LEVEL.EDITOR;
+
+/** Every special permission of the user, for /auth/me. */
+export const resolveCapabilities = async (userId: number, roles: string[]): Promise<Record<string, boolean>> => {
+  const out: Record<string, boolean> = {};
+  for (const c of CAPABILITIES) out[c.key] = await hasCapability(userId, roles, c.key);
+  return out;
 };
 
 /** Every page's level for the user (for /auth/me: the sidebar hides `none` and locks `viewer`). */

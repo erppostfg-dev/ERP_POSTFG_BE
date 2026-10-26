@@ -1,6 +1,7 @@
-import { Request, Router } from 'express';
+import { Request, Response, Router } from 'express';
 import {
   ACCESS_LEVEL,
+  CAPABILITY,
   DAY_PATTERN,
   ERROR_CODES,
   errorMessage,
@@ -10,13 +11,18 @@ import {
   PO_REVIEW_REMARK_MAX,
   PO_REVIEW_QUERY,
   REVIEW_LIVE,
+  REVIEW_RECHECK,
+  UNIWARE_HANDOFF,
   UPLOAD_ID_PATTERN,
   UPLOAD_STATUS,
   UploadStatus,
 } from '../constants';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
+import { hasCapability } from '../modules/auth/access.service';
 import { getPoFile, getPoReview, listPoReview, PoReviewListQuery } from '../modules/po-review/po-review.service';
 import { reviewEvents, reviewVersion } from '../modules/po-review/po-review.live';
+import { recheckInReview } from '../modules/po-review/recheck.service';
+import { downloadCombined, downloadOne, markUploaded } from '../modules/po-review/uniware-handoff.service';
 import { LineCorrection, rejectPo, ResubmitBody, submitForApproval } from '../modules/po-review/po-review-actions.service';
 import { appError } from '../utils/AppError';
 
@@ -27,6 +33,8 @@ import { appError } from '../utils/AppError';
  *   GET /po-review/:uploadId   one PO for the review panel (processed.json from S3, issues, our SKU/MRP/rate per line,
  *                              the channel's SKUs, download links). Viewer on /operations/po-review.
  *   GET /po-review/events, /live-state   live updates (SSE) and the version for polling (po-review.live.ts).
+ *   GET /po-review/:uploadId/uniware-csv · POST /po-review/uniware-csv · POST /po-review/uniware-uploaded   the Uniware
+ *   hand-off (download the sale order CSV, then mark it uploaded; uniware-handoff.service.ts).
  *   GET /po-review/:uploadId/file   the PO file itself, streamed from S3 (for the panel's PDF viewer). Viewer.
  *   POST /po-review/:uploadId/submit   { location?: { detailsChannelId }, lines?: [{ lineNo, pepCode?, qty?, mrp?, rate? }],
  *                                        accept?: [{ issueId, remark? }], remark? }   corrections -> validate -> must pass
@@ -241,7 +249,9 @@ const uploadIdOf = (req: Request): string => {
 router.post('/:uploadId/submit', requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
   try {
     const uploadId = uploadIdOf(req);
-    res.json({ data: await submitForApproval(uploadId, parseResubmit(req.body), { id: req.auth!.user.id, email: req.auth!.user.email }) });
+    // Only the values with an error, unless the person's role has "PO Review: edit all fields" (2026-10-22).
+    const editAll = await hasCapability(req.auth!.user.id, req.auth!.roles, CAPABILITY.PO_REVIEW_EDIT_ALL);
+    res.json({ data: await submitForApproval(uploadId, parseResubmit(req.body), { id: req.auth!.user.id, email: req.auth!.user.email }, editAll) });
   } catch (err) {
     next(err);
   }
@@ -254,6 +264,64 @@ router.post('/:uploadId/reject', requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS
     const remark = bodyReader(problems).remark((req.body as Record<string, unknown> | undefined)?.[B.REMARK], B.REMARK, true);
     if (problems.length || !remark) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails(problems);
     res.json({ data: await rejectPo(uploadId, remark, { id: req.auth!.user.id, email: req.auth!.user.email }) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---- Re-check after a master fix (2026-10-22, REVIEW_RECHECK) ------------------------------------------------------
+
+/** POST /po-review/recheck: re-check every PO in review now (the timer does it every RECHECK_MINUTES too). Editor. */
+router.post(REVIEW_RECHECK.ROUTE, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (_req, res, next) => {
+  try {
+    res.json({ data: await recheckInReview({ trigger: REVIEW_RECHECK.TRIGGER.BUTTON }) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---- Uniware hand-off (2026-10-19): download the sale order CSV, then mark it uploaded into Uniware ----------------
+
+const actorOf = (req: Request) => ({ id: req.auth!.user.id, email: req.auth!.user.email });
+
+/** uploadIds from the body: digits only, at most MAX_IDS, each once. */
+const idsOf = (body: unknown): string[] => {
+  const v = (body as Record<string, unknown> | undefined)?.[UNIWARE_HANDOFF.BODY_IDS];
+  const ids = Array.isArray(v) ? [...new Set(v.map(String).filter((x) => UPLOAD_ID_PATTERN.test(x)))] : [];
+  if (!ids.length || ids.length > UNIWARE_HANDOFF.MAX_IDS) throw appError(ERROR_CODES.UPLOAD_IDS_REQUIRED);
+  return ids;
+};
+
+const sendCsv = (res: Response, file: { fileName: string; text: string }) => {
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${file.fileName.replace(/"/g, '')}"`);
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.send(file.text);
+};
+
+/** One PO's sale order CSV as a download (records the first download). Editor: downloading moves the PO on. */
+router.get(UNIWARE_HANDOFF.CSV_ONE, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
+  try {
+    sendCsv(res, await downloadOne(uploadIdOf(req), actorOf(req)));
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** Several POs as ONE combined CSV ({ uploadIds }); records each first download. */
+router.post(UNIWARE_HANDOFF.CSV_MANY, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
+  try {
+    sendCsv(res, await downloadCombined(idsOf(req.body), actorOf(req)));
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** Mark uploaded into Uniware ({ uploadIds, undo? }); only downloaded POs; then they show in PO Overview. */
+router.post(UNIWARE_HANDOFF.MARK_UPLOADED, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
+  try {
+    const undo = (req.body as Record<string, unknown> | undefined)?.[UNIWARE_HANDOFF.BODY_UNDO] === true;
+    res.json({ data: await markUploaded(idsOf(req.body), actorOf(req), undo) });
   } catch (err) {
     next(err);
   }

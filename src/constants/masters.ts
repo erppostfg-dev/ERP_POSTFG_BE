@@ -8,9 +8,10 @@ export const MASTER_ROUTES = {
   PEP_SKUS: '/pep-skus',
   CHANNEL_SKUS: '/channel-skus',
   CHANNEL_CUSTOMERS: '/channel-customers',
-  /** The Warehouses screen has two lists (sub-tabs), both under the /masters/warehouses page key. */
+  /** Warehouses = our facilities (page /masters/warehouses). */
   PEP_WAREHOUSES: '/warehouses/pep',
-  CHANNEL_WAREHOUSES: '/warehouses/channel',
+  /** Channel Location Master = the channels' delivery locations, details_channels (own page since 2026-10-16). */
+  CHANNEL_LOCATIONS: '/channel-locations',
 } as const;
 
 /*

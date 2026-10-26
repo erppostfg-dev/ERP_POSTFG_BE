@@ -1,4 +1,6 @@
 import { gmail_v1 } from 'googleapis';
+import { LOG_SOURCE } from '../../constants/logging';
+import { logCall } from '../../utils/log-call';
 
 /** Email headers by lower-case name. */
 export type EmailHeaders = Record<string, string>;
@@ -89,7 +91,8 @@ export const downloadAttachments = async (
   for (const a of parts.filter((p) => keep.test(p.filename))) {
     let data = a.data;
     if (!data && a.attachmentId) {
-      const res = await gmail.users.messages.attachments.get({ userId: 'me', messageId: gmailId, id: a.attachmentId });
+      const attachmentId = a.attachmentId;
+      const res = await logCall(LOG_SOURCE.GMAIL, 'attachments.get', () => gmail.users.messages.attachments.get({ userId: 'me', messageId: gmailId, id: attachmentId }), { fields: { gmailId, file: a.filename } });
       data = res.data.data ?? undefined;
     }
     if (data) files.push({ filename: a.filename, mimeType: a.mimeType, content: decodeBase64Url(data) });

@@ -29,6 +29,7 @@ export const CHANNEL_TOLERANCES: Record<ChannelName, Tolerance> = {
   [CHANNELS.RELIANCE]: DEFAULT_TOLERANCE,
   [CHANNELS.SCOOTSY]: DEFAULT_TOLERANCE,
   [CHANNELS.PURPLLE]: DEFAULT_TOLERANCE,
+  [CHANNELS.AMAZON]: DEFAULT_TOLERANCE,
 };
 
 /**
@@ -43,6 +44,7 @@ export const CHANNEL_MASTER_IDS: Record<ChannelName, number> = {
   [CHANNELS.RELIANCE]: 12,
   [CHANNELS.PURPLLE]: 18,
   [CHANNELS.SCOOTSY]: 20,
+  [CHANNELS.AMAZON]: 9,
 };
 
 /**
@@ -63,6 +65,8 @@ export const CHANNEL_LOCATION_MATCH: Record<ChannelName, LocationMatch> = {
   [CHANNELS.RELIANCE]: LOCATION_MATCH.CODE_THEN_PINCODE,
   [CHANNELS.SCOOTSY]: LOCATION_MATCH.CODE_THEN_PINCODE,
   [CHANNELS.PURPLLE]: LOCATION_MATCH.PINCODE,
+  /** The FC code (HYD8, BOM7 ...) = channel_location_code. */
+  [CHANNELS.AMAZON]: LOCATION_MATCH.CODE_THEN_PINCODE,
 };
 
 /** Result of validating one PO. */
@@ -90,6 +94,8 @@ export const ISSUE_FIELDS = {
   EXPIRY_DATE: 'expiry_date',
   PO_TYPE: 'po_type',
   REVISED: 'revised',
+  /** A processed PO sent back to review by the person verifying it (constants/po-verify.ts). */
+  VERIFICATION: 'verification',
 } as const;
 export type IssueField = (typeof ISSUE_FIELDS)[keyof typeof ISSUE_FIELDS];
 

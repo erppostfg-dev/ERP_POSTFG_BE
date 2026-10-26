@@ -31,6 +31,7 @@ export const PEPIMS_TABLES = {
 
 /** Table names, exactly as in final_schema.sql. Never schema-qualified: queries always go to the connected database. */
 export const TABLES = {
+  CHANNEL_API_SYNC: 'channel_api_sync',
   MASTER_CHANNELS: 'master_channels',
   MASTER_SKUS: 'master_skus',
   MASTER_CHANNEL_SKUS: 'master_channel_skus',
@@ -45,6 +46,7 @@ export const TABLES = {
   // Login and page access (2026-10-09, prefg's shape; created by our migration).
   USERS: 'users',
   USER_ROLES: 'user_roles',
+  ROLES: 'roles',
   PAGE_PERMISSIONS: 'page_permissions',
   USER_PAGE_PERMISSIONS: 'user_page_permissions',
   SESSIONS: 'sessions',
@@ -67,10 +69,26 @@ export const TABLES = {
   MASTER_SKU_COMPONENTS: 'master_sku_components',
   // Temporary home of the in-transit Channel SKU Mapping (2026-10-22), until merged into master_channel_skus.
   INTRANSIT_CHANNEL_SKU_MAP: 'intransit_channel_sku_map',
-  // The app's small shared state (another team's table, 2026-10-23): the in-transit caches live here.
-  APP_STATE: 'app_state',
   // Every change of an in-transit master in the database (2026-10-25).
   INTRANSIT_MASTER_CHANGES: 'intransit_master_changes',
+  // Inbound plan + shipment tracking (2026-10-19, constants/inbound.ts).
+  INBOUND_PLANS: 'inbound_plans',
+  INBOUND_SHIPMENTS: 'inbound_shipments',
+  INBOUND_SHIPMENT_LINES: 'inbound_shipment_lines',
+  INBOUND_SHIPMENT_EVENTS: 'inbound_shipment_events',
+  INBOUND_STATUS_LIMITS: 'inbound_status_limits',
+  /** PO verification before the Uniware CSV (2026-10-22; constants/po-verify.ts). */
+  PO_VERIFICATIONS: 'po_verifications',
+  /** The verify switch per channel (2026-10-22). */
+  PO_VERIFY_CHANNEL_SETTINGS: 'po_verify_channel_settings',
+  /** Manual upload queue (2026-10-22; constants/manual-upload.ts). */
+  MANUAL_UPLOADS: 'manual_uploads',
+  /** PO intake ON / OFF + limit per day per channel (2026-10-23; constants/intake.ts). */
+  CHANNEL_INTAKE_SETTINGS: 'channel_intake_settings',
+  /** Every stored email / API / manual PO folder, PO or not (2026-10-23; constants/local-storage.ts). */
+  INTAKE_EMAILS: 'intake_emails',
+  /** Small server state kept across deploys, e.g. the Gmail sync point and the in-transit caches (2026-10-23). */
+  APP_STATE: 'app_state',
 } as const;
 
 /** master_sku_components.stage: which split file a combo's parts come from (the report splits in two stages). */
@@ -127,6 +145,8 @@ export const UPLOAD_STATUS = {
   COMPLETED: 'completed',
   REJECTED: 'rejected',
   FAILED: 'failed',
+  /** Received and stored, waiting: its channel is OFF or over its limit today (constants/intake.ts, 2026-10-23). */
+  HELD: 'held',
 } as const;
 export type UploadStatus = (typeof UPLOAD_STATUS)[keyof typeof UPLOAD_STATUS];
 
@@ -202,6 +222,9 @@ export const SHIPMENT_LOG_ACTION = {
   LINE_QTY_REQUESTED: 'line_qty_requested',
   LINE_QTY_APPROVED: 'line_qty_approved',
   LINE_QTY_REJECTED: 'line_qty_rejected',
+  /** The sale order CSV was uploaded into Uniware (marked by a person; 2026-10-19), or that mark was removed. */
+  UNIWARE_UPLOADED: 'uniware_uploaded',
+  UNIWARE_UPLOAD_UNDONE: 'uniware_upload_undone',
 } as const;
 export type ShipmentLogAction = (typeof SHIPMENT_LOG_ACTION)[keyof typeof SHIPMENT_LOG_ACTION];
 

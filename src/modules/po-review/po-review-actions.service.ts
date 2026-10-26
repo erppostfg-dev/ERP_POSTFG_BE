@@ -7,6 +7,7 @@ import {
   FILES,
   ISSUE_ACTION,
   ISSUE_STATUS,
+  SYSTEM_ACTOR,
   PO_REVIEW_REMARK_MAX,
   REVIEW_FIX_FIELD,
   REVIEW_SUBMISSION_STATUS,
@@ -31,6 +32,7 @@ import {
 } from '../../entities';
 import { flushChanges } from '../po-overview/po-overview.live';
 import { bumpReview } from './po-review.live';
+import { editRules, lockedChanges } from './review-edit-rules';
 import { AppError, appError } from '../../utils/AppError';
 import { readS3Json, siblingS3Url, writeS3Text } from '../email-intake/s3-mirror.service';
 import { ProcessedPo } from '../po-processing/common/processed-po';
@@ -38,6 +40,8 @@ import { csvOf, poRows, takeSerial } from '../po-pipeline/po-save.service';
 import { issueKey } from '../po-pipeline/po-uploads.service';
 import { MasterDataReader, matchKey } from '../po-validation/master-data';
 import { todayIst, validatePo } from '../po-validation/validate-po';
+import { LOG_SOURCE } from '../../constants/logging';
+import { log } from '../../utils/logger';
 
 /*
  * Actions on a PO in review (API contract "PO review", user 2026-10-09; approval step, user 2026-10-15):
@@ -248,13 +252,37 @@ const savePo = async (
       errorDetails: null,
     });
   });
-  console.log(`[po-review] ${uploadId} ${v.poNumber}: saved (reviewer ${reviewer}), sale order ${code}, CSV ${csvUrl}`);
+  log.info(LOG_SOURCE.APP, `[po-review] ${uploadId} ${v.poNumber}: saved (reviewer ${reviewer}), sale order ${code}, CSV ${csvUrl}`);
   void flushChanges();
   return { status: UPLOAD_STATUS.COMPLETED, poUid, saleOrderCode: code, uniwareCsv: csvUrl, resolvedIssues: open.map((i) => String(i.id)) };
 };
 
+/**
+ * A PO whose open issues were all fixed in the master (re-check, 2026-10-22): it passes as it is now, so it is saved
+ * like an approved one (PO rows + sale order + Uniware CSV), by the system. Throws REVIEW_INCOMPLETE when something is
+ * still left (then it simply stays in review).
+ */
+export const completeAfterRecheck = async (uploadId: string, remark: string): Promise<ResubmitResult> => {
+  const body: ResubmitBody = { lines: [], accept: [], remark };
+  const p = await prepare(uploadId, body, UPLOAD_STATUS.NEEDS_REVIEW);
+  const result = await savePo(p, body, UPLOAD_STATUS.NEEDS_REVIEW, SYSTEM_ACTOR, null);
+  bumpReview();
+  return result;
+};
+
 /** The reviewer submits the fixed PO for approval: it must pass completely; nothing goes to the PO tables yet. */
-export const submitForApproval = async (uploadId: string, body: ResubmitBody, by: Actor): Promise<{ status: string; submissionId: string }> => {
+export const submitForApproval = async (
+  uploadId: string,
+  body: ResubmitBody,
+  by: Actor,
+  /** The person may change any value (CAPABILITY.PO_REVIEW_EDIT_ALL); else only the values with an open error. */
+  editAll = false,
+): Promise<{ status: string; submissionId: string }> => {
+  if (!editAll) {
+    const open = await AppDataSource.getRepository(PoIssue).findBy({ uploadId, status: ISSUE_STATUS.OPEN });
+    const locked = lockedChanges(editRules(open), body);
+    if (locked.length) throw appError(ERROR_CODES.REVIEW_FIELD_LOCKED, locked.join(', ')).withDetails({ locked });
+  }
   const p = await prepare(uploadId, body, UPLOAD_STATUS.NEEDS_REVIEW);
   const fixes = fixesOf(p, body);
   let submissionId = '';
@@ -278,7 +306,7 @@ export const submitForApproval = async (uploadId: string, body: ResubmitBody, by
     submissionId = String(row.id);
     await m.getRepository(PoUpload).save({ ...locked, status: UPLOAD_STATUS.PENDING_APPROVAL });
   });
-  console.log(`[po-review] ${uploadId} ${p.v.poNumber}: submitted for approval by ${by.email} (submission ${submissionId})`);
+  log.info(LOG_SOURCE.APP, `[po-review] ${uploadId} ${p.v.poNumber}: submitted for approval by ${by.email} (submission ${submissionId})`);
   bumpReview();
   return { status: UPLOAD_STATUS.PENDING_APPROVAL, submissionId };
 };
@@ -316,7 +344,7 @@ export const approveSubmission = async (id: string, by: Actor, remark?: string):
       });
       await m.getRepository(PoUpload).update({ id: s.uploadId, status: UPLOAD_STATUS.PENDING_APPROVAL }, { status: UPLOAD_STATUS.NEEDS_REVIEW });
     });
-    console.warn(`[po-review] submission ${id}: returned to In Review: ${err.message}`);
+    log.warn(LOG_SOURCE.APP, `[po-review] submission ${id}: returned to In Review: ${err.message}`);
     bumpReview();
     const open = (err.details as { openIssues?: unknown[] } | undefined)?.openIssues;
     throw appError(ERROR_CODES.REVIEW_RETURNED, Array.isArray(open) ? open.length : 1).withDetails(err.details ?? { reason: err.message });
@@ -333,7 +361,7 @@ export const approveSubmission = async (id: string, by: Actor, remark?: string):
       saleOrderCode: r.code,
     });
   });
-  console.log(`[po-review] submission ${id}: approved by ${by.email}`);
+  log.info(LOG_SOURCE.APP, `[po-review] submission ${id}: approved by ${by.email}`);
   bumpReview();
   return { ...result, submissionId: id };
 };
@@ -362,7 +390,7 @@ export const rejectSubmission = async (id: string, remark: string, by: Actor): P
     await m.getRepository(PoUpload).save({ ...upload, status: UPLOAD_STATUS.REJECTED });
     await m.getRepository(PoReviewSubmission).save({ ...s, status: REVIEW_SUBMISSION_STATUS.REJECTED, decidedBy: by.id, decidedAt: new Date(), decisionRemark: remark });
   });
-  console.log(`[po-review] submission ${id}: rejected by ${by.email}: ${remark}`);
+  log.info(LOG_SOURCE.APP, `[po-review] submission ${id}: rejected by ${by.email}: ${remark}`);
   bumpReview();
   return { status: UPLOAD_STATUS.REJECTED, rejectedIssues: rejected };
 };
@@ -388,7 +416,7 @@ export const rejectPo = async (uploadId: string, remark: string, by: Actor): Pro
       decisionRemark: remark,
     });
   });
-  console.log(`[po-review] ${uploadId}: rejected by ${by.email}: ${remark}`);
+  log.info(LOG_SOURCE.APP, `[po-review] ${uploadId}: rejected by ${by.email}: ${remark}`);
   bumpReview();
   return { status: UPLOAD_STATUS.REJECTED, rejectedIssues: rejected };
 };

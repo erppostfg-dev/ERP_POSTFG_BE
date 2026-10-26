@@ -20,6 +20,9 @@ import { storedFolderOf } from '../email-intake/email-storage.service';
 import { ocrFinished, runFromProcessing, takeSlot } from './pipeline.service';
 import { finishCsv } from './po-save.service';
 import { readFolderPos } from './po-uploads.service';
+import { LOG_SOURCE } from '../../constants/logging';
+import { log } from '../../utils/logger';
+import { logError } from '../../utils/classify-error';
 
 /*
  * Resume after a restart (decided 2026-10-08): po_uploads.status is the to-do list.
@@ -103,6 +106,8 @@ export interface ResumeOptions {
   runOcr: (folder: string) => Promise<void>;
   /** Most emails to resume in this run (on top of PIPELINE_LIMIT); 0 = all. */
   max?: number;
+  /** Server start (PO intake, 2026-10-23): true = this OCR item was handed to the intake release (held), skip it here. */
+  holdOcr?: (item: ResumeItem) => Promise<boolean>;
 }
 
 /** Resumes the planned emails one at a time; stops when PIPELINE_LIMIT or `max` is reached. Returns how many ran. */
@@ -111,13 +116,14 @@ export const applyResume = async (db: DataSource, items: ResumeItem[], opts: Res
   for (const item of items) {
     if (item.action === RESUME_ACTION.SKIP || !item.folder) continue;
     if (opts.max && done >= opts.max) break;
+    if (item.action === RESUME_ACTION.OCR && opts.holdOcr && (await opts.holdOcr(item))) continue;
     if (!takeSlot()) {
-      console.log(`[resume] PIPELINE_LIMIT reached; the rest wait for the next run`);
+      log.info(LOG_SOURCE.APP, `[resume] PIPELINE_LIMIT reached; the rest wait for the next run`);
       break;
     }
     done++;
     const name = path.basename(item.folder);
-    console.log(`[resume] ${name}: ${item.action} (${item.reason})`);
+    log.info(LOG_SOURCE.APP, `[resume] ${name}: ${item.action} (${item.reason})`);
     try {
       if (item.action === RESUME_ACTION.OCR) await opts.runOcr(item.folder);
       else if (item.action === RESUME_ACTION.PROCESS) {
@@ -128,11 +134,11 @@ export const applyResume = async (db: DataSource, items: ResumeItem[], opts: Res
         const pos = await readFolderPos(item.folder);
         for (const row of item.rows.filter((r) => r.poUid)) {
           const relPath = pos.find((p) => p.po.po_number === row.poNumber)?.relPath ?? FILES.PROCESSED;
-          console.log(`[resume] ${name}: ${row.poNumber} CSV -> ${await finishCsv(db, item.folder, row, relPath)}`);
+          log.info(LOG_SOURCE.APP, `[resume] ${name}: ${row.poNumber} CSV -> ${await finishCsv(db, item.folder, row, relPath)}`);
         }
       }
     } catch (err) {
-      console.error(`[resume] ${name}: failed:`, err instanceof Error ? err.message : err);
+      logError(LOG_SOURCE.APP, `[resume] ${name}: failed (taken again on the next resume)`, err);
     }
   }
   return done;

@@ -26,6 +26,8 @@ export const FILES = {
   OCR_RAW_JSON: 'ocr-raw.json',
   /** Our common-format PO. */
   PROCESSED: 'processed.json',
+  /** A channel API's own data for one PO, as it came (Amazon: the shipment + its items). */
+  API_RAW: 'api-raw.json',
   /** The PO with a reviewer's corrections (resubmit), next to processed.json; processed.json is never changed. */
   CORRECTED: 'corrected.json',
   /** po:validate report (dev, read-only run): <storage>/validation/validation-<date>.csv, one row per issue. */

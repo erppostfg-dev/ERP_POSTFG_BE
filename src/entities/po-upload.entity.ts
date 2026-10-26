@@ -8,6 +8,7 @@ import {
   UploadSource,
   UploadStatus,
 } from '../constants/db';
+import { User } from './auth.entities';
 import { MasterChannel } from './master-channel.entity';
 import { MasterPurchaseOrder } from './master-purchase-order.entity';
 import type { PoIssue } from './po-issue.entity';
@@ -22,6 +23,7 @@ import type { PoIssue } from './po-issue.entity';
 @Index('idx_po_uploads_status', ['status', 'createdAt'])
 @Index('idx_po_uploads_po_number', ['poNumber'])
 @Index('uq_po_uploads_message_po', ['emailMessageId', 'poNumber'], { unique: true })
+@Index('uq_po_uploads_source_external', ['sourceSystem', 'externalId'], { unique: true })
 export class PoUpload {
   @PrimaryGeneratedColumn({ name: 'id', type: 'bigint' })
   id: string;
@@ -58,6 +60,15 @@ export class PoUpload {
   @Column({ name: 'email_received_at', type: 'datetime', nullable: true })
   emailReceivedAt: Date | null;
 
+  // --- channel API only (2026-10-16): which connector and the channel's own id; both null for email / manual ---
+  /** The connector (constants SOURCE_SYSTEM, e.g. amazon_spapi). */
+  @Column({ name: 'source_system', type: 'varchar', length: 50, nullable: true })
+  sourceSystem: string | null;
+
+  /** The channel's id of this PO (Amazon: the FBA shipment id); unique per source_system, so it is never taken twice. */
+  @Column({ name: 'external_id', type: 'varchar', length: 100, nullable: true })
+  externalId: string | null;
+
   // --- manual upload only ---
   /** User email; null for email intake. */
   @Column({ name: 'uploaded_by', type: 'varchar', length: 255, nullable: true })
@@ -93,6 +104,26 @@ export class PoUpload {
   @Column({ name: 'uniware_csv_url', type: 'varchar', length: 500, nullable: true })
   uniwareCsvUrl: string | null;
 
+  // --- Uniware hand-off (2026-10-19): CSV downloaded, then marked uploaded into Uniware (then shown in PO Overview) ---
+  /** First download of the sale order CSV (later downloads keep this date). */
+  @Column({ name: 'csv_downloaded_at', type: 'datetime', nullable: true })
+  csvDownloadedAt: Date | null;
+
+  /** users.id of that first download. */
+  @Column({ name: 'csv_downloaded_by', type: 'int', nullable: true })
+  csvDownloadedBy: number | null;
+
+  /** When someone marked the CSV uploaded into Uniware; null = not yet (the PO stays out of PO Overview). */
+  @Column({ name: 'uniware_uploaded_at', type: 'datetime', nullable: true })
+  uniwareUploadedAt: Date | null;
+
+  @Column({ name: 'uniware_uploaded_by', type: 'int', nullable: true })
+  uniwareUploadedBy: number | null;
+
+  /** PO intake (2026-10-23): when a HELD PO was let go; it counts against THAT day's limit, not its arrival day's. */
+  @Column({ name: 'released_at', type: 'datetime', nullable: true })
+  releasedAt: Date | null;
+
   @Column({ name: 'status', type: 'enum', enum: Object.values(UPLOAD_STATUS), default: UPLOAD_STATUS.QUEUED })
   status: UploadStatus;
 
@@ -115,6 +146,16 @@ export class PoUpload {
   @ManyToOne(() => MasterPurchaseOrder, { nullable: true })
   @JoinColumn({ name: 'po_uid', referencedColumnName: 'uid', foreignKeyConstraintName: 'fk_po_uploads_po' })
   purchaseOrder: MasterPurchaseOrder | null;
+
+  /** fk_po_uploads_csv_downloaded_by */
+  @ManyToOne(() => User, { nullable: true, onDelete: 'RESTRICT', onUpdate: 'CASCADE' })
+  @JoinColumn({ name: 'csv_downloaded_by', referencedColumnName: 'id', foreignKeyConstraintName: 'fk_po_uploads_csv_downloaded_by' })
+  csvDownloader: User | null;
+
+  /** fk_po_uploads_uniware_uploaded_by */
+  @ManyToOne(() => User, { nullable: true, onDelete: 'RESTRICT', onUpdate: 'CASCADE' })
+  @JoinColumn({ name: 'uniware_uploaded_by', referencedColumnName: 'id', foreignKeyConstraintName: 'fk_po_uploads_uniware_uploaded_by' })
+  uniwareUploader: User | null;
 
   /** fk_po_uploads_channel: channel -> master_channels.display_name. */
   @ManyToOne(() => MasterChannel, { nullable: true, onUpdate: 'CASCADE' })
