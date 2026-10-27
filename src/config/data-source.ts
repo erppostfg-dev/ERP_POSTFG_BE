@@ -44,6 +44,7 @@ const options: DataSourceOptions = {
   ...(env.log.dbSlowMs > 0 ? { maxQueryExecutionTime: env.log.dbSlowMs } : {}),
   timezone: 'Z',
   charset: 'utf8mb4',
+  extra: { connectionLimit: env.db.poolSize },
   // Glob needs forward slashes, so normalise Windows paths.
   entities: [path.join(__dirname, '../entities/**/*.{ts,js}').replace(/\\/g, '/')],
 };

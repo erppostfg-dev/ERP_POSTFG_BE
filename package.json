@@ -10,6 +10,7 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "gmail:token": "ts-node --transpile-only src/scripts/gmail-token.ts",
     "email:route": "ts-node --transpile-only src/scripts/route-label.ts",
     "email:sort": "ts-node --transpile-only src/scripts/sort-emails.ts",
@@ -37,7 +38,13 @@
     "amazon:check": "ts-node --transpile-only src/scripts/channel-api.ts check amazon_spapi",
     "amazon:pull": "ts-node --transpile-only src/scripts/channel-api.ts pull amazon_spapi",
     "sale-orders:prefix": "ts-node --transpile-only src/scripts/sale-order-prefix.ts",
-    "amazon:inbound": "ts-node --transpile-only src/scripts/amazon-inbound.ts"
+    "amazon:inbound": "ts-node --transpile-only src/scripts/amazon-inbound.ts",
+    "intransit:run": "ts-node --transpile-only src/scripts/intransit-run.ts",
+    "intransit:fetch": "ts-node --transpile-only src/scripts/intransit-fetch.ts",
+    "intransit:pepims": "ts-node --transpile-only src/scripts/intransit-pepims.ts",
+    "intransit:masters": "ts-node --transpile-only src/scripts/intransit-masters.ts",
+    "intransit:compare": "ts-node --transpile-only src/scripts/intransit-compare.ts",
+    "intransit:s3-migrate": "ts-node --transpile-only src/scripts/intransit-s3-migrate.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1146.0",
@@ -48,6 +55,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.2",
+    "fflate": "^0.8.2",
     "google-auth-library": "^11.2.0",
     "googleapis": "^182.0.0",
     "helmet": "^8.0.0",
@@ -65,6 +73,7 @@
     "@types/node": "^22.10.2",
     "ts-node": "^10.9.2",
     "ts-node-dev": "^2.0.0",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.4"
   }
 }

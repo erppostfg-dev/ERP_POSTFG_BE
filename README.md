@@ -108,7 +108,17 @@ push to main  -> .github/workflows/deploy.yml -> GitHub Environment "prod" -> EC
   | `EC2_INSTANCE_ID` | variable | `app_instance_id` |
 
 - **Redeploy / rollback:** Actions -> deploy -> Run workflow on the branch, `image_tag` = an earlier commit's SHA (the image is not rebuilt).
-- **Logs / shell:** Systems Manager -> Session Manager on the instance, then `docker logs -f post-fg-api`. Scripts inside the container run from `dist/`, e.g. `docker exec post-fg-api node dist/scripts/ocr-run.js --folder <email folder>`.
+- **Logs (CloudWatch -> Log groups, retention 30 days):**
+
+  | Log group | What |
+  | --- | --- |
+  | `/mcaffeine-erp-post-fg/<env>/api` | Everything the backend prints (requests, OCR, pipeline, errors); one stream per deployed image, `post-fg-api/<git sha>` |
+  | `/mcaffeine-erp-post-fg/<env>/deploy` | Each deploy's output (`deploy/deploy.sh`) |
+  | `/mcaffeine-erp-post-fg/<env>/nginx` | nginx access / error (requests from CloudFront) |
+  | `/mcaffeine-erp-post-fg/<env>/system` | `/var/log/messages`, cloud-init |
+
+  Memory, swap and disk usage: CloudWatch -> Metrics -> `CWAgent`. With `LOG_FORMAT=json` the api log can be queried by field in Logs Insights.
+- **Shell:** Systems Manager -> Session Manager on the instance, then `docker logs -f post-fg-api`. Scripts inside the container run from `dist/`, e.g. `docker exec post-fg-api node dist/scripts/ocr-run.js --folder <email folder>`.
 
 ## Adding an API
 

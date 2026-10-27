@@ -54,6 +54,18 @@ export class MasterFacility {
   @Column({ name: 'remarks', type: 'text', nullable: true })
   remarks: string | null;
 
+  /** In-transit Stock (2026-10-22): the report's stock bucket (GGNMWH, MUMMWH, D2C, DarkStore, Return ...); null = not stock. */
+  @Column({ name: 'intransit_group', type: 'varchar', length: 50, nullable: true })
+  intransitGroup: string | null;
+
+  /** Its channel type in the report (MWH, D2C, DarkStore, Return). */
+  @Column({ name: 'intransit_type', type: 'varchar', length: 50, nullable: true })
+  intransitType: string | null;
+
+  /** In-transit (2026-10-26): the Uniware fetch exports this facility (once per export); replaces .env UNIWARE_FACILITY. */
+  @Column({ name: 'uniware_export', type: 'boolean', default: false })
+  uniwareExport: boolean;
+
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive: boolean;
 
