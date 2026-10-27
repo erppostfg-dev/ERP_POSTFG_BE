@@ -11,8 +11,9 @@ import { env } from './env';
  *   - a query slower than DB_SLOW_MS is a DB_SLOW_QUERY warning, ALWAYS (also with DB_LOGGING=false), with the API
  *     path / job it came from (TypeORM's maxQueryExecutionTime, set in data-source.ts);
  *   - a failed query is DB_<FAILURE> with the plain reason and fix (e.g. DB_SCHEMA_MISMATCH: run the migration);
- *   - writes and transactions are DB_QUERY lines (the console shows what the app does to the database); reads
- *     only with DB_LOGGING=true. With LOG_FORMAT=json (EC2) writes are debug, so CloudWatch gets them only with LOG_LEVEL=debug.
+ *   - with DB_LOGGING=true every query is a DB_QUERY line (reads, writes, transactions); off (default) none are
+ *     (2026-10-27; before, writes always showed locally). With LOG_FORMAT=json (EC2) writes are debug, so CloudWatch
+ *     gets them only with LOG_LEVEL=debug.
  * Parameter values are written only for local runs (pretty format), never on EC2 (they can hold emails / names).
  */
 
@@ -46,11 +47,14 @@ export class DbConsoleLogger implements Logger {
   logQuery(query: string, parameters?: unknown[]): void {
     const ctx = logContext();
     if (ctx) ctx.dbQueries++;
-    // Writes / transactions: shown locally (info), only with LOG_LEVEL=debug on EC2 (json) to keep CloudWatch small.
+    // Every query line only with DB_LOGGING=true (user, 2026-10-27: the terminal was full of writes); slow and failed
+    // queries are logged below whatever it is set to.
+    if (!this.logReads) return;
+    // Writes / transactions: info locally, debug on EC2 (json) to keep CloudWatch small.
     const writeLevel = env.log.format === 'json' ? 'debug' : 'info';
     if (TRANSACTION.test(query)) writeLog(writeLevel, LOG_SOURCE.DB, 'DB_QUERY', oneLine(query).toUpperCase());
     else if (WRITE.test(query)) writeLog(writeLevel, LOG_SOURCE.DB, 'DB_QUERY', short(oneLine(query), LOG_MAX_SQL), { params: params(parameters) });
-    else if (this.logReads) writeLog('info', LOG_SOURCE.DB, 'DB_QUERY', short(oneLine(query), LOG_MAX_SQL), { params: params(parameters) });
+    else writeLog('info', LOG_SOURCE.DB, 'DB_QUERY', short(oneLine(query), LOG_MAX_SQL), { params: params(parameters) });
   }
 
   logQueryError(error: string | Error, query: string, parameters?: unknown[]): void {

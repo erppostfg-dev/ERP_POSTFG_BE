@@ -166,7 +166,7 @@ export const LOG_EVENTS = {
   // --- database ---
   DB_SLOW_QUERY: { level: 'warn', reason: 'One SQL query took longer than DB_SLOW_MS: check its WHERE / JOIN columns for an index, or fetch fewer rows.' },
   DB_POOL_WAITING: { level: 'warn', reason: 'Requests were waiting for a free DB connection: too many queries at once, or a transaction held a connection too long.' },
-  DB_QUERY: { level: 'debug', reason: 'A SQL query (only with DB_LOGGING=true, or a write).' },
+  DB_QUERY: { level: 'debug', reason: 'A SQL query (only with DB_LOGGING=true; reads, writes and transactions).' },
   DB_INFO: { level: 'info', reason: 'A message from TypeORM (schema / migration).' },
   // --- background jobs (no web request) ---
   JOB_DONE: { level: 'info', reason: 'A background job finished (Pub/Sub change, Amazon poll, OCR run, resume).' },
