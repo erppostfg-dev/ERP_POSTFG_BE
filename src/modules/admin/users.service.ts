@@ -18,7 +18,8 @@ import {
 } from '../../constants';
 import { ActivityLog, MasterFacility, Role, User, UserFacility, UserRole } from '../../entities';
 import { AppError, appError } from '../../utils/AppError';
-import { resolveAllAccess } from '../auth/access.service';
+import { forgetAccess, resolveAllAccess } from '../auth/access.service';
+import { forgetSessions } from '../auth/session.service';
 import { sendMail } from '../mail/mailer.service';
 import { LOG_SOURCE } from '../../constants/logging';
 import { log } from '../../utils/logger';
@@ -167,6 +168,8 @@ export const createUser = async (input: UserInput, by: Actor): Promise<UserItem>
     await audit(m, by, `users: added ${email} roles=${(input.roles ?? []).join('+') || '-'} team=${input.team ?? '-'} facilities=${(input.facilities ?? []).join('+') || '-'}`);
   });
   log.info(LOG_SOURCE.APP, `[users] ${by.email} added ${email}`);
+  forgetSessions({ userId: id });
+  forgetAccess(id);
   if (input.sendEmail !== false) scheduleWelcome(id);
   return (await listUsers()).find((u) => u.id === id)!;
 };
@@ -193,6 +196,9 @@ export const updateUser = async (id: number, input: UserInput, by: Actor): Promi
     if (changes.length) await audit(m, by, `users: changed ${user.email} ${changes.join(' ')}`);
   });
   if (changes.length) log.info(LOG_SOURCE.APP, `[users] ${by.email} changed user ${id}: ${changes.join(' ')}`);
+  // switched off / roles / team / facilities apply at once, not after the 30 s session cache (2026-10-27)
+  forgetSessions({ userId: id });
+  forgetAccess(id);
   const item = (await listUsers()).find((u) => u.id === id);
   if (!item) throw appError(ERROR_CODES.USER_ID_NOT_FOUND, String(id));
   return item;

@@ -149,6 +149,9 @@ export const env = {
     allowedEmailDomain: (process.env.ALLOWED_EMAIL_DOMAIN ?? 'mcaffeine.com').toLowerCase(),
     sessionDays: Number(process.env.SESSION_DAYS ?? 7),
     cookieSecure: flag('COOKIE_SECURE'),
+    // Seconds a session check and a person's page access are kept in memory (2026-10-27; 0 = always read the DB).
+    // Logout and every change in Users & Roles clear them at once; a change made by another server waits this long.
+    cacheSeconds: Number(process.env.AUTH_CACHE_SECONDS ?? 30),
   },
   // The chain after intake (po_uploads -> OCR -> processed.json -> validation -> DB -> Uniware CSV).
   // PO jobs queue (2026-10-26, constants/po-jobs.ts): local = in-process as before; sqs = SQS queue + worker.

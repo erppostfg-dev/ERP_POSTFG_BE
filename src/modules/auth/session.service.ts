@@ -3,8 +3,8 @@ import { OAuth2Client } from 'google-auth-library';
 import { jwtVerify, SignJWT } from 'jose';
 import { AppDataSource } from '../../config/data-source';
 import { env } from '../../config/env';
-import { AUTH, DEVICE_TYPE, ERROR_CODES, SESSION_EVENT, USER_STATUS } from '../../constants';
-import { Session, SessionHistory, User, UserRole } from '../../entities';
+import { AUTH, DEVICE_TYPE, ERROR_CODES, SESSION_EVENT, TABLES, USER_STATUS } from '../../constants';
+import { Session, SessionHistory, User } from '../../entities';
 import { appError } from '../../utils/AppError';
 import { LOG_SOURCE } from '../../constants/logging';
 import { logCall } from '../../utils/log-call';
@@ -105,9 +105,23 @@ export interface AuthContext {
   sessionId: string;
 }
 
+/*
+ * Session checks kept for AUTH_CACHE_SECONDS (2026-10-27, user OK with 30 s): most requests then need no query for
+ * the login. Logout and changes in Users & Roles clear them at once (forgetSessions); the session's own expiry is
+ * still checked on every request.
+ */
+const sessionCache = new Map<string, { auth: AuthContext; expiresAt: number; until: number }>();
+const CACHE_MAX = 5000;
+
+/** Clears cached session checks: of one session, of one user, or all. */
+export const forgetSessions = (by: { sessionId?: string; userId?: number } = {}): void => {
+  if (by.sessionId) return void sessionCache.delete(by.sessionId);
+  for (const [sid, c] of sessionCache) if (by.userId === undefined || c.auth.user.id === by.userId) sessionCache.delete(sid);
+};
+
 /**
  * The person behind a session cookie, or UNAUTHENTICATED: the token must be ours and unexpired, its sessions row
- * active and unexpired, and the user still allowed. Roles are read fresh.
+ * active and unexpired, and the user still allowed. One query (2026-10-27, was 3): session + user + roles together.
  */
 export const authFromToken = async (token: string | undefined): Promise<AuthContext> => {
   if (!token) throw appError(ERROR_CODES.UNAUTHENTICATED);
@@ -118,16 +132,39 @@ export const authFromToken = async (token: string | undefined): Promise<AuthCont
   } catch {
     throw appError(ERROR_CODES.UNAUTHENTICATED);
   }
-  const session = await AppDataSource.getRepository(Session).findOneBy({ sessionId: sid });
-  if (!session || session.isActive === false || session.expiresAt.getTime() < Date.now()) throw appError(ERROR_CODES.UNAUTHENTICATED);
-  const user = await AppDataSource.getRepository(User).findOneBy({ id: session.userId });
-  if (!user || user.status === USER_STATUS.INACTIVE) throw appError(ERROR_CODES.UNAUTHENTICATED);
-  const roles = (await AppDataSource.getRepository(UserRole).findBy({ userId: user.id })).map((r) => r.role);
-  return { user, roles, sessionId: sid };
+  const now = Date.now();
+  const hit = sessionCache.get(sid);
+  if (hit && hit.until > now && hit.expiresAt > now) return { ...hit.auth };
+  sessionCache.delete(sid);
+
+  const { entities, raw } = await AppDataSource.getRepository(User)
+    .createQueryBuilder('u')
+    .innerJoin(Session, 's', 's.userId = u.id')
+    .addSelect('s.isActive', 'session_active')
+    .addSelect('s.expiresAt', 'session_expires')
+    // roles in key order, as findBy returned them (primary key user_id + role)
+    .addSelect(`(SELECT GROUP_CONCAT(r.role ORDER BY r.role) FROM ${TABLES.USER_ROLES} r WHERE r.user_id = u.id)`, 'role_list')
+    .where('s.sessionId = :sid', { sid })
+    .getRawAndEntities<{ session_active: number | boolean | null; session_expires: Date; role_list: string | null }>();
+  const user = entities[0];
+  const row = raw[0];
+  const expiresAt = row ? new Date(row.session_expires).getTime() : 0;
+  // is_active NULL counts as active (as before: only false switched a session off)
+  if (!user || !row || row.session_active === 0 || row.session_active === false || expiresAt < now) throw appError(ERROR_CODES.UNAUTHENTICATED);
+  if (user.status === USER_STATUS.INACTIVE) throw appError(ERROR_CODES.UNAUTHENTICATED);
+  const auth: AuthContext = { user, roles: row.role_list ? row.role_list.split(',') : [], sessionId: sid };
+
+  if (env.auth.cacheSeconds > 0) {
+    if (sessionCache.size >= CACHE_MAX) for (const [k, c] of sessionCache) if (c.until <= now) sessionCache.delete(k);
+    if (sessionCache.size >= CACHE_MAX) sessionCache.clear();
+    sessionCache.set(sid, { auth, expiresAt, until: now + env.auth.cacheSeconds * 1000 });
+  }
+  return { ...auth };
 };
 
 /** Logout: the session row is switched off and a "logout" history row written. */
 export const endSession = async (auth: AuthContext, client: ClientInfo): Promise<void> => {
+  forgetSessions({ sessionId: auth.sessionId });
   await AppDataSource.transaction(async (m) => {
     await m.getRepository(Session).update({ sessionId: auth.sessionId }, { isActive: false });
     await m.getRepository(SessionHistory).insert({ sessionId: auth.sessionId, userId: auth.user.id, event: SESSION_EVENT.LOGOUT, ipAddress: client.ip, userAgent: client.userAgent });
