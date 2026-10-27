@@ -95,6 +95,18 @@ export const UNIWARE_HANDOFF = {
   BODY_UNDO: 'undo',
 } as const;
 
+/*
+ * Line items download (user, 2026-10-26): on the Processed tab, tick POs -> every line of them as CSV or Excel (built
+ * by the screen from these rows). Read-only: nothing is marked. DB lines + the PO's own JSON in S3 (EAN, MRP, rate,
+ * HSN, GST...), joined on the line's position. Kept under ~2 s: at most MAX_IDS POs, S3 read S3_PARALLEL at a time.
+ */
+export const LINE_ITEMS = {
+  /** Route under /po-review. */
+  ROUTE: '/line-items',
+  MAX_IDS: 100,
+  S3_PARALLEL: 20,
+} as const;
+
 
 /**
  * Re-check of POs in review after a master fix (user, 2026-10-22: "they directly pass and the issue resolves").
