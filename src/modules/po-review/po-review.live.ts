@@ -4,6 +4,7 @@ import { AppDataSource } from '../../config/data-source';
 import { LIVE, REVIEW_LIVE, TABLES } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
 import { logError } from '../../utils/classify-error';
+import { inBackground } from '../../utils/log-context';
 
 /*
  * Live PO Review + Approvals (2026-10-15, user: "on sync just like the live option on PO Overview"). The lists are small,
@@ -58,7 +59,8 @@ export const reviewEvents = async (req: Request, res: Response): Promise<void> =
   const send = (event: string, data: unknown) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   const onChange = (v: string) => send(REVIEW_LIVE.EVENT_CHANGE, { version: v });
   bus.on('change', onChange);
-  watcher ??= setInterval(() => void check(), REVIEW_LIVE.WATCH_MS);
+  // its own job name: started by the first screen's request, it must not carry that request on every tick (2026-10-27)
+  watcher ??= inBackground('live-po-review', () => setInterval(() => void check(), REVIEW_LIVE.WATCH_MS));
   send(LIVE.EVENT_PING, { version: await check() });
   const beat = setInterval(() => send(LIVE.EVENT_PING, { version }), LIVE.HEARTBEAT_MS);
   req.on('close', () => {

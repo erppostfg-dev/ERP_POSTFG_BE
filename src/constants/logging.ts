@@ -169,9 +169,13 @@ export const LOG_EVENTS = {
   DB_QUERY: { level: 'debug', reason: 'A SQL query (only with DB_LOGGING=true; reads, writes and transactions).' },
   DB_INFO: { level: 'info', reason: 'A message from TypeORM (schema / migration).' },
   // --- background jobs (no web request) ---
+  JOB_START: { level: 'info', reason: 'A background job started; its later lines carry the same jobId.' },
   JOB_DONE: { level: 'info', reason: 'A background job finished (Pub/Sub change, Amazon poll, OCR run, resume).' },
   JOB_SLOW: { level: 'warn', reason: 'A background job took longer than JOB_SLOW_MS.' },
-  JOB_FAILED: { level: 'error', reason: 'A background job failed; it is retried by its own schedule (next notification / poll / start).' },
+  JOB_FAILED: { level: 'error', reason: 'A background job failed; it is retried by its own schedule (next notification / poll / start). failedStep / failedAt say where.' },
+  // --- steps inside a job or request (step() in utils/log-call.ts), 2026-10-27 ---
+  STEP_DONE: { level: 'info', reason: 'One step of a job finished (time in ms).' },
+  STEP_FAILED: { level: 'error', reason: 'One step of a job failed: failedAt is the file and line in our code, error says why.' },
   // --- the Node.js process ---
   PROCESS_START: { level: 'info', reason: 'The server started (settings summary, no secrets).' },
   PROCESS_STOP: { level: 'info', reason: 'The server is stopping (signal received).' },

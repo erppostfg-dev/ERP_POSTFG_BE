@@ -5,6 +5,10 @@ import { env } from '../../../config/env';
 import { ERROR_CODES } from '../../../constants';
 import { appError } from '../../../utils/AppError';
 import { isUnreachable, ObjMeta, put, setQueueHook } from './store';
+import { LOG_SOURCE } from '../../../constants/logging';
+import { logError } from '../../../utils/classify-error';
+import { inBackground } from '../../../utils/log-context';
+import { log as appLog } from '../../../utils/logger';
 
 /*
  * The queue (user, 2026-10-26: "have a queue"): files this server could not send to S3 wait here, then are sent and
@@ -106,7 +110,7 @@ export const enqueue = async (key: string, from: Buffer | string, meta: ObjMeta,
     const { id: _i, dir: _d, ...manifest } = item;
     await writeDurable(path.join(dir, MANIFEST), JSON.stringify(manifest, null, 2));
     list.push(item);
-    console.warn(`[intransit-s3] S3 unreachable: ${key} queued (${list.length} waiting)`);
+    appLog.warn(LOG_SOURCE.S3, `[intransit-s3] S3 unreachable: ${key} queued (${list.length} waiting)`);
     return item;
   } catch (err) {
     reserved = Math.max(0, reserved - size);
@@ -141,7 +145,7 @@ export const drainOnce = (): Promise<{ sent: number; left: number }> => {
       reserved = Math.max(0, reserved - item.size);
       sent++;
     }
-    if (sent) console.log(`[intransit-s3] ${sent} queued file(s) sent to S3, ${list.length} waiting`);
+    if (sent) appLog.info(LOG_SOURCE.S3, `[intransit-s3] ${sent} queued file(s) sent to S3, ${list.length} waiting`);
     return { sent, left: list.length };
   })().finally(() => {
     draining = null;
@@ -155,7 +159,8 @@ let timer: NodeJS.Timeout | null = null;
 export const startQueue = async (): Promise<void> => {
   await loadQueue();
   if (timer) return;
-  timer = setInterval(() => void drainOnce().catch((err) => console.error('[intransit-s3] queue:', err instanceof Error ? err.message : err)), 60_000);
+  // its own job name: never the request / job that started it (2026-10-27)
+  timer = inBackground('intransit-s3-queue', () => setInterval(() => void drainOnce().catch((err) => logError(LOG_SOURCE.S3, '[intransit-s3] queue drain failed (next minute again)', err)), 60_000));
   timer.unref();
   void drainOnce().catch(() => undefined);
 };

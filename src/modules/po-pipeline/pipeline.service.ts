@@ -13,6 +13,7 @@ import { applyPlan, emailValues, planEmail } from './po-uploads.service';
 import { LOG_SOURCE } from '../../constants/logging';
 import { log as appLog } from '../../utils/logger';
 import { logError } from '../../utils/classify-error';
+import { step } from '../../utils/log-call';
 
 /*
  * The chain from a stored email to a saved PO (user, 2026-10-08), with po_uploads updated at every step:
@@ -184,7 +185,7 @@ export const jobFailed = (folder: string, reason: string): Promise<void> =>
 /** processed.json -> validation + po_issues (step 1) -> PO tables + sale order + CSV (step 2). */
 export const runFromProcessing = (folder: string): Promise<void> =>
   safely(folder, 'processing', async () => {
-    const p = await processPo(folder);
+    const p = await step('make processed.json', () => processPo(folder));
     if (p.status !== RESULT_STATUS.OK) {
       await markFailed(folder, { step: PIPELINE_STEP.PROCESSING, code: p.code ?? null, reason: p.reason ?? null }, false);
       return;
@@ -205,16 +206,23 @@ export const runChainFor = async (folder: string): Promise<{ poNumber: string; s
 const chain = async (folder: string): Promise<{ poNumber: string; status: string; saleOrder?: string; error?: string }[]> => {
   const out: { poNumber: string; status: string; saleOrder?: string; error?: string }[] = [];
   {
-    const plan = await planEmail(AppDataSource, new MasterDataReader(AppDataSource), folder);
-    await applyPlan(AppDataSource, plan);
+    // steps (2026-10-27): the log shows which part of the chain a PO failed in
+    const plan = await step('validate + po_issues', async () => {
+      const p = await planEmail(AppDataSource, new MasterDataReader(AppDataSource), folder);
+      await applyPlan(AppDataSource, p);
+      return p;
+    });
     for (const r of plan.rows) {
       log(folder, r.final ? `${r.poNumber}: already ${r.existing?.status}, unchanged` : `${r.poNumber}: ${r.status}${r.issues.create.length ? ` (${r.issues.create.length} new issue(s))` : ''}`);
       out.push({ poNumber: r.poNumber, status: r.final ? (r.existing?.status ?? r.status) : r.status });
     }
 
     // Step 2 reads the rows step 1 just wrote.
-    const fresh = await planEmail(AppDataSource, new MasterDataReader(AppDataSource), folder);
-    for (const s of await applySave(AppDataSource, folder, await planSave(AppDataSource, fresh))) {
+    const saved = await step('save PO + sale order + CSV', async () => {
+      const fresh = await planEmail(AppDataSource, new MasterDataReader(AppDataSource), folder);
+      return applySave(AppDataSource, folder, await planSave(AppDataSource, fresh));
+    });
+    for (const s of saved) {
       log(folder, s.error ? `${s.poNumber}: save FAILED: ${s.error}` : `${s.poNumber}: completed, sale order ${s.code}, CSV ${s.csvUrl}`);
       const o = out.find((x) => x.poNumber === s.poNumber);
       if (o) Object.assign(o, s.error ? { status: UPLOAD_STATUS.FAILED, error: s.error } : { status: UPLOAD_STATUS.COMPLETED, saleOrder: s.code });

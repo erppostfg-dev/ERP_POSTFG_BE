@@ -16,6 +16,9 @@ import { SNAPSHOT_SHEETS } from './s3/layout';
 import { scopeOfRun } from './s3/run-store';
 import { PROD_SCOPE, storageOn } from './s3/scope';
 import { openSnapshotFile, snapshotFor, SnapshotView } from './s3/snapshot';
+import { LOG_SOURCE } from '../../constants/logging';
+import { logError } from '../../utils/classify-error';
+import { step } from '../../utils/log-call';
 
 /*
  * GET /intransit/snapshot?day= and GET /intransit/snapshot/file?key= (Inventory Calculation, user 2026-10-26): the
@@ -47,7 +50,7 @@ const diskSnapshot = async (day: string): Promise<SnapshotView> => {
     order: { asOf: 'DESC', id: 'DESC' }, take: 20,
   })).filter((r) => scopeOfRun(r) === PROD_SCOPE);
   for (const run of runs) {
-    await extractSheets(run).catch((err) => console.warn(`[intransit] run ${run.id}: sheets not read from its workbook:`, err instanceof Error ? err.message : err));
+    await step(`read workbook sheets of run ${run.id}`, () => extractSheets(run)).catch((err) => logError(LOG_SOURCE.APP, `[intransit] run ${run.id}: sheets not read from its workbook`, err));
     const files: SnapshotView['files'] = [];
     for (const name of SNAPSHOT_SHEETS) {
       const st = await fsp.stat(diskSheet(run.id, name)).catch(() => null);

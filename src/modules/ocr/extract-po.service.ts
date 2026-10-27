@@ -13,7 +13,7 @@ import { ErrorArgs, ErrorCode, ERROR_CODES, errorMessage, FILES, PO_JOB_TYPE, RE
 import { LOG_SOURCE } from '../../constants/logging';
 import { log } from '../../utils/logger';
 import { logError } from '../../utils/classify-error';
-import { runJob } from '../../utils/log-call';
+import { runJob, step } from '../../utils/log-call';
 
 export type ExtractStatus = ResultStatus;
 
@@ -93,7 +93,7 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
   // 2. Channels that send links instead of attachments: download them into the folder first.
   let links: DownloadedLink[] | undefined;
   if (config.links) {
-    const dl = await downloadLinkedFiles(config, dir, await fs.readdir(dir));
+    const dl = await step('download linked files', async () => downloadLinkedFiles(config, dir, await fs.readdir(dir)));
     links = dl.downloaded;
     for (const d of dl.downloaded) if (d.filename && !filenames.includes(d.filename)) filenames.push(d.filename);
     if (dl.missingRequired.length) {
@@ -114,7 +114,7 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
     await ocrStarted(dir);
     const t0 = Date.now();
     try {
-      const read = await readSheets(dir, sheets, config.channel);
+      const read = await step('read sheet (no OCR)', () => readSheets(dir, sheets, config.channel), { files: sheets.length });
       log.info(LOG_SOURCE.OCR, `[extractPo] ${config.channel}: sheet reader, no OCR: ${read.lines} line(s) from ${sheets.length} file(s) (${path.basename(dir)})`);
       return await save({
         status: RESULT_STATUS.OK,
@@ -140,7 +140,7 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
     }
     let s3Folder: string;
     try {
-      s3Folder = (await syncEmailToS3(dir)).s3Folder;
+      s3Folder = (await step('upload OCR inputs to S3', () => syncEmailToS3(dir))).s3Folder;
     } catch (err) {
       const failed = why(ERROR_CODES.OCR_S3_UPLOAD_FAILED, (err as Error).message);
       return save({ status: RESULT_STATUS.FAILED, ...failed, channel: config.channel, links });
@@ -151,7 +151,7 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
   // 5. Run the OCR in the email folder (its CSV and result are written there).
   log.info(LOG_SOURCE.OCR, `[extractPo] ${config.channel}: ${inputs.join(', ')} (${path.basename(dir)})`);
   await ocrStarted(dir);
-  const run = await runOcr(config.ocrChannel, inputs, dir, FILES.OCR_OUTPUT_CSV);
+  const run = await step('run OCR', () => runOcr(config.ocrChannel, inputs, dir, FILES.OCR_OUTPUT_CSV), { channel: config.channel, files: inputs.length });
 
   const ok = run.exitCode === 0 && run.result?.status === RESULT_STATUS.OK;
   const ocrError = run.result?.error as string | undefined;

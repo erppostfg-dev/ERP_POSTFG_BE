@@ -22,6 +22,7 @@ import { resolveAllAccess } from '../auth/access.service';
 import { sendMail } from '../mail/mailer.service';
 import { LOG_SOURCE } from '../../constants/logging';
 import { log } from '../../utils/logger';
+import { runJob, step } from '../../utils/log-call';
 
 /*
  * Users page (2026-10-15, user): admins / developers add a person with a role (which routes they may open / edit), a
@@ -241,8 +242,10 @@ export const sendWelcome = async (id: number): Promise<{ sent: boolean; error: s
   const user = (await listUsers()).find((u) => u.id === id);
   if (!user) throw appError(ERROR_CODES.USER_ID_NOT_FOUND, String(id));
   try {
-    await sendMail(await welcomeMail(user));
-    await AppDataSource.getRepository(User).update(id, { welcomeSentAt: new Date(), welcomeError: null });
+    // steps (2026-10-27): the log shows which one failed (building the text, Gmail, or recording it)
+    const mail = await step('build welcome email', () => welcomeMail(user));
+    await step('send via Gmail', () => sendMail(mail), { to: user.email });
+    await step('record sent', () => AppDataSource.getRepository(User).update(id, { welcomeSentAt: new Date(), welcomeError: null }));
     log.info(LOG_SOURCE.APP, `[users] welcome email sent to ${user.email}`);
     return { sent: true, error: null };
   } catch (err) {
@@ -256,7 +259,8 @@ export const sendWelcome = async (id: number): Promise<{ sent: boolean; error: s
 
 /** Tries now, then after each WELCOME_EMAIL.RETRY_DELAYS_MS; stops at the first success or a missing permission. */
 const scheduleWelcome = (id: number, attempt = 0): void => {
-  sendWelcome(id).catch((err: AppError & { final?: boolean }) => {
+  // its own job (2026-10-27): JOB_START / steps / JOB_DONE or JOB_FAILED under one jobId, not the add-user request's
+  runJob('welcome-email', () => sendWelcome(id), { userId: id, attempt: attempt + 1 }).catch((err: AppError & { final?: boolean }) => {
     const wait = WELCOME_EMAIL.RETRY_DELAYS_MS[attempt];
     if (err.final || wait === undefined) return;
     setTimeout(() => scheduleWelcome(id, attempt + 1), wait).unref();

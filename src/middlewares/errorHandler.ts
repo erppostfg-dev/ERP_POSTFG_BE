@@ -5,6 +5,7 @@ import { AppError, appError } from '../utils/AppError';
 import { classifyError } from '../utils/classify-error';
 import { LOG_SOURCE } from '../constants/logging';
 import { logFailure } from '../utils/logger';
+import { whereFailed } from '../utils/where';
 import { currentRequestId } from './request-log';
 
 export const notFoundHandler = (req: Request, _res: Response, next: NextFunction): void => {
@@ -34,7 +35,10 @@ export const errorHandler = (
     const fromDb = err.name === 'QueryFailedError' || typeof (err as { sqlMessage?: unknown }).sqlMessage === 'string';
     const source = fromDb ? LOG_SOURCE.DB : LOG_SOURCE.APP;
     const f = classifyError(source, err);
-    logFailure(source, f.kind, `${req.method} ${req.originalUrl.split('?')[0]} failed`, { errorCode: f.errorCode, error: f.error, stack: err.stack });
+    res.locals.failedAt = whereFailed(err);
+    logFailure(source, f.kind, `${req.method} ${req.originalUrl.split('?')[0]} failed at ${res.locals.failedAt ?? 'an unknown place'}: ${f.error}`, {
+      errorCode: f.errorCode, error: f.error, failedAt: res.locals.failedAt, stack: err.stack,
+    });
   }
   res.locals.errorCode = appErr?.code ?? ERROR_CODES.INTERNAL;
   res.locals.errorMessage = appErr?.message ?? err.message;
