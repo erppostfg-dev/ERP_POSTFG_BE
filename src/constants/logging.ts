@@ -23,6 +23,7 @@ export const LOG_SOURCE = {
   API: 'api', // our own HTTP API (one line per request)
   DB: 'db', // our MySQL (mcaff_postfg_*) and the read-only PEPIMS database
   S3: 's3', // AWS S3: email files, processed.json, Uniware CSVs
+  SQS: 'sqs', // AWS SQS: the PO jobs queue (send / receive / delete), 2026-10-26
   GMAIL: 'gmail', // Gmail API: reading the Po-Intake mailbox, watch, labels
   PUBSUB: 'pubsub', // Google Pub/Sub: "the mailbox changed" notifications
   GOOGLE_LOGIN: 'google_login', // Google sign-in of the website users
@@ -37,7 +38,7 @@ export type LogSource = (typeof LOG_SOURCE)[keyof typeof LOG_SOURCE];
 
 /** Code prefix of each source. */
 export const LOG_SOURCE_PREFIX: Record<LogSource, string> = {
-  api: 'API', db: 'DB', s3: 'S3', gmail: 'GMAIL', pubsub: 'PUBSUB', google_login: 'GOOGLE_LOGIN', mail: 'MAIL',
+  api: 'API', db: 'DB', s3: 'S3', sqs: 'SQS', gmail: 'GMAIL', pubsub: 'PUBSUB', google_login: 'GOOGLE_LOGIN', mail: 'MAIL',
   amazon: 'AMAZON', http: 'HTTP', ocr: 'OCR', process: 'PROCESS', app: 'APP',
 };
 
@@ -87,6 +88,12 @@ export const FIXES: Partial<Record<LogSource, Partial<Record<FailureKind, string
     CONFIG: 'S3_BUCKET or S3_REGION is wrong for this environment.',
     NOT_FOUND: 'The file is not in S3 yet (or was moved); `npm run s3:sync` uploads what is missing.',
     UNREACHABLE: 'No internet / AWS endpoint from this machine; the next sync retries.',
+  },
+  sqs: {
+    ACCESS_DENIED: 'The AWS key / EC2 role lacks this SQS permission (see `op`: SendMessage, ReceiveMessage, DeleteMessage, ChangeMessageVisibility, GetQueueAttributes): ask the AWS admin.',
+    BAD_CREDENTIALS: 'AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY wrong or rotated (on EC2: the instance role).',
+    CONFIG: 'SQS_PO_JOBS_ARN is wrong for this environment (region / account / queue name).',
+    UNREACHABLE: 'No internet / AWS endpoint from this machine: jobs run in-process meanwhile, the worker retries receiving.',
   },
   gmail: {
     BAD_CREDENTIALS: 'The Gmail refresh token was revoked or expired: run `npm run gmail:token` and update .env.',

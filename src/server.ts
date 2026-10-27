@@ -10,6 +10,8 @@ import { resumeManualQueue } from './modules/manual-upload/manual-upload.service
 import { recheckInReview } from './modules/po-review/recheck.service';
 import { holdForIntake, kickRelease } from './modules/po-intake-control/intake-release.service';
 import { runLocalCleanup } from './modules/email-intake/local-cleanup.service';
+import { usesSqs } from './modules/po-jobs/po-jobs.queue';
+import { startPoWorker } from './modules/po-jobs/po-jobs.worker';
 import { LOCAL_CLEANUP, PO_INTAKE, REVIEW_RECHECK } from './constants';
 import { LOG_SOURCE } from './constants/logging';
 import { logError } from './utils/classify-error';
@@ -41,7 +43,7 @@ const start = async (): Promise<void> => {
   logEvent('PROCESS_START', `server running on port ${env.port}${env.apiPrefix}`, {
     nodeEnv: env.nodeEnv, node: process.version, pid: process.pid, database: env.db.enabled ? env.db.name : 'off',
     pubsub: env.pubsub.enabled, ocr: env.ocr.enabled, s3: env.s3.enabled, channelApi: env.channelApi.enabled,
-    resume: env.pipeline.resumeOnStart, pipelineLimit: env.pipeline.limit,
+    resume: env.pipeline.resumeOnStart, pipelineLimit: env.pipeline.limit, queue: env.queue.mode, workerInServer: env.queue.workerInServer,
     log: { level: env.log.level, format: env.log.format, dbSlowMs: env.log.dbSlowMs, apiSlowMs: env.log.apiSlowMs, extSlowMs: env.log.extSlowMs },
   });
   const monitor = startProcessMonitor();
@@ -62,6 +64,10 @@ const start = async (): Promise<void> => {
   let channelApis: { stop: () => void } | undefined;
   if (env.channelApi.enabled && AppDataSource.isInitialized) channelApis = startChannelApis();
   else log.info(LOG_SOURCE.AMAZON, 'channel API connectors disabled (CHANNEL_API_ENABLED=false)');
+
+  // PO jobs worker (2026-10-26): with QUEUE_MODE=sqs + WORKER_IN_SERVER=true this process also takes the queued jobs;
+  // otherwise the separate `npm run worker` does (EC2: its own pm2 process).
+  const worker = usesSqs() && env.queue.workerInServer && AppDataSource.isInitialized ? startPoWorker() : undefined;
 
   // Manual uploads (2026-10-22): ones queued by a Process click (or cut off while processing) continue, one at a time.
   // "uploaded" ones wait for a Process click.
@@ -120,6 +126,7 @@ const start = async (): Promise<void> => {
     monitor.stop();
     await listener?.stop();
     channelApis?.stop();
+    await worker?.stop();
     if (recheckTimer) clearInterval(recheckTimer);
     if (releaseTimer) clearInterval(releaseTimer);
     if (cleanupTimer) clearInterval(cleanupTimer);

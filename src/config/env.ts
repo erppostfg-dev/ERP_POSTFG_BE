@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 import { ERROR_CODES } from '../constants/errors';
 import { LOG_DEFAULTS, LOG_FORMAT, LOG_LEVEL_RANK, type LogFormat, type LogLevel } from '../constants/logging';
+import { PO_JOBS, QUEUE_MODE, type QueueMode } from '../constants/po-jobs';
 import { REVIEW_RECHECK } from '../constants/po-review';
 import { appError } from '../utils/AppError';
 
@@ -97,6 +98,18 @@ export const env = {
     cookieSecure: flag('COOKIE_SECURE'),
   },
   // The chain after intake (po_uploads -> OCR -> processed.json -> validation -> DB -> Uniware CSV).
+  // PO jobs queue (2026-10-26, constants/po-jobs.ts): local = in-process as before; sqs = SQS queue + worker.
+  queue: {
+    mode: (process.env.QUEUE_MODE === QUEUE_MODE.SQS ? QUEUE_MODE.SQS : QUEUE_MODE.LOCAL) as QueueMode,
+    jobsArn: process.env.SQS_PO_JOBS_ARN ?? '',
+    dlqArn: process.env.SQS_PO_JOBS_DLQ_ARN ?? '',
+    /** POs worked on at the same time by one worker process (1 = one after another). */
+    concurrency: Math.max(1, num('WORKER_CONCURRENCY', PO_JOBS.DEFAULT_CONCURRENCY)),
+    /** Pause after each job, so a burst becomes a steady line (0 = none). */
+    pauseMs: Math.max(0, num('WORKER_PAUSE_MS', PO_JOBS.DEFAULT_PAUSE_MS)),
+    /** true: the API server also runs the worker (local dev, one process). On EC2: a separate `npm run worker` (pm2). */
+    workerInServer: flag('WORKER_IN_SERVER'),
+  },
   pipeline: {
     // Most emails taken into the chain per process start (new intake + resume); 0 = no limit (production).
     // Emails over the limit are only stored as files (no po_uploads row, no OCR); po:pipeline / po:one take them later.

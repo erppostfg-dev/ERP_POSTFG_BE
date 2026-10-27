@@ -170,6 +170,17 @@ const markFailed = async (folder: string, details: Record<string, unknown>, ocrF
   log(folder, `failed at ${String(details.step)}: ${String(details.reason ?? '')}`);
 };
 
+/** The po_uploads statuses of a stored email / API folder ([] when it has no row yet). For the PO jobs worker. */
+export const statusesOf = async (folder: string): Promise<string[]> => {
+  if (!on()) return [];
+  const { messageId } = await messageIdOf(folder);
+  return messageId ? (await rowsOf(messageId)).map((r) => r.status) : [];
+};
+
+/** A queued job failed on its last try (PO jobs worker): its rows are marked failed with the reason. */
+export const jobFailed = (folder: string, reason: string): Promise<void> =>
+  safely(folder, 'jobFailed', () => markFailed(folder, { step: PIPELINE_STEP.PROCESSING, reason }, false));
+
 /** processed.json -> validation + po_issues (step 1) -> PO tables + sale order + CSV (step 2). */
 export const runFromProcessing = (folder: string): Promise<void> =>
   safely(folder, 'processing', async () => {

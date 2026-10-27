@@ -2,7 +2,7 @@ import path from 'path';
 import { AppDataSource } from '../../config/data-source';
 import { env } from '../../config/env';
 import { In } from 'typeorm';
-import { FOLDERS, LABELS, UPLOAD_SOURCE, UPLOAD_STATUS } from '../../constants';
+import { FOLDERS, LABELS, PO_JOB_TYPE, UPLOAD_SOURCE, UPLOAD_STATUS } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
 import { PoUpload } from '../../entities';
 import { logError } from '../../utils/classify-error';
@@ -10,6 +10,7 @@ import { runJob } from '../../utils/log-call';
 import { log } from '../../utils/logger';
 import { storedFolderOf } from '../email-intake/email-storage.service';
 import { extractPo } from '../ocr/extract-po.service';
+import { submitJob } from '../po-jobs/po-jobs.queue';
 import { runChainFor } from '../po-pipeline/pipeline.service';
 import type { ResumeItem } from '../po-pipeline/resume.service';
 import { channelOfDisplayName, processFromOf, shouldHold } from './intake-settings.service';
@@ -43,8 +44,9 @@ const releaseOne = async (u: PoUpload): Promise<void> => {
   }
   // released_at: it counts against TODAY's limit (it arrived on an earlier day, or while the channel was off).
   await repo.update({ id: u.id }, { status: UPLOAD_STATUS.QUEUED, releasedAt: new Date() });
-  if (u.source === UPLOAD_SOURCE.API) await runChainFor(folder);
-  else if (env.ocr.enabled) await extractPo(folder);
+  // PO jobs queue (2026-10-26): with QUEUE_MODE=sqs the released PO waits its turn in SQS (local mode: runs here).
+  if (u.source === UPLOAD_SOURCE.API) await submitJob({ type: PO_JOB_TYPE.CHAIN, folder }, () => runChainFor(folder));
+  else if (env.ocr.enabled) await submitJob({ type: PO_JOB_TYPE.EXTRACT, folder }, () => extractPo(folder));
   else log.info(LOG_SOURCE.OCR, `[intake] ${u.poNumber ?? u.id} released; OCR_ENABLED=false: it waits as queued for resume`);
 };
 

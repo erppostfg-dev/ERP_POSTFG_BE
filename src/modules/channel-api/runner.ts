@@ -2,10 +2,11 @@ import fs from 'fs/promises';
 import path from 'path';
 import { AppDataSource } from '../../config/data-source';
 import { env } from '../../config/env';
-import { CHANNEL_API, FILES, FOLDERS, IST_OFFSET_MS, PROVIDERS, UPLOAD_STATUS } from '../../constants';
+import { CHANNEL_API, FILES, FOLDERS, IST_OFFSET_MS, PO_JOB_TYPE, PROVIDERS, UPLOAD_STATUS } from '../../constants';
 import { ChannelApiSync, PoUpload } from '../../entities';
 import { syncEmailToS3 } from '../email-intake/s3-mirror.service';
 import { runChainFor, takeSlot } from '../po-pipeline/pipeline.service';
+import { submitJob, usesSqs } from '../po-jobs/po-jobs.queue';
 import { emailValues } from '../po-pipeline/po-uploads.service';
 import { intakeGate, processFromOf, shouldHold } from '../po-intake-control/intake-settings.service';
 import { MasterDataReader } from '../po-validation/master-data';
@@ -95,9 +96,16 @@ const writeFolder = async (c: ChannelConnector, po: ExternalPo, master: Awaited<
   return folder;
 };
 
-/** Writes the PO's folder and runs the chain. */
-const ingest = async (c: ChannelConnector, po: ExternalPo, master: Awaited<ReturnType<MasterDataReader['forChannel']>>) =>
-  runChainFor(await writeFolder(c, po, master));
+/**
+ * Writes the PO's folder and runs the chain; with QUEUE_MODE=sqs the chain is a job in the PO jobs queue (2026-10-26),
+ * so the run returns at once (a failure there is retried by the queue, not by the next run).
+ */
+const ingest = async (c: ChannelConnector, po: ExternalPo, master: Awaited<ReturnType<MasterDataReader['forChannel']>>) => {
+  const folder = await writeFolder(c, po, master);
+  if (!usesSqs()) return runChainFor(folder);
+  await submitJob({ type: PO_JOB_TYPE.CHAIN, folder }, () => runChainFor(folder));
+  return [];
+};
 
 /** PO intake OFF / over today's limit (2026-10-23): the folder is written and S3 has it, the row waits as "held". */
 const hold = async (c: ChannelConnector, po: ExternalPo, master: Awaited<ReturnType<MasterDataReader['forChannel']>>) => {
@@ -152,7 +160,7 @@ export const runConnector = async (c: ChannelConnector, opts: RunOptions): Promi
       done++;
       const out = await ingest(c, po, master);
       const r = out.find((x) => x.poNumber === po.poNumber);
-      item.result = r?.status ?? 'unknown';
+      item.result = r?.status ?? (usesSqs() ? UPLOAD_STATUS.QUEUED : 'unknown');
       item.saleOrder = r?.saleOrder;
       if (r?.error) { item.error = r.error; failed.push(ref.externalId); }
     } catch (err) {

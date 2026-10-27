@@ -6,9 +6,10 @@ import { ChannelConfig } from './channels.config';
 import { DownloadedLink, downloadLinkedFiles } from './link-downloader';
 import { runOcr } from './ocr-runner';
 import { readSheets } from './sheet-reader';
+import { submitJob, usesSqs } from '../po-jobs/po-jobs.queue';
 import { syncEmailToS3 } from '../email-intake/s3-mirror.service';
 import { ocrFinished, ocrStarted } from '../po-pipeline/pipeline.service';
-import { ErrorArgs, ErrorCode, ERROR_CODES, errorMessage, FILES, RESULT_STATUS, ResultStatus } from '../../constants';
+import { ErrorArgs, ErrorCode, ERROR_CODES, errorMessage, FILES, PO_JOB_TYPE, RESULT_STATUS, ResultStatus } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
 import { log } from '../../utils/logger';
 import { logError } from '../../utils/classify-error';
@@ -212,6 +213,16 @@ const next = (): void => {
  */
 export const queueExtractPo = (folder: string): boolean => {
   const dir = path.resolve(folder);
+  // PO jobs queue (2026-10-26): with QUEUE_MODE=sqs the job goes to SQS and the worker runs it, one at a time.
+  if (usesSqs()) {
+    void submitJob({ type: PO_JOB_TYPE.EXTRACT, folder: dir }, () => queueLocal(dir));
+    return true;
+  }
+  return queueLocal(dir);
+};
+
+/** The in-process queue (QUEUE_MODE=local, or an SQS send that failed). */
+const queueLocal = (dir: string): boolean => {
   if (queued.has(dir)) return true;
   if (limitReached()) return false;
   queued.add(dir);
