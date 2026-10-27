@@ -72,6 +72,13 @@ export const env = {
     logging: flag('DB_LOGGING'),
     // connections in the pool (the in-transit store holds one briefly per upload lock, 2026-10-25)
     poolSize: Number(process.env.DB_POOL_SIZE ?? 20),
+    // Nothing waits forever (2026-10-27): MySQL stops a SELECT after this (0 = off), a write waiting on a row lock
+    // gives up after DB_LOCK_WAIT_S, at most DB_QUEUE_LIMIT requests wait for a free connection (0 = no limit),
+    // and /health reports the DB down when SELECT 1 takes longer than DB_HEALTH_TIMEOUT_MS.
+    queryTimeoutMs: Number(process.env.DB_QUERY_TIMEOUT_MS ?? 30_000),
+    lockWaitS: Number(process.env.DB_LOCK_WAIT_S ?? 20),
+    queueLimit: Number(process.env.DB_QUEUE_LIMIT ?? 200),
+    healthTimeoutMs: Number(process.env.DB_HEALTH_TIMEOUT_MS ?? 3_000),
   },
   // Optional at startup; checked when the Gmail client is created.
   gmail: {
@@ -81,6 +88,8 @@ export const env = {
     oauthClientId: process.env.GMAIL_OAUTH_CLIENT_ID,
     oauthClientSecret: process.env.GMAIL_OAUTH_CLIENT_SECRET,
     oauthRefreshToken: process.env.GMAIL_OAUTH_REFRESH_TOKEN,
+    // one outgoing email (welcome) gives up after this; its retries then take over (2026-10-27)
+    sendTimeoutMs: Number(process.env.MAIL_SEND_TIMEOUT_MS ?? 30_000),
   },
   // Gmail watch -> Pub/Sub topic -> pull subscription read by this server.
   pubsub: {
