@@ -48,6 +48,8 @@ export interface ChannelConfig {
    * never required (email rule, reading, Manual Upload). Tata 1mg: the PDF (all the data is in its CSV).
    */
   optional?: ('pdf' | 'sheet')[];
+  /** One file holds many POs (Nykaa's export, 2026-10-27): told on the Manual Upload screen. */
+  manyPosPerFile?: boolean;
 }
 
 export const channelConfigs: ChannelConfig[] = [
@@ -171,5 +173,18 @@ export const channelConfigs: ChannelConfig[] = [
     reader: 'sheet',
     // Every value we use is in the CSV; the PDF is only kept to look at.
     optional: ['pdf'],
+  },
+
+  {
+    // Nykaa (2026-10-27): Manual Upload only. Someone downloads the vendor portal's "Purchase Orders" CSV
+    // (Purchase Orders_allPo_<date>.csv: many POs, one row per line) and uploads it; no email, no OCR (reader 'sheet').
+    // No senders / domains, so no email ever matches this channel.
+    channel: CHANNELS.NYKAA,
+    ocrChannel: OCR_CHANNELS[CHANNELS.NYKAA],
+    senders: [],
+    domains: [],
+    files: { sheet: /\.csv$/i },
+    reader: 'sheet',
+    manyPosPerFile: true,
   },
 ];

@@ -70,7 +70,7 @@ const optionalOf = (c: ChannelConfig): string =>
 
 /** How the channel normally sends POs (the Manual Upload list is grouped by it): api (Amazon), email; manual-only later. */
 export type UploadGroup = 'api' | 'email' | 'manual';
-export interface UploadChannel { channel: string; name: string; needs: string; twoFiles: boolean; group: UploadGroup; optional?: string }
+export interface UploadChannel { channel: string; name: string; needs: string; twoFiles: boolean; group: UploadGroup; optional?: string; manyPos?: boolean }
 
 /** Channels with a PO reader (channels.config) that are active in master_channels. */
 export const uploadChannels = async (): Promise<UploadChannel[]> => {
@@ -79,7 +79,7 @@ export const uploadChannels = async (): Promise<UploadChannel[]> => {
     .map((c): UploadChannel | null => {
       const m = masters.find((x) => x.id === masterIdOf(c.channel));
       return m
-        ? { channel: c.channel, name: m.displayName, needs: needsOf(c), twoFiles: !!(c.files.pdf && c.files.sheet) && !c.optional?.length, group: 'email', optional: optionalOf(c) || undefined }
+        ? { channel: c.channel, name: m.displayName, needs: needsOf(c), twoFiles: !!(c.files.pdf && c.files.sheet) && !c.optional?.length, group: c.senders.length ? 'email' : 'manual', optional: optionalOf(c) || undefined, manyPos: c.manyPosPerFile || undefined }
         : null;
     })
     .filter((x): x is UploadChannel => x !== null)

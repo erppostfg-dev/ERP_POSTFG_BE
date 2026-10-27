@@ -3,6 +3,7 @@ import { bigbasketHandler } from './bigbasket/bigbasket.handler';
 import { blinkitHandler } from './blinkit/blinkit.handler';
 import { ChannelHandler } from './channel-handler';
 import { firstcryHandler } from './firstcry/firstcry.handler';
+import { nykaaHandler } from './nykaa/nykaa.handler';
 import { purplleHandler } from './purplle/purplle.handler';
 import { relianceHandler } from './reliance/reliance.handler';
 import { scootsyHandler } from './scootsy/scootsy.handler';
@@ -22,4 +23,5 @@ export const channelHandlers: Partial<Record<ChannelName, ChannelHandler>> = {
   [purplleHandler.channel]: purplleHandler,
   [relianceHandler.channel]: relianceHandler,
   [tata1mgHandler.channel]: tata1mgHandler,
+  [nykaaHandler.channel]: nykaaHandler,
 };

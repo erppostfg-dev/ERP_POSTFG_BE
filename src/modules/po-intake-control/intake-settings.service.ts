@@ -21,7 +21,8 @@ export interface Actor {
 
 /** Channels that come by email (a PO reader) or API (Amazon), as constants CHANNELS values. */
 const intakeChannels = (): { channel: ChannelName; source: 'email' | 'api' }[] => [
-  ...channelConfigs.map((c) => ({ channel: c.channel, source: 'email' as const })),
+  // A channel with no senders (Nykaa) comes by Manual Upload only, which is never held: no switch for it here.
+  ...channelConfigs.filter((c) => c.senders.length).map((c) => ({ channel: c.channel, source: 'email' as const })),
   { channel: CHANNELS.AMAZON, source: 'api' as const },
 ];
 
