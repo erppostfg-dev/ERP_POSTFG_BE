@@ -173,9 +173,12 @@ export const VALIDATION_TEXT = {
   LOCATION_INCOMPLETE: (code: string, missing: string) => `details_channels row "${code}" has no ${missing}`,
   SKU_CODE_EMPTY: 'the PO line has no channel SKU code',
   SKU_NONE: (code: string) => `channel SKU code ${code} is not in master_channel_skus for this channel`,
-  /** The PO itself names our SKU (Nykaa's Vendor SKU Code, 2026-10-27): told to the reviewer, never mapped by itself. */
+  /**
+   * The PO itself names our SKU (Nykaa's Vendor SKU Code, 2026-10-27): told to the reviewer, never mapped by itself. Picking
+   * it in review is not enough: validation needs this channel's row for it (its rate).
+   */
   SKU_NONE_PO_GIVES_PEP: (code: string, pepCode: string) =>
-    `channel SKU code ${code} is not in master_channel_skus for this channel; the PO gives our SKU ${pepCode} (in master_skus): pick it, or add ${code} to the channel SKUs`,
+    `channel SKU code ${code} is not in master_channel_skus for this channel; the PO says it is our SKU ${pepCode} (in master_skus): add ${code} -> ${pepCode} with its rate to this channel's SKUs, then Re-check`,
   SKU_MANY: (code: string, pepCodes: string) => `channel SKU code ${code} maps to several of our SKUs (${pepCodes})`,
   SKU_NO_RATE: (pepCode: string) => `our SKU ${pepCode} has no rate_after_margin in master_channel_skus`,
   QTY_MISSING: 'no quantity on the PO line',
