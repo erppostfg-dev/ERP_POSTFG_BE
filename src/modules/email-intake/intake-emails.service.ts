@@ -33,6 +33,17 @@ export const groupOfFolder = (folder: string): { groupName: string; notPo: boole
 
 const asDate = (v?: string): Date | null => (v && !Number.isNaN(Date.parse(v)) ? new Date(v) : null);
 
+/** A value as the DB keeps it: dates to the second (MySQL datetime rounds the milliseconds), arrays as JSON. */
+const comparable = (v: unknown): string => {
+  if (v instanceof Date) return String(Math.round(v.getTime() / 1000));
+  if (Array.isArray(v)) return JSON.stringify(v);
+  return v === undefined || v === null ? '' : String(v);
+};
+
+/** True when one of `values` differs from the stored row. */
+const changed = (row: IntakeEmail, values: Partial<IntakeEmail>): boolean =>
+  (Object.keys(values) as (keyof IntakeEmail)[]).some((k) => comparable(row[k]) !== comparable(values[k]));
+
 /** Creates or updates the row of one stored folder from its metadata.json (+ reason.json when not a PO). */
 export const recordEmail = async (folder: string): Promise<IntakeEmail | null> => {
   if (!ready()) return null;
@@ -48,8 +59,7 @@ export const recordEmail = async (folder: string): Promise<IntakeEmail | null> =
     const detected = detectChannel(info);
     const key = messageKey(meta.messageId);
     const row = (await repo().findOneBy({ messageKey: key })) ?? repo().create({ messageKey: key, localRemovedAt: null });
-    return await repo().save({
-      ...row,
+    const values: Partial<IntakeEmail> = {
       messageId: meta.messageId,
       provider: meta.provider ?? null,
       groupName,
@@ -64,8 +74,10 @@ export const recordEmail = async (folder: string): Promise<IntakeEmail | null> =
       files: (meta.files ?? []).map((f) => (typeof f === 'string' ? f : f.filename)),
       notPoCode: notPo ? (reason.code ?? null) : null,
       notPoReason: notPo ? (reason.reason ?? '').slice(0, 500) || null : null,
-      updatedAt: new Date(),
-    });
+    };
+    // Every start's S3 sync calls this for every folder: an unchanged row is not written again (2026-10-27).
+    if (row.id && !changed(row, values)) return row;
+    return await repo().save({ ...row, ...values, updatedAt: new Date() });
   } catch (err) {
     if (!noTable(err)) logError(LOG_SOURCE.APP, `[intake-emails] ${path.basename(folder)}: could not record (the next cleanup scan retries)`, err);
     return null;
