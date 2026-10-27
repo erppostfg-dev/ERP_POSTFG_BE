@@ -14,7 +14,8 @@ import { fetchInput, resolveStored, saveDailyFile } from './inputs';
 import { BUILD_JSON, buildJsonKey, fullReportDir, refusedKey, SNAPSHOT_SHEETS, snapshotDir } from './layout';
 import { withLock } from './lock';
 import { PROD_SCOPE, Scope, TEST_SCOPE, visibleScopes, writeScope } from './scope';
-import { getBytes, put, putJson, remove } from './store';
+import { onS3Reachable } from './queue';
+import { getBytes, isUnreachable, put, putJson, remove } from './store';
 
 /*
  * A run's files in S3 (user, 2026-10-26: nothing stays on the server). A job works in INTRANSIT_DIR/tmp/job-<id>/ only,
@@ -159,21 +160,41 @@ const buildJsonOf = (run: IntransitRun): BuildJson => {
   };
 };
 
+/**
+ * Days whose _build.json could not be written (S3 unreachable): pointed again once the queue has reached S3, after the
+ * build's queued files. The pointer itself is never queued: a queued copy, sent later outside the day's lock, could
+ * overwrite a newer build's pointer with an older one (review, 2026-10-27).
+ */
+const repointLater = new Map<string, { scope: Scope; day: string }>();
+
+onS3Reachable(async () => {
+  for (const [k, { scope, day }] of [...repointLater]) {
+    repointLater.delete(k);
+    await repointDay(scope, day);
+  }
+});
+
 /** Point the day's _build.json at its final build (or remove it when none is left). Under the day's lock. */
 export const repointDay = (scope: Scope, day: string, plus?: IntransitRun): Promise<IntransitRun | null> =>
   withLock(`it:snap:${scope}:${day}`, async () => {
     const final = await finalRunOf(scope, day, plus);
     const key = buildJsonKey(scope, day);
-    if (final) {
-      await putJson(key, buildJsonOf(final), { byId: final.createdBy, source: 'build', runId: final.id, day });
-      return final;
+    try {
+      if (final) {
+        await putJson(key, buildJsonOf(final), { byId: final.createdBy, source: 'build', runId: final.id, day }, { noQueue: true });
+        return final;
+      }
+      await remove(key).catch(async (err) => {
+        // without s3:DeleteObject: an empty pointer (the page then shows the day before)
+        if ((err as { name?: string }).name !== 'AccessDenied') throw err;
+        await putJson(key, { day, runId: null }, { source: 'build', day }, { noQueue: true });
+      });
+    } catch (err) {
+      if (!isUnreachable(err)) throw err;
+      repointLater.set(`${scope}|${day}`, { scope, day });
+      console.warn(`[intransit-s3] S3 unreachable: ${key} is written again once it is back`);
     }
-    await remove(key).catch(async (err) => {
-      // without s3:DeleteObject: an empty pointer (the page then shows the day before)
-      if ((err as { name?: string }).name !== 'AccessDenied') throw err;
-      await putJson(key, { day, runId: null }, { source: 'build', day });
-    });
-    return null;
+    return final;
   });
 
 /**

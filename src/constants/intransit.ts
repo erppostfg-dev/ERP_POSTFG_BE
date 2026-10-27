@@ -254,11 +254,11 @@ export const INTRANSIT_ROUTES = {
   RUN_REPORT: '/runs/:id/report',
   CONNECTOR: '/connectors/:source',
   INVENTORY: '/inventory',
-  INPUT_PREVIEW: '/inputs/:name/preview',
+  INPUT_TABLE: '/inputs/:name/table',
   INPUT_DOWNLOAD: '/inputs/:name/download',
-  RUN_FILE_PREVIEW: '/runs/:id/files/:name/preview',
+  RUN_FILE_TABLE: '/runs/:id/files/:name/table',
   RUN_FILE_DOWNLOAD: '/runs/:id/files/:name/download',
-  RUN_SHEET_PREVIEW: '/runs/:id/sheets/:sheet/preview',
+  RUN_SHEET_TABLE: '/runs/:id/sheets/:sheet/table',
   RUN_SHEET_DOWNLOAD: '/runs/:id/sheets/:sheet/download',
   SPLIT1_ROWS: '/split1/rows',
   COMBO_VARIANTS: '/final-sku/variants',
@@ -338,11 +338,6 @@ export const FINAL_SKU_MAP = {
  */
 export const COMBO_VARIANT_SUFFIX_RE = /(?:_s|b2b|_wb|_c)$/i;
 
-/** CSV viewer: rows per page by default and at most. */
-export const INTRANSIT_PREVIEW_PAGE = 100;
-export const INTRANSIT_PREVIEW_MAX_PAGE = 500;
-/** Parsed CSVs kept in memory for paging / searching (the big exports are tens of MB). */
-export const INTRANSIT_PREVIEW_CACHE_FILES = 3;
 
 /** Largest upload accepted for one input file. */
 export const INTRANSIT_UPLOAD_MAX_BYTES = 200 * 1024 * 1024;

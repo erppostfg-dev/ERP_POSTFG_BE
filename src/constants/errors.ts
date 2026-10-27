@@ -220,6 +220,7 @@ export const ERRORS = {
   INTRANSIT_REPORT_EXPIRED: define(410, (what: string) => `${what}: no longer kept (Full Reports are kept 90 days); the week's and month's copies hold each period's final build`),
   INTRANSIT_BUSY: define(409, (what: string) => `Another machine is working on the same thing (${what}); try again in a moment`),
   INTRANSIT_SCOPE_READ_ONLY: define(403, (what: string, own: string) => `This computer writes only ${own}, not ${what}`),
+  INTRANSIT_RUN_NOT_HERE: define(403, (id: string, host: string) => `Run ${id} belongs to ${host}: delete it there`),
   INTRANSIT_MASTERS_PROD_ONLY: define(403, () => 'The in-transit masters are shared with production: change them on the live server (a test machine cannot)'),
   INTRANSIT_SKU_UNKNOWN: define(422, (skus: string) => `Not saved: these SKUs are neither in the product master nor in Uniware: ${skus}`),
   INTRANSIT_UNIWARE_NEEDED: define(422, (skus: string, reason: string) => `Not saved: ${skus} must be looked up in Uniware first (${reason})`),

@@ -218,6 +218,10 @@ export const deleteRun = async (id: string): Promise<void> => {
     return;
   }
   {
+    // the disk store deletes only its own runs: their files are on this disk. Another machine's run - above all an S3
+    // run of the live server (it names a scope) - is never hard-deleted from the shared database here (review, 2026-10-27)
+    const o = (run.options ?? {}) as { host?: string; scope?: string };
+    if (o.scope || !ownRun(run)) throw appError(ERROR_CODES.INTRANSIT_RUN_NOT_HERE, id, o.host ?? (o.scope ? `the ${o.scope} S3 store` : 'another machine'));
     // kept under _deleted/ with its run.json (user, 2026-10-22: keep everything), the row removed from the page
     const dir = filesDirOf(run);
     await writeRunRecord(run, dir);
@@ -230,9 +234,34 @@ export const deleteRun = async (id: string): Promise<void> => {
 
 const chains = new Map<string, Promise<void>>();
 
-/** Runs `job` after every earlier job of the same lane (report, or one connector source). */
-const enqueue = (lane: string, job: () => Promise<void>): void => {
-  const next = (chains.get(lane) ?? Promise.resolve()).then(job).catch((err) => console.error(`[intransit] ${lane}:`, err));
+/** Runs queued here that have not started yet: they get a heartbeat too, while they wait their turn. */
+const waitingHere = new Set<string>();
+let queuedBeat: NodeJS.Timeout | null = null;
+
+/**
+ * The heartbeat of this machine's queued runs (a running one beats from execute). Without it a run queued when its
+ * machine stopped had no sign of life at all, so no other machine ever failed it - and every new Docker container is
+ * another machine (its hostname is new), so after a redeploy that source answered "already running" for good (review,
+ * 2026-10-27).
+ */
+const beatQueued = async (): Promise<void> => {
+  if (!waitingHere.size) return;
+  await repo().query(
+    `UPDATE intransit_runs SET options = JSON_SET(COALESCE(options, JSON_OBJECT()), '$.heartbeatAt', ?) WHERE status = ? AND id IN (${[...waitingHere].map(() => '?').join(',')})`,
+    [new Date().toISOString(), INTRANSIT_RUN_STATUS.QUEUED, ...waitingHere],
+  );
+};
+
+/** Runs job `id` after every earlier job of the same lane (report, or one connector source). */
+const enqueue = (lane: string, id: string): void => {
+  waitingHere.add(id);
+  queuedBeat ??= setInterval(() => void beatQueued().catch(() => undefined), HEARTBEAT_MS).unref();
+  const next = (chains.get(lane) ?? Promise.resolve())
+    .then(() => {
+      waitingHere.delete(id);
+      return execute(id);
+    })
+    .catch((err) => console.error(`[intransit] ${lane}:`, err));
   chains.set(lane, next);
 };
 
@@ -276,7 +305,7 @@ export const startReport = async (who: Requester, opts: { asOf?: unknown; fromDa
     },
     createdBy: who.id,
   }));
-  enqueue(INTRANSIT_RUN_KIND.REPORT, () => execute(run.id));
+  enqueue(INTRANSIT_RUN_KIND.REPORT, run.id);
   return getRun(run.id);
 };
 
@@ -317,7 +346,7 @@ const queueConnector = async (src: IntransitSource, who: Requester, options: Con
   const run = await repo().save(repo().create({
     kind: src, status: INTRANSIT_RUN_STATUS.QUEUED, asOf: options.date ?? null, options: { ...options, by: who.id, byName: who.name, host: env.intransit.hostId, ...runScope() }, createdBy: who.id,
   }));
-  enqueue(src, () => execute(run.id));
+  enqueue(src, run.id);
   return run;
 };
 
@@ -357,8 +386,34 @@ export const reportsOfDays = async (dates: string[]): Promise<Map<string, { id: 
 
 // ---- running a job ---------------------------------------------------------------------------------------------
 
-/** Fork run-worker with the job; resolves with its result (or rejects with its error). Logs go to onLog. */
+/**
+ * At most INTRANSIT_MAX_WORKERS child processes at a time (user, 2026-10-27: a build next to a fetch ran the 1 GB server
+ * out of memory). A job only holds its place while its child runs, never while it waits on another job, so the report
+ * lane waiting on a fetch cannot deadlock.
+ */
+let workersBusy = 0;
+const workerWaiters: (() => void)[] = [];
+const withWorkerSlot = async <T>(onLog: (line: string) => void, work: () => Promise<T>): Promise<T> => {
+  if (workersBusy >= env.intransit.maxWorkers) {
+    onLog('waiting for another in-transit job to finish (one at a time on this server) ...');
+    await new Promise<void>((resolve) => workerWaiters.push(resolve));
+  } else workersBusy++;
+  try {
+    return await work();
+  } finally {
+    // hand the place straight to the next waiter, else free it
+    const next = workerWaiters.shift();
+    if (next) next();
+    else workersBusy--;
+  }
+};
+
+/** Fork run-worker with the job (when a place is free); resolves with its result (or rejects with its error). */
 const runInWorker = (job: WorkerJob, timeoutMs: number, onLog: (line: string) => void): Promise<unknown> =>
+  withWorkerSlot(onLog, () => forkWorker(job, timeoutMs, onLog));
+
+/** Fork run-worker with the job; resolves with its result (or rejects with its error). Logs go to onLog. */
+const forkWorker = (job: WorkerJob, timeoutMs: number, onLog: (line: string) => void): Promise<unknown> =>
   new Promise((resolve, reject) => {
     const ext = path.extname(__filename); // .ts under ts-node(-dev), .js from dist
     const child = fork(path.join(__dirname, `run-worker${ext}`), [], {
@@ -383,7 +438,10 @@ const runInWorker = (job: WorkerJob, timeoutMs: number, onLog: (line: string) =>
       else finish(new Error(msg.message));
     });
     child.on('error', (err) => finish(err));
-    child.on('exit', (code, signal) => finish(new Error(`the worker stopped (${signal ?? `exit ${code}`}) before finishing`)));
+    // V8 aborts (exit 134 / SIGABRT) when the heap limit is reached
+    child.on('exit', (code, signal) => finish(new Error(code === 134 || signal === 'SIGABRT'
+      ? `the worker ran out of memory (INTRANSIT_WORKER_MAX_MEMORY_MB=${env.intransit.workerMaxMemoryMb}) before finishing`
+      : `the worker stopped (${signal ?? `exit ${code}`}) before finishing`)));
     child.send(job);
   });
 
@@ -679,14 +737,16 @@ export const recoverRuns = async (): Promise<number> => {
 
 /**
  * Another machine's runs that stay queued/running with no heartbeat for STALE_RUN_MS: that machine stopped (machines
- * share the database), so they are failed here. Runs from before the heartbeat existed are left alone.
+ * share the database), so they are failed here. A run with no heartbeat yet counts from its start (or creation): queued
+ * runs beat too since 2026-10-27, so one quiet that long has no machine left to run it.
  */
 export const expireStaleRuns = async (): Promise<number> => {
   const now = Date.now();
   const stale = (await repo().find({ where: { status: In([INTRANSIT_RUN_STATUS.QUEUED, INTRANSIT_RUN_STATUS.RUNNING]) } })).filter((r) => {
     if (ownRun(r)) return false;
     const beatAt = ((r.options ?? {}) as { heartbeatAt?: string }).heartbeatAt;
-    return !!beatAt && now - Date.parse(beatAt) > STALE_RUN_MS;
+    const lastSign = beatAt ? Date.parse(beatAt) : (r.startedAt ?? r.createdAt).getTime();
+    return now - lastSign > STALE_RUN_MS;
   });
   if (!stale.length) return 0;
   await repo().update({ id: In(stale.map((r) => r.id)) }, { status: INTRANSIT_RUN_STATUS.FAILED, finishedAt: new Date(), error: 'The machine running it stopped answering; start it again.' });

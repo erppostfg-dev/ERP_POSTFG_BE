@@ -142,8 +142,12 @@ export const env = {
     runTimeoutMs: Number(process.env.INTRANSIT_RUN_TIMEOUT_MS ?? 15 * 60 * 1000),
     // Connectors wait on Uniware export jobs (up to an hour each) and Amazon's pacing.
     connectorTimeoutMs: Number(process.env.INTRANSIT_CONNECTOR_TIMEOUT_MS ?? 2 * 60 * 60 * 1000),
-    // Heap of the child process that builds the report (~100 MB of CSVs in, ~40 MB workbook out).
-    workerMaxMemoryMb: Number(process.env.INTRANSIT_WORKER_MAX_MEMORY_MB ?? 3072),
+    // Heap of the child process that builds the report (~100 MB of CSVs in, ~40 MB workbook out; a build fits in
+    // ~350 MB since 2026-10-27). Default: half the machine's memory, at most 3 GB - a fixed 3 GB let a build push the
+    // 1 GB dev server into swap until it hung (user, 2026-10-27). Past it the job fails cleanly ("heap out of memory").
+    workerMaxMemoryMb: Number(process.env.INTRANSIT_WORKER_MAX_MEMORY_MB ?? Math.min(3072, Math.max(256, Math.floor(os.totalmem() / 1048576 / 2)))),
+    // Child processes (builds + fetches) at a time; the others wait their turn. 1 keeps a small server safe.
+    maxWorkers: Math.max(1, Number(process.env.INTRANSIT_MAX_WORKERS ?? 1) || 1),
     // Default start date of a report: shipments with an earlier Entry Date are left out. "2026-08-01" (fixed),
     // "79" (the last 79 days before as-of; the team's choice, 2026-10-21) or blank (all). A run can override it.
     // Open Uniware POs are never cut by it (stage combined_intransit).

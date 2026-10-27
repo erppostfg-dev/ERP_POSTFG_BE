@@ -4,7 +4,8 @@ import { pipeline } from 'stream';
 import { ACCESS_LEVEL, ERROR_CODES, errorMessage, INTRANSIT_ROUTES, INTRANSIT_UPLOAD_MAX_BYTES, PAGE } from '../constants';
 import { requireAnyPage, requireAuth, requirePage } from '../modules/auth/auth.middleware';
 import { ConnectorOptions } from '../modules/intransit/connectors';
-import { inputBlob, previewInput, previewReportSheet, previewRunFile, reportBlob, reportSheetCsv, runFileBlob, StoredBlob } from '../modules/intransit/file-preview.service';
+import { inputBlob, reportBlob, reportSheetBlob, runFileBlob, StoredBlob } from '../modules/intransit/file-preview.service';
+import { sendTable } from '../modules/intransit/table-response';
 import { getDay, masterHistory, removeDaily, restoreVersion, saveInput } from '../modules/intransit/inputs.service';
 import { addToSplit1, ComboRows, finalSkuListings, mapVariants, split1Parents, VariantMap } from '../modules/intransit/split1.service';
 import { deleteRun, getRun, getRunLog, latestInventory, listRuns, Requester, RunView, startConnector, startReport } from '../modules/intransit/runs.service';
@@ -14,7 +15,7 @@ import { storageOn } from '../modules/intransit/s3/scope';
 import { open } from '../modules/intransit/s3/store';
 import { getSnapshot, snapshotFile } from '../modules/intransit/snapshot.service';
 import { appError } from '../utils/AppError';
-import { createGzip } from 'zlib';
+import { createGunzip, createGzip } from 'zlib';
 
 /*
  * In-transit Stock routes (Demand Planning > In-transit Stock, 2026-10-15). Viewer on /planning/intransit-stock reads;
@@ -50,15 +51,16 @@ import { createGzip } from 'zlib';
  *   GET    /intransit/inventory            SOH + in-transit per SKU x channel x location from the latest built report, for
  *                                          Inventory Calculation (viewer on /planning/inventory):
  *                                          { data: { runId, asOf, builtAt, columns, rows: [[sku, name, channel, type, location, soh, inTransit]] } }
- *   GET    /intransit/inputs/:name/preview          a page of an input CSV (the master, or the daily file used for
- *                                          ?date=), ?offset=&limit= (max 500)&q= (search)
- *                                          { data: { name, size, modified, columns, rows, total, totalRows, offset, limit } }
+ *   GET    /intransit/inputs/:name/table            the whole input CSV for the browser's table viewer (the master,
+ *                                          or the daily file used for ?date=): text/csv, gzip, ETag (If-None-Match ->
+ *                                          304: the browser's copy is current), X-File-Size (as stored), Last-Modified.
+ *                                          The browser pages and searches it (user, 2026-10-27: nothing kept on the server)
  *   GET    /intransit/inputs/:name/download         the same file as stored (?date=)
- *   GET    /intransit/runs/:id/files/:name/preview  the same for a file a connector run fetched (saved or refused)
+ *   GET    /intransit/runs/:id/files/:name/table    the same for a file a connector run fetched (saved or refused)
  *   GET    /intransit/runs/:id/files/:name/download
- *   GET    /intransit/runs/:id/sheets/:sheet/preview  viewer of In-transit Stock or Inventory Calculation (the tables are
- *                                          tabs there); a page of one sheet of a built report (e.g. Sheet35(2)), read from
- *                                          its workbook; same query and answer as the file preview. 409 unless succeeded
+ *   GET    /intransit/runs/:id/sheets/:sheet/table  viewer of In-transit Stock or Inventory Calculation (the tables are
+ *                                          tabs there); one sheet of a built report (e.g. Sheet35(2)) as CSV, sent as
+ *                                          its build stored it; same answer as the file table. 409 unless succeeded
  *   GET    /intransit/runs/:id/sheets/:sheet/download that sheet as CSV
  *   POST   /intransit/final-sku/variants  editor; { variants: [{ variant, base, components? }] }: each combo variant
  *                                          (CMB47B2b) mapped to its base (CMB47) in Final SKU Mapping.csv; a base not in
@@ -100,13 +102,6 @@ const withSplit1 = async (runs: RunView[]): Promise<RunView[]> => {
     return { ...r, result: { ...r.result, comboCheck: { ...cc, combos } } };
   });
 };
-
-/** ?offset=&limit=&q= of the CSV viewer. */
-const pageQuery = (req: Request) => ({
-  offset: Number(req.query.offset ?? 0),
-  limit: req.query.limit === undefined ? undefined : Number(req.query.limit),
-  q: typeof req.query.q === 'string' ? req.query.q : undefined,
-});
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { files: 1, fileSize: INTRANSIT_UPLOAD_MAX_BYTES } });
@@ -165,9 +160,9 @@ router.post(INTRANSIT_ROUTES.INPUT_RESTORE, ...editor, async (req, res, next) =>
 
 // ---- CSV viewer ----------------------------------------------------------------------------------------------------
 
-router.get(INTRANSIT_ROUTES.INPUT_PREVIEW, ...viewer, async (req, res, next) => {
+router.get(INTRANSIT_ROUTES.INPUT_TABLE, ...viewer, async (req, res, next) => {
   try {
-    res.json({ data: await previewInput(req.params.name, req.query.date, pageQuery(req)) });
+    await sendTable(req, res, next, await inputBlob(req.params.name, req.query.date));
   } catch (err) {
     next(err);
   }
@@ -192,9 +187,9 @@ router.get(INTRANSIT_ROUTES.INPUT_DOWNLOAD, ...viewer, async (req, res, next) =>
   }
 });
 
-router.get(INTRANSIT_ROUTES.RUN_FILE_PREVIEW, ...viewer, async (req, res, next) => {
+router.get(INTRANSIT_ROUTES.RUN_FILE_TABLE, ...viewer, async (req, res, next) => {
   try {
-    res.json({ data: await previewRunFile(req.params.id, req.params.name, pageQuery(req)) });
+    await sendTable(req, res, next, await runFileBlob(req.params.id, req.params.name));
   } catch (err) {
     next(err);
   }
@@ -208,9 +203,9 @@ router.get(INTRANSIT_ROUTES.RUN_FILE_DOWNLOAD, ...viewer, async (req, res, next)
   }
 });
 
-router.get(INTRANSIT_ROUTES.RUN_SHEET_PREVIEW, ...reportReader, async (req, res, next) => {
+router.get(INTRANSIT_ROUTES.RUN_SHEET_TABLE, ...reportReader, async (req, res, next) => {
   try {
-    res.json({ data: await previewReportSheet(req.params.id, req.params.sheet, pageQuery(req)) });
+    await sendTable(req, res, next, await reportSheetBlob(req.params.id, req.params.sheet));
   } catch (err) {
     next(err);
   }
@@ -218,12 +213,19 @@ router.get(INTRANSIT_ROUTES.RUN_SHEET_PREVIEW, ...reportReader, async (req, res,
 
 router.get(INTRANSIT_ROUTES.RUN_SHEET_DOWNLOAD, ...reportReader, async (req, res, next) => {
   try {
-    const csv = await reportSheetCsv(req.params.id, req.params.sheet);
+    // streamed from its stored copy (never held whole here)
+    const blob = await reportSheetBlob(req.params.id, req.params.sheet);
     const file = `${req.params.sheet.replace(/[^\w()+ -]/g, '_')}_run${req.params.id}.csv`;
     res.setHeader('Cache-Control', 'private, no-store');
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${file}"`);
-    res.send(`﻿${csv}`); // BOM so Excel opens it as UTF-8
+    const body = (await blob.stream()) as NodeJS.ReadableStream;
+    res.write('﻿'); // BOM so Excel opens it as UTF-8
+    const done = (e: NodeJS.ErrnoException | null): void => {
+      if (e) res.destroy(e);
+    };
+    if (blob.gzip) pipeline(body, createGunzip(), res, done);
+    else pipeline(body, res, done);
   } catch (err) {
     next(err);
   }
