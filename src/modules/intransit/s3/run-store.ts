@@ -16,6 +16,8 @@ import { withLock } from './lock';
 import { PROD_SCOPE, Scope, TEST_SCOPE, visibleScopes, writeScope } from './scope';
 import { onS3Reachable } from './queue';
 import { getBytes, isUnreachable, put, putJson, remove } from './store';
+import { LOG_SOURCE } from '../../../constants/logging';
+import { log as appLog } from '../../../utils/logger';
 
 /*
  * A run's files in S3 (user, 2026-10-26: nothing stays on the server). A job works in INTRANSIT_DIR/tmp/job-<id>/ only,
@@ -192,7 +194,7 @@ export const repointDay = (scope: Scope, day: string, plus?: IntransitRun): Prom
     } catch (err) {
       if (!isUnreachable(err)) throw err;
       repointLater.set(`${scope}|${day}`, { scope, day });
-      console.warn(`[intransit-s3] S3 unreachable: ${key} is written again once it is back`);
+      appLog.warn(LOG_SOURCE.S3, `[intransit-s3] S3 unreachable: ${key} is written again once it is back`);
     }
     return final;
   });

@@ -5,6 +5,7 @@ import {
   DAY_PATTERN,
   ERROR_CODES,
   errorMessage,
+  LINE_ITEMS,
   PAGE,
   PO_REVIEW_BODY,
   PO_REVIEW_LIST,
@@ -23,6 +24,7 @@ import { getPoFile, getPoReview, listPoReview, PoReviewListQuery } from '../modu
 import { reviewEvents, reviewVersion } from '../modules/po-review/po-review.live';
 import { recheckInReview } from '../modules/po-review/recheck.service';
 import { downloadCombined, downloadOne, markUploaded } from '../modules/po-review/uniware-handoff.service';
+import { lineItems } from '../modules/po-review/line-items.service';
 import { LineCorrection, rejectPo, ResubmitBody, submitForApproval } from '../modules/po-review/po-review-actions.service';
 import { appError } from '../utils/AppError';
 
@@ -35,6 +37,7 @@ import { appError } from '../utils/AppError';
  *   GET /po-review/events, /live-state   live updates (SSE) and the version for polling (po-review.live.ts).
  *   GET /po-review/:uploadId/uniware-csv · POST /po-review/uniware-csv · POST /po-review/uniware-uploaded   the Uniware
  *   hand-off (download the sale order CSV, then mark it uploaded; uniware-handoff.service.ts).
+ *   POST /po-review/line-items   { uploadIds }   every line of processed POs, for a CSV / Excel download (read-only).
  *   GET /po-review/:uploadId/file   the PO file itself, streamed from S3 (for the panel's PDF viewer). Viewer.
  *   POST /po-review/:uploadId/submit   { location?: { detailsChannelId }, lines?: [{ lineNo, pepCode?, qty?, mrp?, rate? }],
  *                                        accept?: [{ issueId, remark? }], remark? }   corrections -> validate -> must pass
@@ -312,6 +315,19 @@ router.get(UNIWARE_HANDOFF.CSV_ONE, requireAuth, requirePage(PAGE.PO_REVIEW, ACC
 router.post(UNIWARE_HANDOFF.CSV_MANY, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
   try {
     sendCsv(res, await downloadCombined(idsOf(req.body), actorOf(req)));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---- Line items download (2026-10-26): every line of the ticked processed POs, the screen saves CSV / Excel --------
+
+/** POST /po-review/line-items { uploadIds } (at most LINE_ITEMS.MAX_IDS). Read-only, so viewer is enough. */
+router.post(LINE_ITEMS.ROUTE, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.VIEWER), async (req, res, next) => {
+  try {
+    const v = (req.body as Record<string, unknown> | undefined)?.[UNIWARE_HANDOFF.BODY_IDS];
+    const ids = Array.isArray(v) ? [...new Set(v.map(String).filter((x) => UPLOAD_ID_PATTERN.test(x)))] : [];
+    res.json({ data: await lineItems(ids) });
   } catch (err) {
     next(err);
   }

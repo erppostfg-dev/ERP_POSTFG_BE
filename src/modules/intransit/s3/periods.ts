@@ -8,6 +8,9 @@ import { withLock } from './lock';
 import { isDeleted, reportDirOf, scopeOfRun } from './run-store';
 import { PROD_SCOPE, rootOf, writeScope } from './scope';
 import { copy, head, list } from './store';
+import { LOG_SOURCE } from '../../../constants/logging';
+import { logError } from '../../../utils/classify-error';
+import { log as appLog } from '../../../utils/logger';
 
 /*
  * The weekly and monthly copies (user, 2026-10-26: kept forever): Weekly Snapshot/<FY>/W43.xlsx and Monthly
@@ -131,8 +134,8 @@ let timer: NodeJS.Timeout | null = null;
 export const startPeriodKeeper = (): void => {
   if (timer || writeScope() !== PROD_SCOPE) return;
   const run = (): void => void catchUpPeriods()
-    .then((log) => log.length && console.log(`[intransit-s3] weekly/monthly copies: ${log.join('; ')}`))
-    .catch((err) => console.error('[intransit-s3] weekly/monthly copies:', err instanceof Error ? err.message : err));
+    .then((done) => done.length && appLog.info(LOG_SOURCE.S3, `[intransit-s3] weekly/monthly copies: ${done.join('; ')}`))
+    .catch((err) => logError(LOG_SOURCE.S3, '[intransit-s3] weekly/monthly copies not made', err));
   run();
   timer = setInterval(run, 6 * 3600_000);
   timer.unref();

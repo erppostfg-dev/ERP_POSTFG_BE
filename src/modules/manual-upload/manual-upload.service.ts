@@ -4,7 +4,7 @@ import path from 'path';
 import { In, Not } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
 import { env } from '../../config/env';
-import { CHANNEL_MASTER_IDS, CHANNELS, ChannelName, ERROR_CODES, FILES, SOURCE_SYSTEM, UPLOAD_STATUS, IST_OFFSET_MS, MANUAL_UPLOAD, MANUAL_UPLOAD_STATUS, ManualUploadStatus, PROVIDERS, RESULT_STATUS } from '../../constants';
+import { CHANNEL_MASTER_IDS, CHANNELS, ChannelName, ERROR_CODES, FILES, SOURCE_SYSTEM, UPLOAD_STATUS, IST_OFFSET_MS, MANUAL_UPLOAD, MANUAL_UPLOAD_STATUS, ManualUploadStatus, PO_JOB_TYPE, PROVIDERS, RESULT_STATUS } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
 import { ActivityLog, ManualUpload, ManualUploadFile, MasterChannel, PoUpload } from '../../entities';
 import { appError } from '../../utils/AppError';
@@ -22,6 +22,7 @@ import { ChannelConfig, channelConfigs } from '../ocr/channels.config';
 import { extractPo } from '../ocr/extract-po.service';
 import { emailStored } from '../po-pipeline/pipeline.service';
 import { bumpReview } from '../po-review/po-review.live';
+import { submitJob, usesSqs } from '../po-jobs/po-jobs.queue';
 
 /*
  * Manual upload (user, 2026-10-22; constants/manual-upload.ts). Upload = store the PO's files as a folder like an
@@ -56,15 +57,20 @@ const masterIdOf = (channel: string): number | undefined => CHANNEL_MASTER_IDS[c
 // ---- Channels the app can read --------------------------------------------------------------------------------------
 
 /** What a reader takes, in words: "PDF", "Excel or CSV", "PDF + Excel". */
-const needsOf = (c: ChannelConfig): string => {
+const sheetText = (c: ChannelConfig): string => {
   const sheet = c.files.sheet;
-  const sheetText = sheet ? (['x.xlsx', 'x.xls', 'x.csv'].filter((n) => sheet.test(n)).map((n) => n.slice(2).toUpperCase()).join(' / ')) : '';
-  return [c.files.pdf ? 'PDF' : '', sheetText].filter(Boolean).join(' + ');
+  return sheet ? ['x.xlsx', 'x.xls', 'x.csv'].filter((n) => sheet.test(n)).map((n) => n.slice(2).toUpperCase()).join(' / ') : '';
 };
+/** The files one PO needs (an optional one, e.g. 1mg's PDF, is left out: optionalOf). */
+const needsOf = (c: ChannelConfig): string =>
+  [c.files.pdf && !c.optional?.includes('pdf') ? 'PDF' : '', !c.optional?.includes('sheet') ? sheetText(c) : ''].filter(Boolean).join(' + ');
+/** The file a PO may also have (same file name), e.g. "PDF" for Tata 1mg; "" when none. */
+const optionalOf = (c: ChannelConfig): string =>
+  [c.files.pdf && c.optional?.includes('pdf') ? 'PDF' : '', c.files.sheet && c.optional?.includes('sheet') ? sheetText(c) : ''].filter(Boolean).join(' + ');
 
 /** How the channel normally sends POs (the Manual Upload list is grouped by it): api (Amazon), email; manual-only later. */
 export type UploadGroup = 'api' | 'email' | 'manual';
-export interface UploadChannel { channel: string; name: string; needs: string; twoFiles: boolean; group: UploadGroup }
+export interface UploadChannel { channel: string; name: string; needs: string; twoFiles: boolean; group: UploadGroup; optional?: string; manyPos?: boolean }
 
 /** Channels with a PO reader (channels.config) that are active in master_channels. */
 export const uploadChannels = async (): Promise<UploadChannel[]> => {
@@ -72,7 +78,9 @@ export const uploadChannels = async (): Promise<UploadChannel[]> => {
   return channelConfigs
     .map((c): UploadChannel | null => {
       const m = masters.find((x) => x.id === masterIdOf(c.channel));
-      return m ? { channel: c.channel, name: m.displayName, needs: needsOf(c), twoFiles: !!(c.files.pdf && c.files.sheet), group: 'email' } : null;
+      return m
+        ? { channel: c.channel, name: m.displayName, needs: needsOf(c), twoFiles: !!(c.files.pdf && c.files.sheet) && !c.optional?.length, group: c.senders.length ? 'email' : 'manual', optional: optionalOf(c) || undefined, manyPos: c.manyPosPerFile || undefined }
+        : null;
     })
     .filter((x): x is UploadChannel => x !== null)
     .concat(amazonMaster(masters))
@@ -93,6 +101,16 @@ const amazonMaster = (masters: MasterChannel[]): UploadChannel[] => {
  */
 const groupFiles = (c: ChannelConfig, files: UploadedFile[], channelName: string): UploadedFile[][] => {
   const { pdf, sheet } = c.files;
+  // A PDF + sheet channel whose PDF is optional (Tata 1mg): one PO per sheet, its PDF (same file name) added when there.
+  if (pdf && sheet && c.optional?.includes('pdf')) {
+    const pdfs = files.filter((f) => pdf.test(f.originalname));
+    const sheets = files.filter((f) => !pdf.test(f.originalname) && sheet.test(f.originalname));
+    const other = files.filter((f) => !pdfs.includes(f) && !sheets.includes(f));
+    if (other.length) throw appError(ERROR_CODES.MANUAL_FILES_MISSING, channelName, needsOf(c), other.map((f) => f.originalname).join(', '));
+    const lonely = pdfs.filter((p) => !sheets.some((s) => baseOf(s.originalname) === baseOf(p.originalname)));
+    if (lonely.length) throw appError(ERROR_CODES.MANUAL_FILES_MISSING, channelName, `${needsOf(c)} (a PDF only next to its ${needsOf(c)}, same file name)`, lonely.map((f) => f.originalname).join(', '));
+    return sheets.map((s) => [s, ...pdfs.filter((p) => baseOf(p.originalname) === baseOf(s.originalname))]);
+  }
   if (!(pdf && sheet)) {
     const pattern = (pdf ?? sheet)!;
     const bad = files.filter((f) => !pattern.test(f.originalname));
@@ -322,12 +340,37 @@ export const kickQueue = (): void => {
     .finally(() => { running = false; });
 };
 
+// ---- PO jobs queue (2026-10-26): with QUEUE_MODE=sqs each upload is a job in the SQS queue, the worker runs it ----------
+
+/** Queued uploads go to the PO jobs queue (sqs mode), or the in-process queue runs (local mode, or a send failed). */
+const queueManual = async (ids: string[]): Promise<void> => {
+  if (!usesSqs()) return kickQueue();
+  for (const id of ids) await submitJob({ type: PO_JOB_TYPE.MANUAL, id }, kickQueue);
+};
+
+/** Worker: still waiting to be run (a job sent twice, or cancelled meanwhile, is skipped). */
+export const shouldRunManual = async (id: string): Promise<boolean> =>
+  (await repo().findOneBy({ id }))?.status === MANUAL_UPLOAD_STATUS.QUEUED;
+
+/** Worker: runs one queued upload as the in-process queue does. */
+export const runManualUpload = async (id: string): Promise<void> => {
+  const u = await repo().findOneBy({ id });
+  if (u && u.status === MANUAL_UPLOAD_STATUS.QUEUED) await runOne(u);
+};
+
+/** Worker: the job failed on its last try. */
+export const manualJobFailed = async (id: string, reason: string): Promise<void> => {
+  await repo().update({ id }, { status: MANUAL_UPLOAD_STATUS.FAILED, note: reason.slice(0, 500), finishedAt: new Date() });
+  bumpReview();
+};
+
 /** At server start: an upload cut off while processing runs again; queued ones continue. "uploaded" ones wait. */
 export const resumeManualQueue = async (): Promise<void> => {
   try {
     const cut = await repo().update({ status: MANUAL_UPLOAD_STATUS.PROCESSING }, { status: MANUAL_UPLOAD_STATUS.QUEUED });
     if (cut.affected) log.info(LOG_SOURCE.OCR, `[manual-upload] ${cut.affected} upload(s) cut off by the restart: queued again`);
-    kickQueue();
+    // sqs mode: every queued one is sent again (a duplicate of a message still in the queue is skipped by the worker).
+    await queueManual((await repo().findBy({ status: MANUAL_UPLOAD_STATUS.QUEUED })).map((u) => String(u.id)));
   } catch (err) {
     // Before the ManualUploads migration has run there is no table: nothing to resume.
     if ((err as { code?: string }).code !== 'ER_NO_SUCH_TABLE') logError(LOG_SOURCE.DB, 'manual upload queue: resume failed', err);
@@ -351,7 +394,7 @@ export const processUploads = async (ids: string[], by: Actor): Promise<{ queued
   await repo().update({ id: In(ids) }, { status: MANUAL_UPLOAD_STATUS.QUEUED, processBy: by.id, processAt: new Date() });
   await audit(by, `manual upload: process ${ids.join(',')}`);
   bumpReview();
-  kickQueue();
+  await queueManual(ids);
   return { queued: ids };
 };
 
@@ -362,7 +405,7 @@ export const retryUpload = async (id: string, by: Actor): Promise<{ status: stri
   await repo().update({ id }, { status: MANUAL_UPLOAD_STATUS.QUEUED, processBy: by.id, processAt: new Date(), finishedAt: null });
   await audit(by, `manual upload: retry ${id}`);
   bumpReview();
-  kickQueue();
+  await queueManual([id]);
   return { status: MANUAL_UPLOAD_STATUS.QUEUED };
 };
 

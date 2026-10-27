@@ -3,6 +3,7 @@ import { AppDataSource } from '../../config/data-source';
 import { LIVE, SHIPMENT_LOG_ACTION, TABLES } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
 import { logError } from '../../utils/classify-error';
+import { inBackground } from '../../utils/log-context';
 
 /*
  * Live updates of the PO Overview (2026-10-14, self-healing design):
@@ -95,7 +96,8 @@ export const startLive = async (): Promise<void> => {
   } catch {
     lastSent = 0;
   }
-  setInterval(() => void flushChanges(), LIVE.WATCH_MS).unref();
+  // its own job name: started by the first screen's request, it must not carry that request on every tick (2026-10-27)
+  inBackground('live-po-overview', () => setInterval(() => void flushChanges(), LIVE.WATCH_MS).unref());
 };
 
 /** Subscribe to changes; returns the unsubscribe. */

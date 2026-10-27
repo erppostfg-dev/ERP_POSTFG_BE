@@ -94,6 +94,20 @@ const pickPoFile = (meta: EmailMetadata, run: OcrRun | null): string => {
   return pick(run?.files ?? []) ?? pick((meta.files ?? []).map((f) => (typeof f === 'string' ? f : f.filename))) ?? FILES.BODY_HTML;
 };
 
+/**
+ * The PO's own file in an email with several POs (2026-10-26, Tata 1mg: one PDF + CSV per PO): the file whose name holds
+ * the PO number (PDF first). Undefined when no file name carries it (Purplle: one summary file for all), so the PO keeps
+ * the email's file.
+ */
+export const ownPoFile = (meta: EmailMetadata, poNumber: string): string | undefined => {
+  if (!poNumber) return undefined;
+  const isPo = (n: string) => (PO_FILE_EXTENSIONS as readonly string[]).includes(extOf(n));
+  const escaped = poNumber.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const holds = new RegExp(`(^|[^0-9A-Za-z])${escaped}([^0-9A-Za-z]|$)`);
+  const mine = (meta.files ?? []).map((f) => (typeof f === 'string' ? f : f.filename)).filter((n) => isPo(n) && holds.test(n));
+  return mine.find((n) => extOf(n) === 'pdf') ?? mine[0];
+};
+
 const asDate = (v?: string): Date | null => (v && !Number.isNaN(Date.parse(v)) ? new Date(v) : null);
 
 /** The po_uploads values every PO of an email shares: source, email, file and OCR details. */
@@ -255,6 +269,7 @@ export const planEmail = async (db: DataSource, reader: MasterDataReader, folder
   const master = await reader.forChannel(channel);
   const base = await emailValues(folder, master?.channel.displayName ?? null);
   const messageId = base.emailMessageId ?? null;
+  const meta = pos.length > 1 ? ((await readJson<EmailMetadata>(path.join(folder, FILES.METADATA))) ?? {}) : {};
 
   const uploads = db.getRepository(PoUpload);
   const issuesRepo = db.getRepository(PoIssue);
@@ -274,8 +289,11 @@ export const planEmail = async (db: DataSource, reader: MasterDataReader, folder
     const validation = await validatePo(fp.po, master, now);
     const hasOcrIssue = validation.issues.some((i) => i.type === ISSUE_TYPE.OCR_ISSUE);
 
+    // Several POs in one email: each PO points to its own file when one carries its number.
+    const own = pos.length > 1 ? ownPoFile(meta, poNumber) : undefined;
     const values: Partial<PoUpload> = {
       ...base,
+      ...(own ? { fileName: own, fileUrl: s3UrlFor(folder, meta, own), fileType: extOf(own) || null } : {}),
       poNumber: poNumber || null,
       ocrStatus: hasOcrIssue ? UPLOAD_OCR_STATUS.ISSUE : (base.ocrStatus as UploadOcrStatus),
       // The chain counts OCR runs on the row (ocrStarted); ocr-result.json only says whether one happened.

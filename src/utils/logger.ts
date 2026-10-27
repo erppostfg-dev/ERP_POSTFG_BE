@@ -73,6 +73,7 @@ export const writeLog = (level: LogLevel, source: LogSource, code: string, msg: 
       ...(ctx?.jobId ? { jobId: ctx.jobId } : {}),
       ...(ctx?.userId !== undefined && fields.userId === undefined ? { userId: ctx.userId } : {}),
       ...(ctx?.uploadId !== undefined && fields.uploadId === undefined ? { uploadId: ctx.uploadId } : {}),
+      ...(ctx?.step && fields.step === undefined ? { step: ctx.step } : {}),
       ...(clean(fields) as Record<string, unknown>),
     };
     const text = env.log.format === LOG_FORMAT.JSON ? JSON.stringify(line) : pretty(line);

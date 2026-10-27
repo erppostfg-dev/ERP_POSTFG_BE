@@ -79,6 +79,9 @@ export const ERRORS = {
   UNIWARE_CSV_NOT_READY: define(409, (ids: string) => `No Uniware CSV yet for upload(s) ${ids}: only completed POs have one`),
   UNIWARE_NOT_DOWNLOADED: define(409, (ids: string) => `Download the sale order CSV first: upload(s) ${ids} not downloaded yet`),
   UPLOAD_IDS_REQUIRED: define(400, () => 'Pick at least one PO (uploadIds)'),
+  // --- Line items download (2026-10-26) ---
+  LINE_ITEMS_TOO_MANY: define(400, (max: number) => `Pick at most ${max} POs for one line items download`),
+  LINE_ITEMS_NOT_PROCESSED: define(409, (ids: string) => `Only processed POs have saved line items: upload(s) ${ids} are not processed`),
   // --- Manual upload (2026-10-22, constants/manual-upload.ts) ---
   MANUAL_CHANNEL_NOT_READABLE: define(400, (channel: string) => `Channel "${channel}" has no PO reader yet: only channels the app can read can be uploaded`),
   MANUAL_FILE_TYPE: define(400, (name: string) => `${name}: only PDF, Excel (.xlsx / .xls) or CSV files can be uploaded`),
@@ -162,6 +165,11 @@ export const ERRORS = {
     422,
     (from: string, channels: string) => `sender ${from} is ${channels}, but the subject is not a PO subject`,
   ),
+  /** 2026-10-26: a channel's sender + PO subject but without the PO file(s) (1mg's follow-ups, replies with no files). */
+  NOT_PO_NO_FILES: define(
+    422,
+    (channel: string, need: string, got: string) => `${channel} email without its PO file (needs ${need}; got ${got || 'no attachments'})`,
+  ),
 
   // --- Linked files (channels that send download links: FirstCry) -------------------------------------------------
   LINK_NOT_FOUND: define(502, (text: string) => `no link with text ${text}`),
@@ -237,7 +245,11 @@ export type ErrorArgs<C extends ErrorCode> = Parameters<(typeof ERRORS)[C]['mess
 export const ERROR_CODES = keysOf(ERRORS);
 
 /** Why an email is not a PO: no sender, a sender that is no channel's, or a channel's sender with a non-PO subject. */
-export type NotPoCode = typeof ERROR_CODES.NO_SENDER | typeof ERROR_CODES.UNKNOWN_SENDER | typeof ERROR_CODES.NOT_PO_SUBJECT;
+export type NotPoCode =
+  | typeof ERROR_CODES.NO_SENDER
+  | typeof ERROR_CODES.UNKNOWN_SENDER
+  | typeof ERROR_CODES.NOT_PO_SUBJECT
+  | typeof ERROR_CODES.NOT_PO_NO_FILES;
 
 /** The message of an error, e.g. errorMessage(ERROR_CODES.UNKNOWN_SENDER, 'a@b.com'). */
 export const errorMessage = <C extends ErrorCode>(code: C, ...args: ErrorArgs<C>): string =>

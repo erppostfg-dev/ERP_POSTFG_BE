@@ -55,7 +55,14 @@ export const recheckInReview = async (opts: { channels?: string[]; trigger: stri
       const po = typeof url === 'string' ? await readS3Json<ProcessedPo>(url) : undefined;
       if (!po) continue;
       if (!masters.has(po.channel_name)) masters.set(po.channel_name, await reader.forChannel(po.channel_name as ChannelName));
-      const v = await validatePo(po, masters.get(po.channel_name) ?? null);
+      const master = masters.get(po.channel_name) ?? null;
+      // A channel this server does not know (older code on another machine sharing the DB, 2026-10-27: dev EC2 closed
+      // new Nykaa POs' SKU issues as "fixed"): never touched here, its issues stay as they are.
+      if (!master) {
+        log.info(LOG_SOURCE.APP, `[recheck] upload ${u.id}: channel "${po.channel_name}" not known by this server, skipped`);
+        continue;
+      }
+      const v = await validatePo(po, master);
       const stillFound = new Set(v.issues.map((i) => issueKey(i.type, i.lineNo, i.field)));
 
       const open = await issues.findBy({ uploadId: u.id, status: ISSUE_STATUS.OPEN });

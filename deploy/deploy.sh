@@ -68,7 +68,9 @@ server {
     listen [::]:80 default_server;
     server_name _;
 
-    client_max_body_size 25m;
+    # Largest upload: the app accepts files up to 200 MB (INTRANSIT_UPLOAD_MAX_BYTES), plus room
+    # for the multipart encoding. Keep this above the app's own limits so the app gives the error.
+    client_max_body_size 210m;
 
     location / {
         if (\$http_x_origin_verify != "${ORIGIN_SECRET}") {

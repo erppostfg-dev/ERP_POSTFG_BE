@@ -6,6 +6,11 @@ export interface EmailInfo {
   subject?: string;
   /** A manual upload (2026-10-22): the channel the person picked; no sender / subject to go by. */
   channel?: string;
+  /**
+   * The email's attachment names, when known (stored emails). An email of a channel without that channel's PO file(s)
+   * is not a PO (2026-10-26, every channel). Unknown (undefined, e.g. before download) = not checked.
+   */
+  files?: string[];
 }
 
 /** metadata.json as stored, in either format. */
@@ -30,6 +35,7 @@ export const emailInfo = (meta: StoredMetadata): EmailInfo => {
     from: (m ? m[1] : raw).trim() || undefined,
     subject: meta.subject,
     channel: meta.provider === PROVIDERS.MANUAL ? meta.channel : undefined,
+    files: meta.files ? meta.files.map((f) => (typeof f === 'string' ? f : f.filename)) : undefined,
   };
 };
 
@@ -60,6 +66,16 @@ export const detectChannel = (email: EmailInfo): { config: ChannelConfig } | { c
   if (!match) {
     const channels = bySender.map((c) => c.channel).join('/');
     return { code: ERROR_CODES.NOT_PO_SUBJECT, reason: errorMessage(ERROR_CODES.NOT_PO_SUBJECT, from, channels) };
+  }
+  // The PO file(s) the channel sends must be there (each of pdf / sheet that it uses); channels that send links
+  // instead of attachments (FirstCry) are not checked here.
+  if (email.files && !match.links) {
+    const kinds = (['pdf', 'sheet'] as const).filter((k) => match.files[k] && !match.optional?.includes(k));
+    const missing = kinds.filter((k) => !email.files!.some((f) => match.files[k]!.test(f)));
+    if (missing.length) {
+      const need = kinds.map((k) => String(match.files[k])).join(' + ');
+      return { code: ERROR_CODES.NOT_PO_NO_FILES, reason: errorMessage(ERROR_CODES.NOT_PO_NO_FILES, match.channel, need, email.files.join(', ')) };
+    }
   }
   return { config: match };
 };

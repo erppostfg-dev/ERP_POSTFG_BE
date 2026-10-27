@@ -30,6 +30,8 @@ export const CHANNEL_TOLERANCES: Record<ChannelName, Tolerance> = {
   [CHANNELS.SCOOTSY]: DEFAULT_TOLERANCE,
   [CHANNELS.PURPLLE]: DEFAULT_TOLERANCE,
   [CHANNELS.AMAZON]: DEFAULT_TOLERANCE,
+  [CHANNELS.TATA1MG]: DEFAULT_TOLERANCE,
+  [CHANNELS.NYKAA]: DEFAULT_TOLERANCE,
 };
 
 /**
@@ -45,6 +47,8 @@ export const CHANNEL_MASTER_IDS: Record<ChannelName, number> = {
   [CHANNELS.PURPLLE]: 18,
   [CHANNELS.SCOOTSY]: 20,
   [CHANNELS.AMAZON]: 9,
+  [CHANNELS.TATA1MG]: 11,
+  [CHANNELS.NYKAA]: 6,
 };
 
 /**
@@ -67,6 +71,10 @@ export const CHANNEL_LOCATION_MATCH: Record<ChannelName, LocationMatch> = {
   [CHANNELS.PURPLLE]: LOCATION_MATCH.PINCODE,
   /** The FC code (HYD8, BOM7 ...) = channel_location_code. */
   [CHANNELS.AMAZON]: LOCATION_MATCH.CODE_THEN_PINCODE,
+  /** The handler turns the PO's StoreCode (1MG_MKL ...) into channel_location_code (Bangalore ...). */
+  [CHANNELS.TATA1MG]: LOCATION_MATCH.CODE_THEN_PINCODE,
+  /** Delivery Location ("Chennai Warehouse", "Nykaa Warehouse DEL1" ...) = channel_location_code. */
+  [CHANNELS.NYKAA]: LOCATION_MATCH.CODE_THEN_PINCODE,
 };
 
 /** Result of validating one PO. */
@@ -165,6 +173,12 @@ export const VALIDATION_TEXT = {
   LOCATION_INCOMPLETE: (code: string, missing: string) => `details_channels row "${code}" has no ${missing}`,
   SKU_CODE_EMPTY: 'the PO line has no channel SKU code',
   SKU_NONE: (code: string) => `channel SKU code ${code} is not in master_channel_skus for this channel`,
+  /**
+   * The PO itself names our SKU (Nykaa's Vendor SKU Code, 2026-10-27): told to the reviewer, never mapped by itself. Picking
+   * it in review is not enough: validation needs this channel's row for it (its rate).
+   */
+  SKU_NONE_PO_GIVES_PEP: (code: string, pepCode: string) =>
+    `channel SKU code ${code} is not in master_channel_skus for this channel; the PO says it is our SKU ${pepCode} (in master_skus): add ${code} -> ${pepCode} with its rate to this channel's SKUs, then Re-check`,
   SKU_MANY: (code: string, pepCodes: string) => `channel SKU code ${code} maps to several of our SKUs (${pepCodes})`,
   SKU_NO_RATE: (pepCode: string) => `our SKU ${pepCode} has no rate_after_margin in master_channel_skus`,
   QTY_MISSING: 'no quantity on the PO line',

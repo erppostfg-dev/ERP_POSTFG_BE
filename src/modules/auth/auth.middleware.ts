@@ -7,7 +7,7 @@ import { AppDataSource } from '../../config/data-source';
 import { AccessLevel, AUTH, ERROR_CODES, IST_OFFSET_MS } from '../../constants';
 import { ActivityLog } from '../../entities';
 import { appError } from '../../utils/AppError';
-import { allows, resolveAccess } from './access.service';
+import { accessFrom, allows, loadAccess, resolveAccess } from './access.service';
 import { authFromToken, AuthContext, ClientInfo } from './session.service';
 
 /*
@@ -60,8 +60,9 @@ export const requireAnyPage = (pageSlugs: string[], level: AccessLevel) =>
     try {
       if (!req.auth) throw appError(ERROR_CODES.UNAUTHENTICATED);
       let have: AccessLevel | undefined;
+      const rows = await loadAccess(req.auth.user.id, req.auth.roles); // one load for every page listed
       for (const slug of pageSlugs) {
-        have = await resolveAccess(req.auth.user.id, req.auth.roles, slug);
+        have = accessFrom(rows, slug);
         if (allows(have, level)) return next();
       }
       throw appError(ERROR_CODES.FORBIDDEN_PAGE, pageSlugs.join(' or '), level, have ?? 'none').withDetails({ page: pageSlugs, needed: level, have });

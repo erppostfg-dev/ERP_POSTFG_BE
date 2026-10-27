@@ -1,7 +1,8 @@
 import { env } from '../config/env';
 import { LOG_SOURCE_PREFIX, type LogSource } from '../constants/logging';
 import { classifyError, kindOfStatus } from './classify-error';
-import { logContext, newContext, runInContext, shortId } from './log-context';
+import { logContext, newContext, runInContext, shortId, trackWork, untrackWork } from './log-context';
+import { whereFailed } from './where';
 import { logEvent, logFailure, writeLog, type LogFields } from './logger';
 
 /*
@@ -74,23 +75,67 @@ export const logCall = async <T>(source: LogSource, op: string, fn: () => Promis
  *   await runJob('pubsub-change', () => processGmailChanges(...), { historyId })
  */
 export const runJob = async <T>(name: string, fn: () => Promise<T>, fields: LogFields = {}): Promise<T> => {
-  const ctx = newContext({ jobId: `${name}:${shortId()}` });
+  const jobId = `${name}:${shortId()}`;
+  const ctx = newContext({ jobId });
   return runInContext(ctx, async () => {
     const started = Date.now();
+    // JOB_START + a place in "what is running now" (2026-10-27): a job that hangs or blocks is named on the
+    // PROCESS_EVENT_LOOP_LAG / heartbeat lines, with its current step.
+    logEvent('JOB_START', `${name} started`, { job: name, ...fields });
+    trackWork(jobId, `job ${jobId}`, ctx);
     try {
       const result = await fn();
       const ms = Date.now() - started;
       const counts = { job: name, ms, dbQueries: ctx.dbQueries, extCalls: ctx.extCalls, extMs: ctx.extMs, ...fields };
       if (env.log.jobSlowMs > 0 && ms > env.log.jobSlowMs) logEvent('JOB_SLOW', `${name} took ${Math.round(ms / 1000)} s`, { limitMs: env.log.jobSlowMs, ...counts });
-      else logEvent('JOB_DONE', `${name} done`, counts);
+      else logEvent('JOB_DONE', `${name} done in ${ms} ms (${ctx.dbQueries} queries, ${ctx.extCalls} outside calls)`, counts);
       if (env.log.dbQueriesWarn > 0 && ctx.dbQueries > env.log.dbQueriesWarn * 10) {
         logEvent('API_TOO_MANY_QUERIES', `${name} ran ${ctx.dbQueries} queries`, { job: name, dbQueries: ctx.dbQueries, limit: env.log.dbQueriesWarn * 10 });
       }
       return result;
     } catch (err) {
       const f = classifyError('app', err);
-      logEvent('JOB_FAILED', `${name} failed`, { job: name, ms: Date.now() - started, errorCode: f.errorCode, error: f.error, ...fields });
+      const failedStep = ctx.failedStep ?? ctx.step;
+      const failedAt = whereFailed(err);
+      logEvent('JOB_FAILED', `${name} failed${failedStep ? ` at step '${failedStep}'` : ''}${failedAt ? ` (${failedAt})` : ''}: ${f.error}`, {
+        job: name, ms: Date.now() - started, errorCode: f.errorCode, error: f.error, failedStep, failedAt, ...fields,
+      });
       throw err;
+    } finally {
+      untrackWork(jobId);
     }
   });
+};
+
+/**
+ * One named step of a job or request (2026-10-27), so its story reads line by line in CloudWatch:
+ *   STEP_DONE    "[ocr] step 'run OCR' done in 41203 ms"
+ *   STEP_FAILED  "[ocr] step 'save PO' failed after 120 ms at modules/po-pipeline/po-save.service.ts:212: <error>"
+ * Every line written inside the step carries `step`. The error is re-thrown unchanged; the result is returned as is.
+ */
+export const step = async <T>(name: string, fn: () => Promise<T>, fields: LogFields = {}): Promise<T> => {
+  const ctx = logContext();
+  const before = ctx?.step;
+  if (ctx) ctx.step = name;
+  const who = ctx?.jobId ? `[${ctx.jobId.split(':')[0]}] ` : ctx?.path ? `[${ctx.method} ${ctx.path}] ` : '';
+  const started = Date.now();
+  const calledAt = whereFailed(new Error()); // the caller of step() in our code (this file is skipped)
+  try {
+    const result = await fn();
+    const ms = Date.now() - started;
+    logEvent('STEP_DONE', `${who}step '${name}' done in ${ms} ms`, { ms, ...fields });
+    return result;
+  } catch (err) {
+    const ms = Date.now() - started;
+    const f = classifyError('app', err);
+    // Node's async file errors (ENOENT ...) carry no stack: then the place this step was called from
+    const failedAt = whereFailed(err) ?? (calledAt ? `${calledAt} (step called here)` : undefined);
+    logEvent('STEP_FAILED', `${who}step '${name}' failed after ${ms} ms${failedAt ? ` at ${failedAt}` : ''}: ${f.error}`, {
+      ms, errorCode: f.errorCode, error: f.error, failedAt, ...fields,
+    });
+    if (ctx) ctx.failedStep ??= name;
+    throw err;
+  } finally {
+    if (ctx) ctx.step = before;
+  }
 };

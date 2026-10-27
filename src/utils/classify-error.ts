@@ -1,6 +1,7 @@
 import { LOG_SOURCE, type FailureKind, type LogSource } from '../constants/logging';
 import { AppError } from './AppError';
 import { logFailure, maskText, type LogFields } from './logger';
+import { whereFailed } from './where';
 
 /*
  * Turns any error from a service into a FailureKind (constants/logging FAILURES: the plain reason + the fix), so a log
@@ -115,6 +116,7 @@ export const classifyError = (source: LogSource, err: unknown): ErrorFacts => {
  */
 export const logError = (source: LogSource, msg: string, err: unknown, fields: LogFields = {}): ErrorFacts => {
   const f = classifyError(source, err);
-  logFailure(source, f.kind, msg, { status: f.status, errorCode: f.errorCode, error: f.error, ...fields });
+  // failedAt: the file and line in our code (2026-10-27)
+  logFailure(source, f.kind, msg, { status: f.status, errorCode: f.errorCode, error: f.error, failedAt: whereFailed(err), ...fields });
   return f;
 };

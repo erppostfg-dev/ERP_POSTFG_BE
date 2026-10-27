@@ -51,6 +51,10 @@ import { FLIPKART_KEYS } from './sources/flipkart';
 import { fetchPepimsTracker } from './sources/pepims';
 import { UNIWARE_KEYS } from './sources/uniware';
 import { uniwareConfig } from './uniware-facilities';
+import { LOG_SOURCE } from '../../constants/logging';
+import { logError } from '../../utils/classify-error';
+import { logContext } from '../../utils/log-context';
+import { runJob } from '../../utils/log-call';
 
 /*
  * In-transit Stock jobs (2026-10-15, user): report builds and connector fetches, recorded in intransit_runs.
@@ -214,7 +218,7 @@ export const deleteRun = async (id: string): Promise<void> => {
     const deleted = (await repo().findOne({ where: { id }, relations: { creator: true } })) as IntransitRun;
     await unpublishRun(deleted);
     forgetSnapshotDays();
-    if (deleted.asOf && deleted.kind === INTRANSIT_RUN_KIND.REPORT) void touchPeriods(deleted.asOf).catch((err) => console.error(`[intransit] run ${id} deleted: weekly/monthly copies not redone:`, err instanceof Error ? err.message : err));
+    if (deleted.asOf && deleted.kind === INTRANSIT_RUN_KIND.REPORT) void touchPeriods(deleted.asOf).catch((err) => logError(LOG_SOURCE.APP, `[intransit] run ${id} deleted: weekly/monthly copies not redone`, err));
     return;
   }
   {
@@ -252,16 +256,19 @@ const beatQueued = async (): Promise<void> => {
   );
 };
 
-/** Runs job `id` after every earlier job of the same lane (report, or one connector source). */
+/**
+ * Runs job `id` after every earlier job of the same lane (report, or one connector source), as its own logged job
+ * (2026-10-27): JOB_START / DONE / FAILED, and named with its step on "server blocked" lines.
+ */
 const enqueue = (lane: string, id: string): void => {
   waitingHere.add(id);
   queuedBeat ??= setInterval(() => void beatQueued().catch(() => undefined), HEARTBEAT_MS).unref();
   const next = (chains.get(lane) ?? Promise.resolve())
     .then(() => {
       waitingHere.delete(id);
-      return execute(id);
+      return runJob(`intransit-${lane}`, () => execute(id), { runId: id });
     })
-    .catch((err) => console.error(`[intransit] ${lane}:`, err));
+    .catch((err) => void logError(LOG_SOURCE.APP, `[intransit] ${lane} job failed`, err));
   chains.set(lane, next);
 };
 
@@ -582,6 +589,8 @@ const execute = async (id: string): Promise<void> => {
   };
   const setStep = async (step: string): Promise<void> => {
     options.step = step;
+    const lc = logContext();
+    if (lc) lc.step = step; // the log lines and "server blocked" lines name the run's step (2026-10-27)
     optionsDirty = true;
     await flushAll();
   };
@@ -651,7 +660,7 @@ const execute = async (id: string): Promise<void> => {
         } as unknown as QueryDeepPartialEntity<IntransitRun>['result'],
       });
       // the week's and month's copies follow the newest build (live server)
-      if (stored) void touchPeriods(run.asOf as string).catch((err) => console.error(`[intransit] run ${id}: weekly/monthly copies:`, err instanceof Error ? err.message : err));
+      if (stored) void touchPeriods(run.asOf as string).catch((err) => logError(LOG_SOURCE.APP, `[intransit] run ${id}: weekly/monthly copies not made`, err));
     } else {
       const opts = (run.options ?? {}) as ConnectorOptions;
       const day = checkDate(opts.date ?? run.asOf ?? undefined);
@@ -694,7 +703,7 @@ const execute = async (id: string): Promise<void> => {
   } finally {
     clearInterval(timer);
     if (run.kind === INTRANSIT_RUN_KIND.REPORT) await fsp.rm(path.join(runDir(id), 'input'), { recursive: true, force: true }).catch(() => undefined);
-    await closeRun(id).catch((err) => console.error(`[intransit] run ${id}: run.json not written:`, err instanceof Error ? err.message : err));
+    await closeRun(id).catch((err) => logError(LOG_SOURCE.APP, `[intransit] run ${id}: run.json not written`, err));
     // nothing of a job stays on the server (S3 store), unless its files could not be saved (nor queued)
     if (!keepJob) await fsp.rm(jobDir(id), { recursive: true, force: true }).catch(() => undefined);
   }

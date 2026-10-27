@@ -62,7 +62,9 @@ export const sendMail = async (mail: Mail): Promise<void> => {
     '',
   ].join('\r\n');
   try {
-    await logCall(LOG_SOURCE.MAIL, 'messages.send', () => client().users.messages.send({ userId: 'me', requestBody: { raw: Buffer.from(raw, 'utf8').toString('base64url') } }));
+    // timeout: a Gmail that never answers fails this try (MAIL_SEND_FAILED); the caller's retries take over
+    await logCall(LOG_SOURCE.MAIL, 'messages.send', () =>
+      client().users.messages.send({ userId: 'me', requestBody: { raw: Buffer.from(raw, 'utf8').toString('base64url') } }, { timeout: env.gmail.sendTimeoutMs }));
   } catch (err) {
     const e = err as { code?: number; status?: number; message?: string; response?: { data?: { error?: string } } };
     const status = e.code ?? e.status;

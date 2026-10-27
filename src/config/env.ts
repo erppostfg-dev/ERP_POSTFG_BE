@@ -4,10 +4,23 @@ import os from 'os';
 import path from 'path';
 import { ERROR_CODES } from '../constants/errors';
 import { LOG_DEFAULTS, LOG_FORMAT, LOG_LEVEL_RANK, type LogFormat, type LogLevel } from '../constants/logging';
+import { PO_JOBS, QUEUE_MODE, type QueueMode } from '../constants/po-jobs';
 import { REVIEW_RECHECK } from '../constants/po-review';
 import { appError } from '../utils/AppError';
 
 dotenv.config();
+
+/**
+ * Laptop mode (user, 2026-10-27): the laptop and the dev EC2 share mcaff_postfg_dev, so `npm run dev` (src/dev.ts sets
+ * LAPTOP_MODE=true) never does background work on it: no Gmail / Pub/Sub intake, OCR, OCR backlog, resume, channel API
+ * polling, local cleanup, SQS worker, and no timed re-check. .env keeps its own values for `npm run dev:full` / EC2.
+ */
+const laptopMode = process.env.LAPTOP_MODE === 'true';
+export const LAPTOP_MODE_OFF = {
+  PUBSUB_ENABLED: 'false', OCR_ENABLED: 'false', OCR_BACKLOG: 'false', PIPELINE_RESUME: 'false', CHANNEL_API_ENABLED: 'false',
+  LOCAL_CLEANUP_ENABLED: 'false', WORKER_IN_SERVER: 'false', QUEUE_MODE: 'local', RECHECK_MINUTES: '0',
+} as const;
+if (laptopMode) Object.assign(process.env, LAPTOP_MODE_OFF);
 
 /**
  * A list setting: "A,B,C" or "[A, B, C]". A bracketed list may also run over several lines of .env, as the Python
@@ -57,6 +70,7 @@ const apiPrefix = required('API_PREFIX', '/api/v1');
 
 export const env = {
   nodeEnv: required('NODE_ENV', 'development'),
+  laptopMode,
   port,
   apiPrefix,
   db: {
@@ -71,6 +85,13 @@ export const env = {
     logging: flag('DB_LOGGING'),
     // connections in the pool (the in-transit store holds one briefly per upload lock, 2026-10-25)
     poolSize: Number(process.env.DB_POOL_SIZE ?? 20),
+    // Nothing waits forever (2026-10-27): MySQL stops a SELECT after this (0 = off), a write waiting on a row lock
+    // gives up after DB_LOCK_WAIT_S, at most DB_QUEUE_LIMIT requests wait for a free connection (0 = no limit),
+    // and /health reports the DB down when SELECT 1 takes longer than DB_HEALTH_TIMEOUT_MS.
+    queryTimeoutMs: Number(process.env.DB_QUERY_TIMEOUT_MS ?? 30_000),
+    lockWaitS: Number(process.env.DB_LOCK_WAIT_S ?? 20),
+    queueLimit: Number(process.env.DB_QUEUE_LIMIT ?? 200),
+    healthTimeoutMs: Number(process.env.DB_HEALTH_TIMEOUT_MS ?? 3_000),
   },
   // Optional at startup; checked when the Gmail client is created.
   gmail: {
@@ -80,6 +101,8 @@ export const env = {
     oauthClientId: process.env.GMAIL_OAUTH_CLIENT_ID,
     oauthClientSecret: process.env.GMAIL_OAUTH_CLIENT_SECRET,
     oauthRefreshToken: process.env.GMAIL_OAUTH_REFRESH_TOKEN,
+    // one outgoing email (welcome) gives up after this; its retries then take over (2026-10-27)
+    sendTimeoutMs: Number(process.env.MAIL_SEND_TIMEOUT_MS ?? 30_000),
   },
   // Gmail watch -> Pub/Sub topic -> pull subscription read by this server.
   pubsub: {
@@ -128,6 +151,18 @@ export const env = {
     cookieSecure: flag('COOKIE_SECURE'),
   },
   // The chain after intake (po_uploads -> OCR -> processed.json -> validation -> DB -> Uniware CSV).
+  // PO jobs queue (2026-10-26, constants/po-jobs.ts): local = in-process as before; sqs = SQS queue + worker.
+  queue: {
+    mode: (process.env.QUEUE_MODE === QUEUE_MODE.SQS ? QUEUE_MODE.SQS : QUEUE_MODE.LOCAL) as QueueMode,
+    jobsArn: process.env.SQS_PO_JOBS_ARN ?? '',
+    dlqArn: process.env.SQS_PO_JOBS_DLQ_ARN ?? '',
+    /** POs worked on at the same time by one worker process (1 = one after another). */
+    concurrency: Math.max(1, num('WORKER_CONCURRENCY', PO_JOBS.DEFAULT_CONCURRENCY)),
+    /** Pause after each job, so a burst becomes a steady line (0 = none). */
+    pauseMs: Math.max(0, num('WORKER_PAUSE_MS', PO_JOBS.DEFAULT_PAUSE_MS)),
+    /** true: the API server also runs the worker (local dev, one process). On EC2: a separate `npm run worker` (pm2). */
+    workerInServer: flag('WORKER_IN_SERVER'),
+  },
   pipeline: {
     // Most emails taken into the chain per process start (new intake + resume); 0 = no limit (production).
     // Emails over the limit are only stored as files (no po_uploads row, no OCR); po:pipeline / po:one take them later.

@@ -37,6 +37,19 @@ export interface ChannelConfig {
     items: { name: string; text: RegExp; required: boolean }[];
     allowedHosts: string[];
   };
+  /**
+   * 'sheet' = NO OCR (2026-10-26): the channel's CSV already holds the whole PO, so our own sheet reader
+   * (ocr/sheet-reader.ts) reads EVERY attachment matching `files.sheet` into the raw JSON, and the chain goes on as
+   * after an OCR run. A new CSV channel then only needs this entry + its handler's column mapping.
+   */
+  reader?: 'sheet';
+  /**
+   * Files of `files` that the channel usually sends but the PO does not need (2026-10-26): kept and shown when there,
+   * never required (email rule, reading, Manual Upload). Tata 1mg: the PDF (all the data is in its CSV).
+   */
+  optional?: ('pdf' | 'sheet')[];
+  /** One file holds many POs (Nykaa's export, 2026-10-27): told on the Manual Upload screen. */
+  manyPosPerFile?: boolean;
 }
 
 export const channelConfigs: ChannelConfig[] = [
@@ -143,5 +156,35 @@ export const channelConfigs: ChannelConfig[] = [
     // No PO number in the subject (one email = all POs of the day): the folder is <date>_<id>.
     domains: ['purplle.com'],
     files: { sheet: /\.(xlsx?|csv|tsv|txt)$/i },
+  },
+
+  {
+    // Tata 1mg (2026-10-26): via the SupplyPo group (From supplyPO@, X-Original-Sender / Reply-To cpd.otc@1mg.com),
+    // subject "Purchase Order -|| <PO> / <PO> || ( dd/mm/yyyy ) || Pep Technologies Pvt. Ltd / Kreative Beauty Pvt Ltd
+    // || ... || TATA 1MG_<city>". One email = one PO per company (mCaffeine / Hyphen), each a CSV + a PDF; the CSVs
+    // hold the whole PO -> no OCR (reader 'sheet'). Replies, "Pullout dispatch" and "Inventory Pullout Return" mails
+    // from the same people don't match the subject. Several POs: no poNumber, the folder is <date>_<id>.
+    channel: CHANNELS.TATA1MG,
+    ocrChannel: OCR_CHANNELS[CHANNELS.TATA1MG],
+    senders: ['cpd.otc@1mg.com'],
+    subject: /^Purchase Order -\|\|/i,
+    domains: ['1mg.com'],
+    files: { pdf: /\.pdf$/i, sheet: /\.csv$/i },
+    reader: 'sheet',
+    // Every value we use is in the CSV; the PDF is only kept to look at.
+    optional: ['pdf'],
+  },
+
+  {
+    // Nykaa (2026-10-27): Manual Upload only. Someone downloads the vendor portal's "Purchase Orders" CSV
+    // (Purchase Orders_allPo_<date>.csv: many POs, one row per line) and uploads it; no email, no OCR (reader 'sheet').
+    // No senders / domains, so no email ever matches this channel.
+    channel: CHANNELS.NYKAA,
+    ocrChannel: OCR_CHANNELS[CHANNELS.NYKAA],
+    senders: [],
+    domains: [],
+    files: { sheet: /\.csv$/i },
+    reader: 'sheet',
+    manyPosPerFile: true,
   },
 ];

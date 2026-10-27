@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { NextFunction, Request, Response } from 'express';
 import { env } from '../config/env';
 import { REQUEST_ID_HEADER } from '../constants/logging';
-import { logContext, newContext, runInContext } from '../utils/log-context';
+import { logContext, newContext, runInContext, trackWork, untrackWork } from '../utils/log-context';
 import { logEvent } from '../utils/logger';
 
 /*
@@ -21,6 +21,8 @@ declare module 'express-serve-static-core' {
     /** Set by the error handler: the error code of a failed request, for the request line. */
     errorCode?: string;
     errorMessage?: string;
+    /** Set by the error handler for a 5xx: the file and line in our code (utils/where.ts). */
+    failedAt?: string;
   }
 }
 
@@ -37,6 +39,8 @@ export const requestLog = (req: Request, res: Response, next: NextFunction): voi
   const ctx = newContext({ requestId, method: req.method, path });
   const started = Date.now();
   requestStats.active++;
+  // named on "server blocked" lines while it runs (an open live-updates stream only waits: left out)
+  trackWork(requestId, `${req.method} ${path}`, ctx, () => String(res.getHeader('Content-Type') ?? '').startsWith(STREAM));
 
   // Bytes sent (streams and files have no Content-Length up front).
   let bytes = 0;
@@ -53,6 +57,7 @@ export const requestLog = (req: Request, res: Response, next: NextFunction): voi
     if (logged) return;
     logged = true;
     requestStats.active--;
+    untrackWork(requestId);
     const ms = Date.now() - started;
     const userId = req.auth?.user.id;
     const stream = String(res.getHeader('Content-Type') ?? '').startsWith(STREAM);
@@ -60,6 +65,7 @@ export const requestLog = (req: Request, res: Response, next: NextFunction): voi
       method: req.method, path, status: res.statusCode, ms, userId,
       dbQueries: ctx.dbQueries, extCalls: ctx.extCalls, extMs: ctx.extMs, kb: Math.round(bytes / 1024),
       ...(res.locals.errorCode ? { errorCode: res.locals.errorCode, error: res.locals.errorMessage } : {}),
+      ...(res.locals.failedAt ? { failedAt: res.locals.failedAt } : {}),
       ...(closedEarly && !stream ? { closedByClient: true } : {}),
     };
     if (stream) return logEvent('API_STREAM_CLOSED', `${req.method} ${path} stream closed after ${Math.round(ms / 1000)} s`, fields);

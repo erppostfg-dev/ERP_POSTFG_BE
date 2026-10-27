@@ -16,6 +16,8 @@ import { resumeManualQueue } from './modules/manual-upload/manual-upload.service
 import { recheckInReview } from './modules/po-review/recheck.service';
 import { holdForIntake, kickRelease } from './modules/po-intake-control/intake-release.service';
 import { runLocalCleanup } from './modules/email-intake/local-cleanup.service';
+import { usesSqs } from './modules/po-jobs/po-jobs.queue';
+import { startPoWorker } from './modules/po-jobs/po-jobs.worker';
 import { LOCAL_CLEANUP, PO_INTAKE, REVIEW_RECHECK } from './constants';
 import { LOG_SOURCE } from './constants/logging';
 import { logError } from './utils/classify-error';
@@ -39,17 +41,17 @@ const start = async (): Promise<void> => {
 
   // In-transit inputs from the flat inputs/ folder move to masters/ and daily/<day>/ (once; later starts find nothing).
   await migrateFlatInputs()
-    .then((moved) => moved.length && console.log(`[intransit] moved ${moved.length} input(s) to masters/ and daily/: ${moved.join(', ')}`))
-    .catch((err) => console.error('[intransit] could not move the inputs:', err instanceof Error ? err.message : err));
+    .then((moved) => moved.length && log.info(LOG_SOURCE.APP, `[intransit] moved ${moved.length} input(s) to masters/ and daily/: ${moved.join(', ')}`))
+    .catch((err) => logError(LOG_SOURCE.APP, '[intransit] could not move the inputs', err));
 
   // In-transit jobs that were queued/running when the server stopped will never finish: mark them failed.
   if (AppDataSource.isInitialized) {
     await recoverRuns()
-      .then((n) => n && console.log(`[intransit] ${n} unfinished run(s) marked failed`))
-      .catch((err) => console.error('[intransit] could not check unfinished runs:', err instanceof Error ? err.message : err));
+      .then((n) => n && log.info(LOG_SOURCE.APP, `[intransit] ${n} unfinished run(s) marked failed`))
+      .catch((err) => logError(LOG_SOURCE.APP, '[intransit] could not check unfinished runs', err));
     // runs of another machine that stopped answering (machines share the database)
     setInterval(() => void expireStaleRuns()
-      .then((n) => n && console.log(`[intransit] ${n} run(s) of a stopped machine marked failed`))
+      .then((n) => n && log.info(LOG_SOURCE.APP, `[intransit] ${n} run(s) of a stopped machine marked failed`))
       .catch(() => undefined), 5 * 60_000).unref();
     // nothing of a stopped job stays on the server
     await clearJobs().catch(() => undefined);
@@ -58,10 +60,10 @@ const start = async (): Promise<void> => {
   // In-transit store in S3 (INTRANSIT_S3_ENABLED): the queue of files waiting for S3, and on the live server the
   // weekly/monthly copies. Without it the page works from the disk as before.
   if (storageOn()) {
-    console.log(`[intransit-s3] on: writes ${writeScope() === 'prod' ? 'inventory/ (live)' : 'inventory-test/ (test machine)'}`);
-    await startQueue().catch((err) => console.error('[intransit-s3] queue did not start:', err instanceof Error ? err.message : err));
+    log.info(LOG_SOURCE.S3, `[intransit-s3] on: writes ${writeScope() === 'prod' ? 'inventory/ (live)' : 'inventory-test/ (test machine)'}`);
+    await startQueue().catch((err) => logError(LOG_SOURCE.S3, '[intransit-s3] queue did not start', err));
     startPeriodKeeper();
-  } else console.log(`[intransit] disk store (S3 off: ${storageProblems().join(', ')})`);
+  } else log.info(LOG_SOURCE.APP, `[intransit] disk store (S3 off: ${storageProblems().join(', ')})`);
 
   const server = app.listen(env.port);
   // The email listener posts to our own endpoint, so wait until we are listening.
@@ -71,9 +73,9 @@ const start = async (): Promise<void> => {
   });
   // What is switched on (no secrets): the first line to check in CloudWatch after a deploy or restart.
   logEvent('PROCESS_START', `server running on port ${env.port}${env.apiPrefix}`, {
-    nodeEnv: env.nodeEnv, node: process.version, pid: process.pid, database: env.db.enabled ? env.db.name : 'off',
+    nodeEnv: env.nodeEnv, laptopMode: env.laptopMode, node: process.version, pid: process.pid, database: env.db.enabled ? env.db.name : 'off',
     pubsub: env.pubsub.enabled, ocr: env.ocr.enabled, s3: env.s3.enabled, channelApi: env.channelApi.enabled,
-    resume: env.pipeline.resumeOnStart, pipelineLimit: env.pipeline.limit,
+    resume: env.pipeline.resumeOnStart, pipelineLimit: env.pipeline.limit, queue: env.queue.mode, workerInServer: env.queue.workerInServer,
     log: { level: env.log.level, format: env.log.format, dbSlowMs: env.log.dbSlowMs, apiSlowMs: env.log.apiSlowMs, extSlowMs: env.log.extSlowMs },
   });
   const monitor = startProcessMonitor();
@@ -94,6 +96,10 @@ const start = async (): Promise<void> => {
   let channelApis: { stop: () => void } | undefined;
   if (env.channelApi.enabled && AppDataSource.isInitialized) channelApis = startChannelApis();
   else log.info(LOG_SOURCE.AMAZON, 'channel API connectors disabled (CHANNEL_API_ENABLED=false)');
+
+  // PO jobs worker (2026-10-26): with QUEUE_MODE=sqs + WORKER_IN_SERVER=true this process also takes the queued jobs;
+  // otherwise the separate `npm run worker` does (EC2: its own pm2 process).
+  const worker = usesSqs() && env.queue.workerInServer && AppDataSource.isInitialized ? startPoWorker() : undefined;
 
   // Manual uploads (2026-10-22): ones queued by a Process click (or cut off while processing) continue, one at a time.
   // "uploaded" ones wait for a Process click.
@@ -152,6 +158,7 @@ const start = async (): Promise<void> => {
     monitor.stop();
     await listener?.stop();
     channelApis?.stop();
+    await worker?.stop();
     if (recheckTimer) clearInterval(recheckTimer);
     if (releaseTimer) clearInterval(releaseTimer);
     if (cleanupTimer) clearInterval(cleanupTimer);

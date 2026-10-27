@@ -2,7 +2,7 @@ import path from 'path';
 import { AppDataSource } from '../../config/data-source';
 import { env } from '../../config/env';
 import { In } from 'typeorm';
-import { FOLDERS, LABELS, UPLOAD_SOURCE, UPLOAD_STATUS } from '../../constants';
+import { FOLDERS, LABELS, PO_JOB_TYPE, UPLOAD_SOURCE, UPLOAD_STATUS } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
 import { PoUpload } from '../../entities';
 import { logError } from '../../utils/classify-error';
@@ -10,6 +10,7 @@ import { runJob } from '../../utils/log-call';
 import { log } from '../../utils/logger';
 import { storedFolderOf } from '../email-intake/email-storage.service';
 import { extractPo } from '../ocr/extract-po.service';
+import { submitJob } from '../po-jobs/po-jobs.queue';
 import { runChainFor } from '../po-pipeline/pipeline.service';
 import type { ResumeItem } from '../po-pipeline/resume.service';
 import { channelOfDisplayName, processFromOf, shouldHold } from './intake-settings.service';
@@ -43,8 +44,9 @@ const releaseOne = async (u: PoUpload): Promise<void> => {
   }
   // released_at: it counts against TODAY's limit (it arrived on an earlier day, or while the channel was off).
   await repo.update({ id: u.id }, { status: UPLOAD_STATUS.QUEUED, releasedAt: new Date() });
-  if (u.source === UPLOAD_SOURCE.API) await runChainFor(folder);
-  else if (env.ocr.enabled) await extractPo(folder);
+  // PO jobs queue (2026-10-26): with QUEUE_MODE=sqs the released PO waits its turn in SQS (local mode: runs here).
+  if (u.source === UPLOAD_SOURCE.API) await submitJob({ type: PO_JOB_TYPE.CHAIN, folder }, () => runChainFor(folder));
+  else if (env.ocr.enabled) await submitJob({ type: PO_JOB_TYPE.EXTRACT, folder }, () => extractPo(folder));
   else log.info(LOG_SOURCE.OCR, `[intake] ${u.poNumber ?? u.id} released; OCR_ENABLED=false: it waits as queued for resume`);
 };
 
@@ -52,15 +54,29 @@ const release = async (): Promise<number> => {
   let n = 0;
   for (;;) {
     // Oldest PO first (the day it was received), so a channel works through its days in order.
-    const held = await AppDataSource.getRepository(PoUpload).find({ where: { status: UPLOAD_STATUS.HELD }, order: { emailReceivedAt: 'ASC', id: 'ASC' } });
+    // Only the fields the release uses (2026-10-27: all columns of 529 rows took ~630 ms, over DB_SLOW_MS).
+    const held = await AppDataSource.getRepository(PoUpload).find({
+      select: ['id', 'channel', 'source', 'externalId', 'emailMessageId', 'emailReceivedAt', 'createdAt', 'poNumber'],
+      where: { status: UPLOAD_STATUS.HELD },
+      order: { emailReceivedAt: 'ASC', id: 'ASC' },
+    });
+    // Decided once per channel in this scan, not per PO (2026-10-27: 529 held POs were 1,059 queries every 15 min).
+    // Each release starts a new scan, so the switch and today's limit are still checked before every release.
+    const open = new Map<string | null, { from: Date | null } | null>();
+    const openFor = async (displayName: string | null) => {
+      if (!open.has(displayName)) {
+        const channel = await channelOfDisplayName(displayName);
+        open.set(displayName, channel && !(await shouldHold(channel)) ? { from: await processFromOf(channel) } : null);
+      }
+      return open.get(displayName)!;
+    };
     let next: PoUpload | undefined;
     for (const u of held) {
-      const channel = await channelOfDisplayName(u.channel);
-      if (!channel || (await shouldHold(channel))) continue;
+      const ch = await openFor(u.channel);
+      if (!ch) continue;
       // Received before the channel's "process from" (user, 2026-10-23): stays held, untouched, until the date is
       // moved back to include it.
-      const from = await processFromOf(channel);
-      if (from && (u.emailReceivedAt ?? u.createdAt) < from) continue;
+      if (ch.from && (u.emailReceivedAt ?? u.createdAt) < ch.from) continue;
       next = u;
       break;
     }
