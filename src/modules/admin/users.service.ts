@@ -213,7 +213,9 @@ const welcomeMail = async (user: UserItem) => {
     .filter((p) => access[p.slug] && access[p.slug] !== ACCESS_LEVEL.NONE)
     .map((p) => `${p.section === p.label ? p.label : `${p.section} › ${p.label}`} (${access[p.slug] === ACCESS_LEVEL.EDITOR ? 'can edit' : 'view only'})`);
   const team = user.team ? `${TEAM_LABEL[user.team]} team${user.facilities.length ? `, facilities ${user.facilities.join(', ')}` : ''}` : null;
-  const url = env.auth.frontendOrigin;
+  // The app's own address (AUTH_REDIRECT_URL, e.g. <domain>/postfg), not FRONTEND_ORIGIN: on a shared domain the bare
+  // origin opens another app's sign-in (user, 2026-10-27).
+  const url = env.auth.redirectUrl;
   const lines = [
     `Hi ${user.name},`,
     '',
