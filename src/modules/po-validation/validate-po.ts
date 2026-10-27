@@ -6,6 +6,7 @@ import {
   ISSUE_FIELDS,
   ISSUE_TYPE,
   LOCATION_MATCH,
+  NO_BRAND,
   round2,
   VALIDATION_STATUS,
   VALIDATION_TEXT,
@@ -222,7 +223,8 @@ const validateLine = (
   if (!mapped) return out;
   out.pepCode = mapped.pepCode;
   out.skuName = sku?.productName ?? mapped.productName ?? '';
-  out.brandName = sku?.brandName ?? mapped.brandName ?? '';
+  // master_skus keeps "0" for "no brand" (all combos): then the channel SKU row's brand (user, 2026-10-26).
+  out.brandName = [sku?.brandName, mapped.brandName].map((b) => b?.trim() ?? '').find((b) => !NO_BRAND.includes(b)) ?? '';
 
   // MRP: the PO's vs ours (the channel's row, else master_skus).
   const ourMrp = mapped.mrp ?? sku?.mrp ?? null;
