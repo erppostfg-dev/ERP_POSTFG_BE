@@ -73,7 +73,7 @@ const start = async (): Promise<void> => {
   });
   // What is switched on (no secrets): the first line to check in CloudWatch after a deploy or restart.
   logEvent('PROCESS_START', `server running on port ${env.port}${env.apiPrefix}`, {
-    nodeEnv: env.nodeEnv, node: process.version, pid: process.pid, database: env.db.enabled ? env.db.name : 'off',
+    nodeEnv: env.nodeEnv, laptopMode: env.laptopMode, node: process.version, pid: process.pid, database: env.db.enabled ? env.db.name : 'off',
     pubsub: env.pubsub.enabled, ocr: env.ocr.enabled, s3: env.s3.enabled, channelApi: env.channelApi.enabled,
     resume: env.pipeline.resumeOnStart, pipelineLimit: env.pipeline.limit, queue: env.queue.mode, workerInServer: env.queue.workerInServer,
     log: { level: env.log.level, format: env.log.format, dbSlowMs: env.log.dbSlowMs, apiSlowMs: env.log.apiSlowMs, extSlowMs: env.log.extSlowMs },

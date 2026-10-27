@@ -5,7 +5,8 @@
   "main": "dist/server.js",
   "private": true,
   "scripts": {
-    "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+    "dev": "ts-node-dev --respawn --transpile-only src/dev.ts",
+    "dev:full": "ts-node-dev --respawn --transpile-only src/server.ts",
     "worker": "ts-node --transpile-only src/worker.ts",
     "build": "tsc",
     "start": "node dist/server.js",

@@ -11,6 +11,18 @@ import { appError } from '../utils/AppError';
 dotenv.config();
 
 /**
+ * Laptop mode (user, 2026-10-27): the laptop and the dev EC2 share mcaff_postfg_dev, so `npm run dev` (src/dev.ts sets
+ * LAPTOP_MODE=true) never does background work on it: no Gmail / Pub/Sub intake, OCR, OCR backlog, resume, channel API
+ * polling, local cleanup, SQS worker, and no timed re-check. .env keeps its own values for `npm run dev:full` / EC2.
+ */
+const laptopMode = process.env.LAPTOP_MODE === 'true';
+export const LAPTOP_MODE_OFF = {
+  PUBSUB_ENABLED: 'false', OCR_ENABLED: 'false', OCR_BACKLOG: 'false', PIPELINE_RESUME: 'false', CHANNEL_API_ENABLED: 'false',
+  LOCAL_CLEANUP_ENABLED: 'false', WORKER_IN_SERVER: 'false', QUEUE_MODE: 'local', RECHECK_MINUTES: '0',
+} as const;
+if (laptopMode) Object.assign(process.env, LAPTOP_MODE_OFF);
+
+/**
  * A list setting: "A,B,C" or "[A, B, C]". A bracketed list may also run over several lines of .env, as the Python
  * in-transit tool's .env allowed (user, 2026-10-16):
  *   UNIWARE_FACILITY=[A ,
@@ -58,6 +70,7 @@ const apiPrefix = required('API_PREFIX', '/api/v1');
 
 export const env = {
   nodeEnv: required('NODE_ENV', 'development'),
+  laptopMode,
   port,
   apiPrefix,
   db: {
