@@ -162,6 +162,11 @@ export const ERRORS = {
     422,
     (from: string, channels: string) => `sender ${from} is ${channels}, but the subject is not a PO subject`,
   ),
+  /** 2026-10-26: a channel's sender + PO subject but without the PO file(s) (1mg's follow-ups, replies with no files). */
+  NOT_PO_NO_FILES: define(
+    422,
+    (channel: string, need: string, got: string) => `${channel} email without its PO file (needs ${need}; got ${got || 'no attachments'})`,
+  ),
 
   // --- Linked files (channels that send download links: FirstCry) -------------------------------------------------
   LINK_NOT_FOUND: define(502, (text: string) => `no link with text ${text}`),
@@ -202,7 +207,11 @@ export type ErrorArgs<C extends ErrorCode> = Parameters<(typeof ERRORS)[C]['mess
 export const ERROR_CODES = keysOf(ERRORS);
 
 /** Why an email is not a PO: no sender, a sender that is no channel's, or a channel's sender with a non-PO subject. */
-export type NotPoCode = typeof ERROR_CODES.NO_SENDER | typeof ERROR_CODES.UNKNOWN_SENDER | typeof ERROR_CODES.NOT_PO_SUBJECT;
+export type NotPoCode =
+  | typeof ERROR_CODES.NO_SENDER
+  | typeof ERROR_CODES.UNKNOWN_SENDER
+  | typeof ERROR_CODES.NOT_PO_SUBJECT
+  | typeof ERROR_CODES.NOT_PO_NO_FILES;
 
 /** The message of an error, e.g. errorMessage(ERROR_CODES.UNKNOWN_SENDER, 'a@b.com'). */
 export const errorMessage = <C extends ErrorCode>(code: C, ...args: ErrorArgs<C>): string =>

@@ -30,6 +30,7 @@ export const CHANNEL_TOLERANCES: Record<ChannelName, Tolerance> = {
   [CHANNELS.SCOOTSY]: DEFAULT_TOLERANCE,
   [CHANNELS.PURPLLE]: DEFAULT_TOLERANCE,
   [CHANNELS.AMAZON]: DEFAULT_TOLERANCE,
+  [CHANNELS.TATA1MG]: DEFAULT_TOLERANCE,
 };
 
 /**
@@ -45,6 +46,7 @@ export const CHANNEL_MASTER_IDS: Record<ChannelName, number> = {
   [CHANNELS.PURPLLE]: 18,
   [CHANNELS.SCOOTSY]: 20,
   [CHANNELS.AMAZON]: 9,
+  [CHANNELS.TATA1MG]: 11,
 };
 
 /**
@@ -67,6 +69,8 @@ export const CHANNEL_LOCATION_MATCH: Record<ChannelName, LocationMatch> = {
   [CHANNELS.PURPLLE]: LOCATION_MATCH.PINCODE,
   /** The FC code (HYD8, BOM7 ...) = channel_location_code. */
   [CHANNELS.AMAZON]: LOCATION_MATCH.CODE_THEN_PINCODE,
+  /** The handler turns the PO's StoreCode (1MG_MKL ...) into channel_location_code (Bangalore ...). */
+  [CHANNELS.TATA1MG]: LOCATION_MATCH.CODE_THEN_PINCODE,
 };
 
 /** Result of validating one PO. */

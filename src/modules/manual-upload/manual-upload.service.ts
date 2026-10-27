@@ -56,15 +56,20 @@ const masterIdOf = (channel: string): number | undefined => CHANNEL_MASTER_IDS[c
 // ---- Channels the app can read --------------------------------------------------------------------------------------
 
 /** What a reader takes, in words: "PDF", "Excel or CSV", "PDF + Excel". */
-const needsOf = (c: ChannelConfig): string => {
+const sheetText = (c: ChannelConfig): string => {
   const sheet = c.files.sheet;
-  const sheetText = sheet ? (['x.xlsx', 'x.xls', 'x.csv'].filter((n) => sheet.test(n)).map((n) => n.slice(2).toUpperCase()).join(' / ')) : '';
-  return [c.files.pdf ? 'PDF' : '', sheetText].filter(Boolean).join(' + ');
+  return sheet ? ['x.xlsx', 'x.xls', 'x.csv'].filter((n) => sheet.test(n)).map((n) => n.slice(2).toUpperCase()).join(' / ') : '';
 };
+/** The files one PO needs (an optional one, e.g. 1mg's PDF, is left out: optionalOf). */
+const needsOf = (c: ChannelConfig): string =>
+  [c.files.pdf && !c.optional?.includes('pdf') ? 'PDF' : '', !c.optional?.includes('sheet') ? sheetText(c) : ''].filter(Boolean).join(' + ');
+/** The file a PO may also have (same file name), e.g. "PDF" for Tata 1mg; "" when none. */
+const optionalOf = (c: ChannelConfig): string =>
+  [c.files.pdf && c.optional?.includes('pdf') ? 'PDF' : '', c.files.sheet && c.optional?.includes('sheet') ? sheetText(c) : ''].filter(Boolean).join(' + ');
 
 /** How the channel normally sends POs (the Manual Upload list is grouped by it): api (Amazon), email; manual-only later. */
 export type UploadGroup = 'api' | 'email' | 'manual';
-export interface UploadChannel { channel: string; name: string; needs: string; twoFiles: boolean; group: UploadGroup }
+export interface UploadChannel { channel: string; name: string; needs: string; twoFiles: boolean; group: UploadGroup; optional?: string }
 
 /** Channels with a PO reader (channels.config) that are active in master_channels. */
 export const uploadChannels = async (): Promise<UploadChannel[]> => {
@@ -72,7 +77,9 @@ export const uploadChannels = async (): Promise<UploadChannel[]> => {
   return channelConfigs
     .map((c): UploadChannel | null => {
       const m = masters.find((x) => x.id === masterIdOf(c.channel));
-      return m ? { channel: c.channel, name: m.displayName, needs: needsOf(c), twoFiles: !!(c.files.pdf && c.files.sheet), group: 'email' } : null;
+      return m
+        ? { channel: c.channel, name: m.displayName, needs: needsOf(c), twoFiles: !!(c.files.pdf && c.files.sheet) && !c.optional?.length, group: 'email', optional: optionalOf(c) || undefined }
+        : null;
     })
     .filter((x): x is UploadChannel => x !== null)
     .concat(amazonMaster(masters))
@@ -93,6 +100,16 @@ const amazonMaster = (masters: MasterChannel[]): UploadChannel[] => {
  */
 const groupFiles = (c: ChannelConfig, files: UploadedFile[], channelName: string): UploadedFile[][] => {
   const { pdf, sheet } = c.files;
+  // A PDF + sheet channel whose PDF is optional (Tata 1mg): one PO per sheet, its PDF (same file name) added when there.
+  if (pdf && sheet && c.optional?.includes('pdf')) {
+    const pdfs = files.filter((f) => pdf.test(f.originalname));
+    const sheets = files.filter((f) => !pdf.test(f.originalname) && sheet.test(f.originalname));
+    const other = files.filter((f) => !pdfs.includes(f) && !sheets.includes(f));
+    if (other.length) throw appError(ERROR_CODES.MANUAL_FILES_MISSING, channelName, needsOf(c), other.map((f) => f.originalname).join(', '));
+    const lonely = pdfs.filter((p) => !sheets.some((s) => baseOf(s.originalname) === baseOf(p.originalname)));
+    if (lonely.length) throw appError(ERROR_CODES.MANUAL_FILES_MISSING, channelName, `${needsOf(c)} (a PDF only next to its ${needsOf(c)}, same file name)`, lonely.map((f) => f.originalname).join(', '));
+    return sheets.map((s) => [s, ...pdfs.filter((p) => baseOf(p.originalname) === baseOf(s.originalname))]);
+  }
   if (!(pdf && sheet)) {
     const pattern = (pdf ?? sheet)!;
     const bad = files.filter((f) => !pattern.test(f.originalname));

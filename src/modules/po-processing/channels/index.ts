@@ -6,6 +6,7 @@ import { firstcryHandler } from './firstcry/firstcry.handler';
 import { purplleHandler } from './purplle/purplle.handler';
 import { relianceHandler } from './reliance/reliance.handler';
 import { scootsyHandler } from './scootsy/scootsy.handler';
+import { tata1mgHandler } from './tata1mg/tata1mg.handler';
 import { zeptoHandler } from './zepto/zepto.handler';
 
 /**
@@ -20,4 +21,5 @@ export const channelHandlers: Partial<Record<ChannelName, ChannelHandler>> = {
   [scootsyHandler.channel]: scootsyHandler,
   [purplleHandler.channel]: purplleHandler,
   [relianceHandler.channel]: relianceHandler,
+  [tata1mgHandler.channel]: tata1mgHandler,
 };

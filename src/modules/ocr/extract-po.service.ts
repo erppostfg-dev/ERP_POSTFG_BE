@@ -5,6 +5,7 @@ import { detectChannel, emailInfo, StoredMetadata } from './channel-detector';
 import { ChannelConfig } from './channels.config';
 import { DownloadedLink, downloadLinkedFiles } from './link-downloader';
 import { runOcr } from './ocr-runner';
+import { readSheets } from './sheet-reader';
 import { syncEmailToS3 } from '../email-intake/s3-mirror.service';
 import { ocrFinished, ocrStarted } from '../po-pipeline/pipeline.service';
 import { ErrorArgs, ErrorCode, ERROR_CODES, errorMessage, FILES, RESULT_STATUS, ResultStatus } from '../../constants';
@@ -50,6 +51,7 @@ const pickFiles = (config: ChannelConfig, filenames: string[]): { files: string[
     const pattern = config.files[kind];
     if (!pattern) continue;
     const file = filenames.find((f) => pattern.test(f));
+    if (!file && config.optional?.includes(kind)) continue; // not needed (e.g. 1mg's PDF): read without it
     if (!file) return why(ERROR_CODES.OCR_FILES_MISSING, config.channel, kind, String(pattern), filenames.join(', '));
     picked.push(file);
   }
@@ -103,6 +105,30 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
   const picked = pickFiles(config, filenames);
   if ('reason' in picked) {
     return save({ status: RESULT_STATUS.SKIPPED, code: picked.code, reason: picked.reason, channel: config.channel, links });
+  }
+
+  // 3b. Sheet channels (reader 'sheet', 2026-10-26): no OCR, our own reader turns every CSV into the raw JSON.
+  if (config.reader === 'sheet') {
+    const sheets = filenames.filter((f) => config.files.sheet?.test(f));
+    await ocrStarted(dir);
+    const t0 = Date.now();
+    try {
+      const read = await readSheets(dir, sheets, config.channel);
+      log.info(LOG_SOURCE.OCR, `[extractPo] ${config.channel}: sheet reader, no OCR: ${read.lines} line(s) from ${sheets.length} file(s) (${path.basename(dir)})`);
+      return await save({
+        status: RESULT_STATUS.OK,
+        channel: config.channel,
+        ocrChannel: config.ocrChannel,
+        files: picked.files,
+        inputs: sheets,
+        links,
+        durationMs: Date.now() - t0,
+        ocr: { status: RESULT_STATUS.OK, reader: 'sheet', lines: read.lines, files: sheets },
+      });
+    } catch (err) {
+      const failed = why(ERROR_CODES.OCR_FAILED, `sheet reader: ${(err as Error).message}`);
+      return save({ status: RESULT_STATUS.FAILED, ...failed, channel: config.channel, files: sheets, links, durationMs: Date.now() - t0 });
+    }
   }
 
   // 4. The OCR's inputs: the local files, or their S3 copies (uploaded first if missing).
