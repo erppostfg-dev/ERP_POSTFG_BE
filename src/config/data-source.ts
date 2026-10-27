@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import { AsyncResource } from 'async_hooks';
 import path from 'path';
 import { DataSource, DataSourceOptions } from 'typeorm';
 import { ALLOWED_DATABASES, ERROR_CODES, MIGRATIONS_TABLE } from '../constants';
@@ -42,6 +43,17 @@ const setSessionLimits = (c: PoolConnection): void => {
   });
 };
 
+/**
+ * mysql2 calls a query's callback from its socket, i.e. in the request / job that OPENED that pooled connection, so
+ * TypeORM's slow-query and error lines carried that first request's id and path (2026-10-27: Amazon Inbound queries
+ * were logged as GET /po-overview/filter-options). Binding each callback to the caller keeps the right request / job.
+ */
+const bindQueryCallbacks = (c: PoolConnection): void => {
+  const query = c.query.bind(c) as (...args: unknown[]) => unknown;
+  (c as unknown as { query: (...args: unknown[]) => unknown }).query = (...args: unknown[]) =>
+    query(...args.map((a) => (typeof a === 'function' ? AsyncResource.bind(a as (...x: unknown[]) => unknown) : a)));
+};
+
 /** A DataSource that checks the database before every connection (server, scripts and the TypeORM CLI). */
 class GuardedDataSource extends DataSource {
   override async initialize(): Promise<this> {
@@ -55,7 +67,10 @@ class GuardedDataSource extends DataSource {
         ...mysql,
         createPool: (opts: unknown) => {
           const pool = mysql.createPool(opts);
-          pool.on('connection', setSessionLimits);
+          pool.on('connection', (c) => {
+            setSessionLimits(c);
+            bindQueryCallbacks(c);
+          });
           return pool;
         },
       };

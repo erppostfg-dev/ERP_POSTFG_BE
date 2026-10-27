@@ -36,12 +36,15 @@ const extractSheets = async (run: IntransitRun): Promise<void> => {
   if (SNAPSHOT_SHEETS.every((s) => fs.existsSync(diskSheet(run.id, s)))) return;
   const [workbook] = await getReportFile(run.id).catch(() => [null]);
   if (!workbook) return;
-  const bytes = new Uint8Array(await fsp.readFile(workbook));
-  await fsp.mkdir(path.dirname(diskSheet(run.id, SNAPSHOT_SHEETS[0])), { recursive: true });
-  for (const sheet of SNAPSHOT_SHEETS) {
-    const rows = readXlsxSheet(bytes, sheet);
-    if (rows) await fsp.writeFile(diskSheet(run.id, sheet), gzipSync(Buffer.from(toCsv(rows), 'utf8')));
-  }
+  // a step line only when a workbook is really read (heavy, in the web process): the "already have them" case is silent
+  await step(`read workbook sheets of run ${run.id}`, async () => {
+    const bytes = new Uint8Array(await fsp.readFile(workbook));
+    await fsp.mkdir(path.dirname(diskSheet(run.id, SNAPSHOT_SHEETS[0])), { recursive: true });
+    for (const sheet of SNAPSHOT_SHEETS) {
+      const rows = readXlsxSheet(bytes, sheet);
+      if (rows) await fsp.writeFile(diskSheet(run.id, sheet), gzipSync(Buffer.from(toCsv(rows), 'utf8')));
+    }
+  });
 };
 
 const diskSnapshot = async (day: string): Promise<SnapshotView> => {
@@ -50,7 +53,7 @@ const diskSnapshot = async (day: string): Promise<SnapshotView> => {
     order: { asOf: 'DESC', id: 'DESC' }, take: 20,
   })).filter((r) => scopeOfRun(r) === PROD_SCOPE);
   for (const run of runs) {
-    await step(`read workbook sheets of run ${run.id}`, () => extractSheets(run)).catch((err) => logError(LOG_SOURCE.APP, `[intransit] run ${run.id}: sheets not read from its workbook`, err));
+    await extractSheets(run).catch((err) => logError(LOG_SOURCE.APP, `[intransit] run ${run.id}: sheets not read from its workbook`, err));
     const files: SnapshotView['files'] = [];
     for (const name of SNAPSHOT_SHEETS) {
       const st = await fsp.stat(diskSheet(run.id, name)).catch(() => null);
