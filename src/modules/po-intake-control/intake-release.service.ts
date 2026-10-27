@@ -54,7 +54,12 @@ const release = async (): Promise<number> => {
   let n = 0;
   for (;;) {
     // Oldest PO first (the day it was received), so a channel works through its days in order.
-    const held = await AppDataSource.getRepository(PoUpload).find({ where: { status: UPLOAD_STATUS.HELD }, order: { emailReceivedAt: 'ASC', id: 'ASC' } });
+    // Only the fields the release uses (2026-10-27: all columns of 529 rows took ~630 ms, over DB_SLOW_MS).
+    const held = await AppDataSource.getRepository(PoUpload).find({
+      select: ['id', 'channel', 'source', 'externalId', 'emailMessageId', 'emailReceivedAt', 'createdAt', 'poNumber'],
+      where: { status: UPLOAD_STATUS.HELD },
+      order: { emailReceivedAt: 'ASC', id: 'ASC' },
+    });
     // Decided once per channel in this scan, not per PO (2026-10-27: 529 held POs were 1,059 queries every 15 min).
     // Each release starts a new scan, so the switch and today's limit are still checked before every release.
     const open = new Map<string | null, { from: Date | null } | null>();
