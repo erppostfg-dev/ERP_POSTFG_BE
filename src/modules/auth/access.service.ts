@@ -27,34 +27,58 @@ const parentSlug = (slug: string): string | null => {
 /** True when `have` is at least `needed` (editor covers viewer). */
 export const allows = (have: AccessLevel, needed: AccessLevel): boolean => RANK[have] >= RANK[needed];
 
-export const resolveAccess = async (userId: number, roles: string[], pageSlug: string): Promise<AccessLevel> => {
-  const overrides = AppDataSource.getRepository(UserPagePermission);
-  const grants = AppDataSource.getRepository(PagePermission);
+/** One person's access rows, read once (2 queries), then any page or capability is worked out in memory. */
+export interface AccessRows {
+  /** user_page_permissions: page -> level */
+  own: Map<string, AccessLevel>;
+  /** page_permissions of the person's roles: page -> every role's level */
+  grants: Map<string, AccessLevel[]>;
+  roles: string[];
+}
+
+/** 2 queries, only the 2 columns used (2026-10-27: was 2 per page per level, ~45-90 for /auth/me). */
+export const loadAccess = async (userId: number, roles: string[]): Promise<AccessRows> => {
+  const [own, grants] = await Promise.all([
+    AppDataSource.getRepository(UserPagePermission).find({ select: { pageSlug: true, accessLevel: true }, where: { userId } }),
+    roles.length
+      ? AppDataSource.getRepository(PagePermission).find({ select: { pageSlug: true, accessLevel: true }, where: { role: In(roles) } })
+      : Promise.resolve([]),
+  ]);
+  const byPage = new Map<string, AccessLevel[]>();
+  for (const g of grants) byPage.set(g.pageSlug, [...(byPage.get(g.pageSlug) ?? []), g.accessLevel]);
+  return { own: new Map(own.map((o) => [o.pageSlug, o.accessLevel])), grants: byPage, roles };
+};
+
+/** The rules above, on rows already loaded: no query. */
+export const accessFrom = (rows: AccessRows, pageSlug: string): AccessLevel => {
   for (let slug: string | null = pageSlug; slug; slug = parentSlug(slug)) {
-    const own = await overrides.findOneBy({ userId, pageSlug: slug });
-    if (own) return own.accessLevel;
-    if (roles.length) {
-      const rows = await grants.findBy({ role: In(roles), pageSlug: slug });
-      if (rows.length) return best(rows.map((r) => r.accessLevel));
-    }
+    const own = rows.own.get(slug);
+    if (own) return own;
+    const levels = rows.grants.get(slug);
+    if (levels?.length) return best(levels);
   }
   return ACCESS_LEVEL.NONE;
 };
 
-/** A special permission (CAPABILITY): admin / developer always; else the role grant (or the person's override) = editor. */
-export const hasCapability = async (userId: number, roles: string[], key: Capability): Promise<boolean> =>
-  roles.some((r) => (USER_ADMIN_ROLES as readonly string[]).includes(r)) || (await resolveAccess(userId, roles, key)) === ACCESS_LEVEL.EDITOR;
+export const resolveAccess = async (userId: number, roles: string[], pageSlug: string): Promise<AccessLevel> =>
+  accessFrom(await loadAccess(userId, roles), pageSlug);
 
-/** Every special permission of the user, for /auth/me. */
-export const resolveCapabilities = async (userId: number, roles: string[]): Promise<Record<string, boolean>> => {
-  const out: Record<string, boolean> = {};
-  for (const c of CAPABILITIES) out[c.key] = await hasCapability(userId, roles, c.key);
-  return out;
+/** A special permission on loaded rows: admin / developer always; else the role grant (or the person's override) = editor. */
+const capabilityFrom = (rows: AccessRows, key: Capability): boolean =>
+  rows.roles.some((r) => (USER_ADMIN_ROLES as readonly string[]).includes(r)) || accessFrom(rows, key) === ACCESS_LEVEL.EDITOR;
+
+/** A special permission (CAPABILITY): admin / developer always (no query); else the role grant (or the person's override) = editor. */
+export const hasCapability = async (userId: number, roles: string[], key: Capability): Promise<boolean> =>
+  roles.some((r) => (USER_ADMIN_ROLES as readonly string[]).includes(r)) || capabilityFrom(await loadAccess(userId, roles), key);
+
+/** Every special permission of the user, for /auth/me (pass `rows` to reuse a load). */
+export const resolveCapabilities = async (userId: number, roles: string[], rows?: AccessRows): Promise<Record<string, boolean>> => {
+  const loaded = rows ?? (await loadAccess(userId, roles));
+  return Object.fromEntries(CAPABILITIES.map((c) => [c.key, capabilityFrom(loaded, c.key)]));
 };
 
-/** Every page's level for the user (for /auth/me: the sidebar hides `none` and locks `viewer`). */
-export const resolveAllAccess = async (userId: number, roles: string[]): Promise<Record<string, AccessLevel>> => {
-  const out: Record<string, AccessLevel> = {};
-  for (const p of PAGES) out[p.slug] = await resolveAccess(userId, roles, p.slug);
-  return out;
+/** Every page's level for the user (for /auth/me: the sidebar hides `none` and locks `viewer`; pass `rows` to reuse a load). */
+export const resolveAllAccess = async (userId: number, roles: string[], rows?: AccessRows): Promise<Record<string, AccessLevel>> => {
+  const loaded = rows ?? (await loadAccess(userId, roles));
+  return Object.fromEntries(PAGES.map((p) => [p.slug, accessFrom(loaded, p.slug)]));
 };
