@@ -50,7 +50,17 @@ export interface PepWarehouseItem {
 }
 
 export async function listChannelWarehouses(): Promise<ChannelWarehouseItem[]> {
-  const rows = await AppDataSource.getRepository(DetailsChannel).find({ order: { channelName: 'ASC', channelLocationCode: 'ASC' } });
+  // Only the columns sent (2026-10-27): all columns pulled the two address embeddings too (0.8 MB for 514 rows, ~0.5 s).
+  const rows = await AppDataSource.getRepository(DetailsChannel).find({
+    select: {
+      id: true, channelId: true, channelName: true, channelLocationCode: true, uniwareCustomerCode: true, channelCode: true,
+      facilityCode: true, consigneeName: true, consigneeState: true, consigneeGstNumber: true, consigneePinCode: true,
+      finalShippingAddress: true, finalBillingAddress: true, buyerType: true, buyerGstNumber: true, buyerState: true,
+      buyerPinCode: true, tallyLedgerName: true, updatedAt: true,
+    },
+    // id last: rows with the same channel + location code keep one order (MySQL returns ties in any order)
+    order: { channelName: 'ASC', channelLocationCode: 'ASC', id: 'ASC' },
+  });
   return rows.map((r) => ({
     id: r.id,
     channelId: r.channelId,
