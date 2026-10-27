@@ -55,14 +55,23 @@ const release = async (): Promise<number> => {
   for (;;) {
     // Oldest PO first (the day it was received), so a channel works through its days in order.
     const held = await AppDataSource.getRepository(PoUpload).find({ where: { status: UPLOAD_STATUS.HELD }, order: { emailReceivedAt: 'ASC', id: 'ASC' } });
+    // Decided once per channel in this scan, not per PO (2026-10-27: 529 held POs were 1,059 queries every 15 min).
+    // Each release starts a new scan, so the switch and today's limit are still checked before every release.
+    const open = new Map<string | null, { from: Date | null } | null>();
+    const openFor = async (displayName: string | null) => {
+      if (!open.has(displayName)) {
+        const channel = await channelOfDisplayName(displayName);
+        open.set(displayName, channel && !(await shouldHold(channel)) ? { from: await processFromOf(channel) } : null);
+      }
+      return open.get(displayName)!;
+    };
     let next: PoUpload | undefined;
     for (const u of held) {
-      const channel = await channelOfDisplayName(u.channel);
-      if (!channel || (await shouldHold(channel))) continue;
+      const ch = await openFor(u.channel);
+      if (!ch) continue;
       // Received before the channel's "process from" (user, 2026-10-23): stays held, untouched, until the date is
       // moved back to include it.
-      const from = await processFromOf(channel);
-      if (from && (u.emailReceivedAt ?? u.createdAt) < from) continue;
+      if (ch.from && (u.emailReceivedAt ?? u.createdAt) < ch.from) continue;
       next = u;
       break;
     }
