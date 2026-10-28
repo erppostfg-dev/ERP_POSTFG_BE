@@ -49,6 +49,8 @@ export interface ChannelWarehouseItem {
 }
 
 export interface PepWarehouseItem {
+  /** master_facilities.id; null for a code only the locations use (no facility row, no history). */
+  id: number | null;
   /** master_facilities.code (exact). */
   facilityCode: string;
   /** Location facility codes equal to it ignoring letter case, most used first (another spelling = a child warehouse or a data problem). */
@@ -144,6 +146,7 @@ export async function listPepWarehouses(): Promise<PepWarehouseItem[]> {
   const codeById = new Map(facilities.map((f) => [f.id, f.code]));
   const spellingsOf = (code: string) => [...used.entries()].filter(([c]) => c.toUpperCase() === code.toUpperCase()).sort((a, b) => b[1].count - a[1].count).map(([c]) => c);
   const items: PepWarehouseItem[] = facilities.map((f) => ({
+    id: f.id,
     facilityCode: f.code,
     spellings: spellingsOf(f.code),
     locationCount: used.get(f.code)?.count ?? 0,
@@ -159,7 +162,7 @@ export async function listPepWarehouses(): Promise<PepWarehouseItem[]> {
   for (const [code, u] of used) {
     if (known.has(code)) continue;
     items.push({
-      facilityCode: code, spellings: [code], locationCount: u.count, channels: [...u.channels].sort(), inMaster: false,
+      id: null, facilityCode: code, spellings: [code], locationCount: u.count, channels: [...u.channels].sort(), inMaster: false,
       name: null, entity: null, pickupLocation: null, state: null, facilityType: null, billToGstin: null, shipToGstin: null, remarks: null,
       isActive: false, source: null, mainFacilityCode: null, intransitGroup: null, intransitType: null, uniwareExport: false,
     });

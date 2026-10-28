@@ -1,19 +1,21 @@
 import { EntityManager } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
-import { ERROR_CODES, errorMessage, IST_OFFSET_MS, MASTER_ADD, REVIEW_RECHECK, TABLES } from '../../constants';
+import { ERROR_CODES, errorMessage, IST_OFFSET_MS, MASTER_ADD, MASTER_LOG_ACTION, MASTER_LOG_SOURCE, MASTER_LOG_TYPE, MasterLogType, REVIEW_RECHECK, TABLES } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
 import { ActivityLog, DetailsChannel, MasterChannel, MasterChannelSku, MasterSku } from '../../entities';
 import { appError } from '../../utils/AppError';
 import { runJob } from '../../utils/log-call';
 import { log } from '../../utils/logger';
 import { recheckInReview } from '../po-review/recheck.service';
+import { addedWith, logMasterChanges } from './master-log';
 
 /*
  * The Add forms of the Masters pages (user, 2026-10-27): PEP SKU, channel SKU, channel, channel location.
  *   - admin / developer only (the route checks the role);
  *   - EVERY field of the form is required and checked (format, range, the row not already there, what it points to
  *     exists); every problem is returned at once as VALIDATION_FAILED details { field, code, message }, nothing saved;
- *   - one transaction per add, with an activity_log AUDIT row (who added what);
+ *   - one transaction per add, with an activity_log AUDIT row and a master_change_logs "created" row (2026-10-28: the
+ *     row's History; the optional `remark` of the form is kept there);
  *   - after a channel SKU or a location is added, that channel's POs in review are re-checked in the background
  *     (a mapping that was missing closes their issues at once).
  * Add only: no edit or delete here.
@@ -76,14 +78,26 @@ const checker = (body: unknown) => {
     if (out.some((x) => x.length > MASTER_ADD.TEXT_MAX)) return bad(field, 'FIELD_TOO_LONG', field, MASTER_ADD.TEXT_MAX), null;
     return out;
   };
+  /** The optional remark of the save (2026-10-28): null when empty. */
+  const remark = (): string | null => {
+    const v = b.remark;
+    if (v === undefined || v === null || (typeof v === 'string' && !v.trim())) return null;
+    if (typeof v !== 'string') return bad('remark', 'FIELD_NOT_TEXT', 'remark'), null;
+    return v.trim().length > MASTER_ADD.REMARK_MAX ? (bad('remark', 'FIELD_TOO_LONG', 'remark', MASTER_ADD.REMARK_MAX), null) : v.trim();
+  };
   const done = () => {
     if (problems.length) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails(problems);
   };
-  return { bad, has, text, format, number, oneOf, bool, list, done };
+  return { bad, has, text, format, number, oneOf, bool, list, remark, done };
 };
 
 const audit = (m: EntityManager, by: Actor, what: string) =>
   m.getRepository(ActivityLog).insert({ userId: by.id, method: 'AUDIT', path: what.slice(0, 255), status: 200, durationMs: 0, createdOn: new Date(Date.now() + IST_OFFSET_MS) });
+
+/** The row's History: one "created" entry with every value it was added with. */
+const logCreated = (m: EntityManager, by: Actor, type: MasterLogType, recordId: unknown, rowKey: string, values: Record<string, unknown>, remark: string | null) =>
+  logMasterChanges(m, [{ type, recordId: recordId === undefined ? null : String(recordId), rowKey, action: MASTER_LOG_ACTION.CREATED, newValue: addedWith(values) }],
+    by, MASTER_LOG_SOURCE.SCREEN, remark);
 
 /** Re-check the channel's POs in review after a mapping was added (background; failures only logged). */
 const recheckChannel = (channel: string) =>
@@ -123,6 +137,7 @@ export const addPepSku = async (body: unknown, by: Actor) => {
     hsnCode: c.format('hsnCode', MASTER_ADD.HSN), lengthMm: c.number('lengthMm'), widthMm: c.number('widthMm'), heightMm: c.number('heightMm'),
     weightG: c.number('weightG'), shelfLife: c.number('shelfLife', { min: 1, max: 3650, int: true }), isActive: c.bool('isActive'),
   };
+  const remark = c.remark();
   return AppDataSource.transaction(async (m) => {
     if (v.pepCode && (await one(m, `SELECT id FROM ${TABLES.MASTER_SKUS} WHERE LOWER(pep_code) = LOWER(?) LIMIT 1`, [v.pepCode]))) c.bad('pepCode', 'FIELD_ALREADY_EXISTS', 'pepCode', v.pepCode);
     c.done();
@@ -133,6 +148,7 @@ export const addPepSku = async (body: unknown, by: Actor) => {
       weightG: v.weightG, shelfLife: v.shelfLife, isActive: v.isActive, createdAt: now, updatedAt: now,
     });
     await audit(m, by, `masters: added PEP SKU ${v.pepCode}`);
+    await logCreated(m, by, MASTER_LOG_TYPE.PEP_SKU, r.identifiers[0]?.id, v.pepCode!, v, remark);
     log.info(LOG_SOURCE.APP, `[masters] ${by.email} added PEP SKU ${v.pepCode}`);
     return { id: String(r.identifiers[0]?.id ?? ''), pepCode: v.pepCode };
   });
@@ -147,6 +163,7 @@ export const addChannelSku = async (body: unknown, by: Actor) => {
     productName: c.text('productName'), brand: c.text('brand'), mrp: c.number('mrp'), marginPercent: c.number('marginPercent', { min: 0, max: 100 }),
     rateAfterMargin: c.number('rateAfterMargin'), eanCode: c.format('eanCode', MASTER_ADD.EAN),
   };
+  const remark = c.remark();
   if (v.mrp !== null && v.rateAfterMargin !== null && v.rateAfterMargin > v.mrp) c.bad('rateAfterMargin', 'FIELD_OUT_OF_RANGE', 'rateAfterMargin', 0, v.mrp);
   const result = await AppDataSource.transaction(async (m) => {
     const channel = v.channelId ? await one<{ id: number; display_name: string }>(m, `SELECT id, display_name FROM ${TABLES.MASTER_CHANNELS} WHERE id = ?`, [v.channelId]) : undefined;
@@ -163,6 +180,8 @@ export const addChannelSku = async (body: unknown, by: Actor) => {
       rateAfterMargin: v.rateAfterMargin, eanCode: v.eanCode,
     });
     await audit(m, by, `masters: added channel SKU ${channel!.display_name} ${v.channelCode} -> ${sku!.pep_code}`);
+    await logCreated(m, by, MASTER_LOG_TYPE.CHANNEL_SKU, r.identifiers[0]?.id, `${channel!.display_name} | ${v.channelCode}`,
+      { ...v, channelId: undefined, channel: channel!.display_name, pepCode: sku!.pep_code }, remark);
     log.info(LOG_SOURCE.APP, `[masters] ${by.email} mapped ${channel!.display_name} ${v.channelCode} -> ${sku!.pep_code}`);
     return { id: String(r.identifiers[0]?.id ?? ''), channel: channel!.display_name };
   });
@@ -175,6 +194,7 @@ export const addChannelSku = async (body: unknown, by: Actor) => {
 export const addChannel = async (body: unknown, by: Actor) => {
   const c = checker(body);
   const v = { displayName: c.text('displayName'), slug: c.format('slug', MASTER_ADD.SLUG), aliases: c.list('aliases'), isActive: c.bool('isActive') };
+  const remark = c.remark();
   return AppDataSource.transaction(async (m) => {
     const all = (await m.query(`SELECT id, slug, display_name, db_aliases FROM ${TABLES.MASTER_CHANNELS}`)) as { id: number; slug: string; display_name: string; db_aliases: string[] | string | null }[];
     const lc = (s: string) => s.trim().toLowerCase();
@@ -191,6 +211,7 @@ export const addChannel = async (body: unknown, by: Actor) => {
     c.done();
     const r = await m.getRepository(MasterChannel).insert({ displayName: v.displayName!, slug: v.slug!, dbAliases: v.aliases!, hasProcessor: false, isActive: v.isActive! });
     await audit(m, by, `masters: added channel ${v.displayName} (${v.slug})`);
+    await logCreated(m, by, MASTER_LOG_TYPE.CHANNEL, r.identifiers[0]?.id, v.displayName!, v, remark);
     log.info(LOG_SOURCE.APP, `[masters] ${by.email} added channel ${v.displayName}`);
     return { id: Number(r.identifiers[0]?.id ?? 0), displayName: v.displayName };
   });
@@ -209,6 +230,7 @@ export const addChannelLocation = async (body: unknown, by: Actor) => {
     buyerType: c.oneOf('buyerType', MASTER_ADD.BUYER_TYPES), buyerGstNumber: c.format('buyerGstNumber', MASTER_ADD.GSTIN, true), buyerState: c.oneOf('buyerState', MASTER_ADD.STATES),
     buyerPinCode: c.format('buyerPinCode', MASTER_ADD.PIN), tallyLedgerName: c.text('tallyLedgerName'), appointmentChannel: c.oneOf('appointmentChannel', MASTER_ADD.APPOINTMENT),
   };
+  const remark = c.remark();
   const result = await AppDataSource.transaction(async (m) => {
     const channel = v.channelId ? await one<{ id: number; display_name: string }>(m, `SELECT id, display_name FROM ${TABLES.MASTER_CHANNELS} WHERE id = ?`, [v.channelId]) : undefined;
     if (v.channelId && !channel) c.bad('channelId', 'FIELD_NOT_FOUND', 'channelId', String(v.channelId));
@@ -229,6 +251,8 @@ export const addChannelLocation = async (body: unknown, by: Actor) => {
       isActive: true, createdAt: now, updatedAt: now,
     });
     await audit(m, by, `masters: added location ${channel!.display_name} ${v.locationCode} (${facility!.code})`);
+    await logCreated(m, by, MASTER_LOG_TYPE.LOCATION, r.identifiers[0]?.id, `${channel!.display_name} | ${v.locationCode}`,
+      { ...v, channelId: undefined, channel: channel!.display_name }, remark);
     log.info(LOG_SOURCE.APP, `[masters] ${by.email} added location ${channel!.display_name} ${v.locationCode}`);
     return { id: String(r.identifiers[0]?.id ?? ''), channel: channel!.display_name };
   });

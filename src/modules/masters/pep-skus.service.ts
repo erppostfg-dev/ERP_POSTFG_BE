@@ -10,6 +10,8 @@ import { MasterSku } from '../../entities';
  */
 
 export interface PepSkuItem {
+  /** master_skus.id (the History button's row id). */
+  id: string;
   pepCode: string;
   productName: string | null;
   brand: string | null;
@@ -41,6 +43,7 @@ export interface PepSkuItem {
 export async function listPepSkus(): Promise<PepSkuItem[]> {
   const rows = await AppDataSource.getRepository(MasterSku).find({ order: { pepCode: 'ASC' } });
   return rows.map((r) => ({
+    id: String(r.id),
     pepCode: r.pepCode,
     productName: r.productName,
     brand: r.brandName,

@@ -8,7 +8,8 @@
  * DRY RUN by default: reads the files, checks every reference (channel ids + names, facility code + id, PEP SKU id +
  * code, the channels the code relies on, no PO rows still pointing at the old rows) and prints old -> new counts and
  * the data gaps. --apply: ONE transaction: delete channel SKUs, locations, channels (foreign-key order), insert
- * channels, new SKUs, locations, channel SKUs (500 rows per statement), check the counts, one activity_log row.
+ * channels, new SKUs, locations, channel SKUs (500 rows per statement), check the counts, one activity_log row and one
+ * master_change_logs "replaced" row per master (2026-10-28: the Masters History shows the reload).
  * Anything fails -> nothing changes. Take a backup first (dev-tools/masters-backup.ts).
  *
  *   npm run masters:replace -- --dir "<folder>" [--apply] [--by <email>]
@@ -17,9 +18,10 @@ import 'reflect-metadata';
 import fs from 'fs';
 import path from 'path';
 import { AppDataSource } from '../config/data-source';
-import { CHANNEL_MASTER_IDS, IST_OFFSET_MS, TABLES } from '../constants';
+import { CHANNEL_MASTER_IDS, IST_OFFSET_MS, MASTER_LOG_ACTION, MASTER_LOG_SOURCE, MASTER_LOG_TYPE, MasterLogType, TABLES } from '../constants';
 import { ActivityLog, User } from '../entities';
 import { insertMany } from '../modules/intransit/masters-db';
+import { logMasterChanges } from '../modules/masters/master-log';
 import { csvRecords } from '../utils/csv';
 
 const arg = (name: string): string | undefined => {
@@ -196,6 +198,14 @@ const main = async () => {
       userId: user?.id ?? null, method: 'AUDIT', status: 200, durationMs: 0, createdOn: new Date(Date.now() + IST_OFFSET_MS),
       path: `masters:replace ${channels.length} channels, ${locations.length} locations, +${skusToAdd.length} SKUs, ${channelSkus.length} channel SKUs`.slice(0, 255),
     });
+    const replaced = (type: MasterLogType, what: string) =>
+      ({ type, recordId: null, rowKey: `all (${path.basename(dir)})`, action: MASTER_LOG_ACTION.REPLACED, newValue: what });
+    await logMasterChanges(m, [
+      replaced(MASTER_LOG_TYPE.CHANNEL, `${before.master_channels} -> ${after.ch} rows (replaced)`),
+      replaced(MASTER_LOG_TYPE.LOCATION, `${before.details_channels} -> ${after.loc} rows (replaced)`),
+      replaced(MASTER_LOG_TYPE.PEP_SKU, `${skusToAdd.length} added, others untouched`),
+      replaced(MASTER_LOG_TYPE.CHANNEL_SKU, `${before.master_channel_skus} -> ${after.cs} rows (replaced)`),
+    ], { id: user?.id ?? null }, MASTER_LOG_SOURCE.SCRIPT);
     console.log(`\nAPPLIED: ${JSON.stringify(after)}`);
   });
   await AppDataSource.destroy();

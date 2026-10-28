@@ -1,8 +1,9 @@
 import { NextFunction, Request, Response, Router } from 'express';
-import { ACCESS_LEVEL, ERROR_CODES, MASTER_ROUTES, PAGE } from '../constants';
+import { ACCESS_LEVEL, ERROR_CODES, MASTER_LOG_TYPE, MASTER_ROUTES, MasterLogType, PAGE } from '../constants';
 import { USER_ADMIN_ROLES } from '../constants/users';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
 import { addChannel, addChannelLocation, addChannelSku, addPepSku, formOptions } from '../modules/masters/master-add.service';
+import { isMasterLogType, recentChanges, rowHistory } from '../modules/masters/master-history.service';
 import { appError } from '../utils/AppError';
 import { listChannelCustomers } from '../modules/masters/channel-customers.service';
 import { listChannelSkus } from '../modules/masters/channel-skus.service';
@@ -35,6 +36,14 @@ import { listChannelWarehouses, listPepWarehouses } from '../modules/masters/war
  *                                     consigneeName, consigneeGstNumber, consigneeState, consigneePinCode, shippingAddress,
  *                                     billingAddress, buyerType, buyerGstNumber, buyerState, buyerPinCode, tallyLedgerName,
  *                                     appointmentChannel } -> 201 { id, channel }; re-checks that channel's POs in review
+ *   Every add takes an optional `remark` (2026-10-28) and writes a master_change_logs "created" row.
+ *
+ * History (2026-10-28; read-only, newest first, master_change_logs + the in-transit uploads' intransit_master_changes):
+ *   GET /masters/history/:type/:id   one row's history; type pep_sku | channel_sku | channel | location | facility,
+ *                                    id = the row's DB id; viewer on that master's page. { data: MasterHistoryItem[] }
+ *   GET /masters/changes?type=&days= every master's changes of the last `days` days (default 7, max 365), at most 500;
+ *                                    viewer on /masters. { data: MasterHistoryItem[] }
+ *   400 MASTER_HISTORY_BAD_REQUEST for an unknown type / bad id / bad days.
  */
 
 const router = Router();
@@ -58,6 +67,28 @@ router.post(MASTER_ROUTES.PEP_SKUS, requireAuth, requireMasterAdmin, created((re
 router.post(MASTER_ROUTES.CHANNEL_SKUS, requireAuth, requireMasterAdmin, created((req) => addChannelSku(req.body, actor(req))));
 router.post(MASTER_ROUTES.CHANNELS, requireAuth, requireMasterAdmin, created((req) => addChannel(req.body, actor(req))));
 router.post(MASTER_ROUTES.CHANNEL_LOCATIONS, requireAuth, requireMasterAdmin, created((req) => addChannelLocation(req.body, actor(req))));
+
+// ---- History (2026-10-28) ---------------------------------------------------
+/** The page whose viewers may read a master's history. */
+const HISTORY_PAGE: Record<MasterLogType, string> = {
+  [MASTER_LOG_TYPE.PEP_SKU]: PAGE.PEP_SKUS,
+  [MASTER_LOG_TYPE.CHANNEL_SKU]: PAGE.CHANNEL_SKUS,
+  [MASTER_LOG_TYPE.CHANNEL]: PAGE.CHANNEL_CUSTOMERS,
+  [MASTER_LOG_TYPE.LOCATION]: PAGE.CHANNEL_LOCATIONS,
+  [MASTER_LOG_TYPE.FACILITY]: PAGE.WAREHOUSES,
+};
+router.get(MASTER_ROUTES.HISTORY, requireAuth, (req, res, next) => {
+  const type = req.params.type;
+  // an unknown type is answered by rowHistory (400); a known one needs that master's page
+  if (!isMasterLogType(type)) return void rowHistory(type, req.params.id).catch(next);
+  void requirePage(HISTORY_PAGE[type], ACCESS_LEVEL.VIEWER)(req, res, (err?: unknown) => {
+    if (err) return next(err);
+    rowHistory(type, req.params.id).then((data) => res.json({ data })).catch(next);
+  });
+});
+router.get(MASTER_ROUTES.CHANGES, requireAuth, requirePage(PAGE.MASTERS, ACCESS_LEVEL.VIEWER), (req, res, next) => {
+  recentChanges({ type: req.query.type, days: req.query.days }).then((data) => res.json({ data })).catch(next);
+});
 
 // ---- PEP SKU master ---------------------------------------------------------
 router.get(MASTER_ROUTES.PEP_SKUS, requireAuth, requirePage(PAGE.PEP_SKUS, ACCESS_LEVEL.VIEWER), async (_req, res, next) => {

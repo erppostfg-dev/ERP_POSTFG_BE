@@ -16,6 +16,20 @@ export const MASTER_ROUTES = {
   CHANNELS: '/channels',
   /** Dropdowns of the four Add forms. */
   FORM_OPTIONS: '/form-options',
+  /** One row's history (2026-10-28): /history/:type/:id, type = MASTER_LOG_TYPE value, id = the row's DB id. */
+  HISTORY: '/history/:type/:id',
+  /** Recent changes across the 5 masters (2026-10-28): ?type=&days=. */
+  CHANGES: '/changes',
+} as const;
+
+/** Masters history (2026-10-28): most entries one call returns, and the "recent changes" look-back (days). */
+export const MASTER_HISTORY = {
+  ROW_LIMIT: 300,
+  CHANGES_LIMIT: 500,
+  DAYS_DEFAULT: 7,
+  DAYS_MAX: 365,
+  /** Source label of the in-transit master uploads' log rows (intransit_master_changes), prefixed to their source. */
+  INTRANSIT_SOURCE_PREFIX: 'intransit_',
 } as const;
 
 /*
@@ -45,6 +59,8 @@ export const MASTER_ADD = {
   /** Longest text per field (DB varchar 255; addresses are text). */
   TEXT_MAX: 255,
   ADDRESS_MAX: 2000,
+  /** The optional remark of a save (master_change_logs.remark; user 2026-10-28: one remark, optional). */
+  REMARK_MAX: 1000,
   /** States and union territories offered for consignee / buyer state (the DB has a few wrong ones, e.g. "Mumbai"). */
   STATES: ['Andaman and Nicobar Islands', 'Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar', 'Chandigarh', 'Chhattisgarh',
     'Dadra and Nagar Haveli and Daman and Diu', 'Delhi', 'Goa', 'Gujarat', 'Haryana', 'Himachal Pradesh', 'Jammu and Kashmir', 'Jharkhand',

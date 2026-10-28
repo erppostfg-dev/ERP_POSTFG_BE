@@ -114,6 +114,7 @@ export const ERRORS = {
   // --- Users & Roles admin (2026-10-15) ---
   NOT_A_USER_ADMIN: define(403, (roles: string) => `Only ${roles} can add or change users and roles`),
   MASTER_ADD_NOT_ALLOWED: define(403, (roles: string) => `Only ${roles} can add to the masters`),
+  MASTER_HISTORY_BAD_REQUEST: define(400, (what: string) => `Masters history: ${what}`),
   USER_ID_NOT_FOUND: define(404, (id: string) => `No user ${id}`),
   USER_EXISTS: define(409, (email: string) => `${email} is already a user`),
   EMAIL_DOMAIN_NOT_ALLOWED: define(400, (domain: string) => `Only ${domain} email addresses can be added (they sign in with Google)`),
