@@ -1,15 +1,17 @@
 import http from 'http';
 import https from 'https';
-import { loadTestEnv } from './load-env';
+import './load-env-now';
+import { installFakeS3 } from '../helpers/fake-s3';
 
 /*
  * Runs before every test file (vitest setupFiles, 2026-10-28):
- *   - the test settings (load-env.ts);
+ *   - the test settings (load-env.ts) and the in-memory S3 (helpers/fake-s3.ts);
  *   - the NETWORK GUARD: any HTTP(S) call or fetch to a host other than this machine throws, so a test can never
  *     reach Gmail, S3, SQS, Amazon, Uniware, Google login or a PO link, even if a fake was forgotten. Tests replace
  *     those services with fakes (test/helpers/fakes.ts).
  */
-loadTestEnv();
+// S3 = an in-memory bucket for every test (test/helpers/fake-s3.ts)
+installFakeS3();
 
 const LOCAL = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 const hostOf = (target: unknown): string => {

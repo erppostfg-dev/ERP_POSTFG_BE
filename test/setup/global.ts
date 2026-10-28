@@ -56,8 +56,9 @@ export default async function setup(project: TestProject): Promise<() => Promise
   await c.end();
 
   // the same command the dev deploy runs (TypeORM CLI, ts-node), on the empty test database
-  const run = spawnSync(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['typeorm-ts-node-commonjs', 'migration:run', '-d', 'src/config/data-source.ts'], {
-    cwd: ROOT, env: { ...process.env, TEST_MIGRATIONS: '1' }, encoding: 'utf8', shell: process.platform === 'win32',
+  // = typeorm-ts-node-commonjs (node + ts-node + the TypeORM CLI), started directly: no shell
+  const run = spawnSync(process.execPath, ['-r', 'ts-node/register/transpile-only', require.resolve('typeorm/cli.js'), 'migration:run', '-d', 'src/config/data-source.ts'], {
+    cwd: ROOT, env: { ...process.env, TEST_MIGRATIONS: '1' }, encoding: 'utf8',
   });
   if (run.status !== 0) throw new Error(`Migrations failed on the test database:
 ${(run.stdout ?? '').slice(-3000)}
