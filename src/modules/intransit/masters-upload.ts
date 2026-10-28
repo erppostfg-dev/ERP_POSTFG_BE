@@ -3,7 +3,8 @@ import { AppDataSource } from '../../config/data-source';
 import { ERROR_CODES, MASTER_CHANGE_SOURCE, SKU_COMPONENT_STAGE, SkuComponentStage, TABLES } from '../../constants';
 import { appError } from '../../utils/AppError';
 import { DB_MASTER_FILES } from './masters-export';
-import { assertMastersWritable, Change, ensureSkus, logChanges, Who } from './masters-db';
+import { assertMastersWritable, BULK_ROWS, Change, ensureSkus, insertMany, logChanges, updateMany, Who } from './masters-db';
+import { step } from '../../utils/log-call';
 import { decodeText, tokenizeCsv } from './io';
 import { fileKind, readXlsxSheet } from './sources/files';
 import { getItem, uniwareCatalog, UniwareItem } from './sources/uniware';
@@ -94,6 +95,7 @@ const setSkuColumns = async (c: Ctx, values: Map<string, Record<string, string |
       current.set(lc(r.pep_code), r);
     }
   }
+  const updates: { key: string; set: Record<string, unknown> }[] = [];
   for (const [sku, v] of values) {
     const code = skus.get(lc(sku)) as string;
     const now = current.get(lc(code)) ?? {};
@@ -105,8 +107,10 @@ const setSkuColumns = async (c: Ctx, values: Map<string, Record<string, string |
     if (diff.every(([col]) => now[col] === null || now[col] === undefined)) c.res.added++;
     else c.res.updated++;
     diff.forEach(([col, val]) => c.changes.push({ master: c.res.master, table: TABLES.MASTER_SKUS, rowKey: code, field: col, oldValue: now[col] ?? null, newValue: val }));
-    if (!c.dryRun) await c.m.query(`UPDATE ${TABLES.MASTER_SKUS} SET ${diff.map(([col]) => `\`${col}\` = ?`).join(', ')} WHERE pep_code = ?`, [...diff.map(([, val]) => val), code]);
+    updates.push({ key: code, set: Object.fromEntries(diff) });
   }
+  // 500 SKUs per UPDATE (2026-10-27: was one UPDATE per SKU)
+  if (!c.dryRun) await updateMany(c.m, TABLES.MASTER_SKUS, 'pep_code', updates);
 };
 
 // ---- the 8 masters -----------------------------------------------------------------------------------------------
@@ -158,6 +162,7 @@ const splits = async (c: Ctx, rows: Rec[], stage: SkuComponentStage): Promise<vo
     `SELECT combo_pep_code, component_pep_code, qty FROM ${TABLES.MASTER_SKU_COMPONENTS} WHERE stage = ? ORDER BY position, id`, [stage])) {
     existing.set(lc(r.combo_pep_code), [...(existing.get(lc(r.combo_pep_code)) ?? []), { part: r.component_pep_code, qty: Number(r.qty) }]);
   }
+  const replaced: { combo: string; parts: { part: string; qty: number }[] }[] = [];
   for (const e of combos.values()) {
     const combo = skus.get(lc(e.combo)) as string;
     const parts = e.parts.map((p) => ({ part: skus.get(lc(p.sku)) as string, qty: p.qty }));
@@ -171,12 +176,17 @@ const splits = async (c: Ctx, rows: Rec[], stage: SkuComponentStage): Promise<vo
     else c.res.added++;
     const text = (ps: { part: string; qty: number }[]) => ps.map((p) => `${p.part} x${p.qty}`).join(', ');
     c.changes.push({ master: c.res.master, table: TABLES.MASTER_SKU_COMPONENTS, rowKey: combo, field: 'parts', oldValue: now ? text(now) : null, newValue: text(parts) });
-    if (c.dryRun) continue;
-    // the combo's parts are the file's now (this combo only: other combos stay as they are)
-    await c.m.query(`DELETE FROM ${TABLES.MASTER_SKU_COMPONENTS} WHERE stage = ? AND combo_pep_code = ?`, [stage, combo]);
-    await c.m.query(`INSERT INTO ${TABLES.MASTER_SKU_COMPONENTS} (stage, combo_pep_code, component_pep_code, qty, position) VALUES ${parts.map(() => '(?, ?, ?, ?, ?)').join(', ')}`,
-      parts.flatMap((p, i) => [stage, combo, p.part, p.qty, i + 1]));
+    replaced.push({ combo, parts });
   }
+  if (c.dryRun || !replaced.length) return;
+  // the changed combos' parts are the file's now (these combos only: other combos stay as they are); 500 combos per
+  // DELETE and 500 part rows per INSERT (2026-10-27: was a DELETE + an INSERT per combo)
+  for (let i = 0; i < replaced.length; i += BULK_ROWS) {
+    const part = replaced.slice(i, i + BULK_ROWS).map((r) => r.combo);
+    await c.m.query(`DELETE FROM ${TABLES.MASTER_SKU_COMPONENTS} WHERE stage = ? AND combo_pep_code IN (${part.map(() => '?').join(', ')})`, [stage, ...part]);
+  }
+  await insertMany(c.m, TABLES.MASTER_SKU_COMPONENTS, ['stage', 'combo_pep_code', 'component_pep_code', 'qty', 'position'],
+    replaced.flatMap((r) => r.parts.map((p, i) => [stage, r.combo, p.part, p.qty, i + 1])));
 };
 
 const finalSkuMapping = async (c: Ctx, rows: Rec[]): Promise<void> => {
@@ -266,18 +276,28 @@ const locations = async (c: Ctx, entries: { row: number; channel: string; code: 
     if (p.others.size) c.res.warnings.push(`${p.ch.name} ${p.code}: listed with ${p.others.size + 1} locations, the last row's "${p.loc}" kept (also ${[...p.others].join(' / ')})`);
   }
   const placed = [...byCode.values()];
+  // The channels' locations in ONE query (2026-10-27: was one SELECT per row of the file), matched in memory the way
+  // the old `channel_id = ? AND LOWER(TRIM(channel_location_code)) = ?` did (MySQL's TRIM takes spaces only).
+  const ids = [...new Set(placed.map((p) => p.ch.id))];
+  const sqlKey = (s: string | null): string => String(s ?? '').replace(/^ +| +$/g, '').toLowerCase();
+  const existing = new Map<string, { id: string; intransit_location: string | null }[]>();
+  if (ids.length) {
+    for (const r of await q<{ id: string; channel_id: number; channel_location_code: string | null; intransit_location: string | null }>(c.m,
+      `SELECT id, channel_id, channel_location_code, intransit_location FROM ${TABLES.DETAILS_CHANNELS} WHERE channel_id IN (${ids.map(() => '?').join(', ')}) ORDER BY id`, ids)) {
+      const k = `${r.channel_id}|${sqlKey(r.channel_location_code)}`;
+      existing.set(k, [...(existing.get(k) ?? []), { id: r.id, intransit_location: r.intransit_location }]);
+    }
+  }
+  const inserts: unknown[][] = [];
+  const updates: { key: string; set: Record<string, unknown> }[] = [];
   for (const p of placed) {
-    const now = await q<{ id: string; intransit_location: string | null }>(c.m,
-      `SELECT id, intransit_location FROM ${TABLES.DETAILS_CHANNELS} WHERE channel_id = ? AND LOWER(TRIM(channel_location_code)) = ?`, [p.ch.id, lc(p.code)]);
+    const now = existing.get(`${p.ch.id}|${lc(p.code)}`) ?? [];
     const rowKey = `${p.ch.name} | ${p.code}`;
     if (!now.length) {
       c.res.added++;
       c.res.newLocations.push(rowKey);
       c.changes.push({ master: c.res.master, table: TABLES.DETAILS_CHANNELS, rowKey, field: 'intransit_location', oldValue: null, newValue: `${p.loc} (new inactive location)` });
-      if (!c.dryRun) {
-        await c.m.query(`INSERT INTO ${TABLES.DETAILS_CHANNELS} (channel_id, channel_name, channel_location_code, intransit_location, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)`,
-          [p.ch.id, p.ch.name, p.code, p.loc, new Date(), new Date()]);
-      }
+      inserts.push([p.ch.id, p.ch.name, p.code, p.loc, 0, new Date(), new Date()]);
       continue;
     }
     const differ = now.filter((r) => r.intransit_location !== p.loc);
@@ -286,9 +306,13 @@ const locations = async (c: Ctx, entries: { row: number; channel: string; code: 
     else c.res.updated++;
     for (const r of differ) {
       c.changes.push({ master: c.res.master, table: TABLES.DETAILS_CHANNELS, rowKey, field: 'intransit_location', oldValue: r.intransit_location, newValue: p.loc });
-      if (!c.dryRun) await c.m.query(`UPDATE ${TABLES.DETAILS_CHANNELS} SET intransit_location = ? WHERE id = ?`, [p.loc, r.id]);
+      updates.push({ key: r.id, set: { intransit_location: p.loc } });
     }
   }
+  if (c.dryRun) return;
+  // 500 rows per INSERT / UPDATE (2026-10-27: was one statement per row)
+  await insertMany(c.m, TABLES.DETAILS_CHANNELS, ['channel_id', 'channel_name', 'channel_location_code', 'intransit_location', 'is_active', 'created_at', 'updated_at'], inserts);
+  await updateMany(c.m, TABLES.DETAILS_CHANNELS, 'id', updates);
 };
 
 const locationMaster = (c: Ctx, rows: Rec[]): Promise<void> => {
@@ -354,6 +378,8 @@ const channelSkuMapping = async (c: Ctx, raw: Uint8Array): Promise<void> => {
   // a code kept without a channel, by code: a channel filled in on "No channel found" completes that row
   const withoutChannel = new Map(current.filter((r) => !r.channel).map((r) => [lc(r.channel_sku_code), r]));
   const seen = new Set<string>();
+  const inserts: unknown[][] = [];
+  const updates: { key: number; set: Record<string, unknown> }[] = [];
   for (const r of rows) {
     const k = `${lc(r.channel)}|${lc(r.code)}`;
     if (seen.has(k)) continue;
@@ -365,18 +391,15 @@ const channelSkuMapping = async (c: Ctx, raw: Uint8Array): Promise<void> => {
       c.res.updated++;
       c.changes.push({ master: c.res.master, table: TABLES.INTRANSIT_CHANNEL_SKU_MAP, rowKey, field: 'channel', oldValue: null, newValue: r.channel });
       if (lc(unfilled.sku_code) !== lc(r.sku)) c.changes.push({ master: c.res.master, table: TABLES.INTRANSIT_CHANNEL_SKU_MAP, rowKey, field: 'sku_code', oldValue: unfilled.sku_code, newValue: r.sku });
-      if (!c.dryRun) {
-        await c.m.query(`UPDATE ${TABLES.INTRANSIT_CHANNEL_SKU_MAP} SET channel = ?, sku_code = ?, final_sku = COALESCE(?, final_sku) WHERE id = ?`, [r.channel, r.sku, r.final, unfilled.id]);
-      }
+      // final_sku only when the file has one (as COALESCE(?, final_sku) did)
+      updates.push({ key: unfilled.id, set: { channel: r.channel, sku_code: r.sku, ...(r.final !== null ? { final_sku: r.final } : {}) } });
       withoutChannel.delete(lc(r.code));
       continue;
     }
     if (!now) {
       c.res.added++;
       c.changes.push({ master: c.res.master, table: TABLES.INTRANSIT_CHANNEL_SKU_MAP, rowKey, field: 'sku_code', oldValue: null, newValue: r.sku });
-      if (!c.dryRun) {
-        await c.m.query(`INSERT INTO ${TABLES.INTRANSIT_CHANNEL_SKU_MAP} (sku_code, channel, channel_sku_code, final_sku, source, is_active) VALUES (?, ?, ?, ?, 'upload', 1)`, [r.sku, r.channel, r.code, r.final]);
-      }
+      inserts.push([r.sku, r.channel, r.code, r.final, 'upload', 1]);
       continue;
     }
     const diff: [string, string | null, string | null][] = [];
@@ -385,8 +408,12 @@ const channelSkuMapping = async (c: Ctx, raw: Uint8Array): Promise<void> => {
     if (!diff.length) { c.res.unchanged++; continue; }
     c.res.updated++;
     diff.forEach(([field, o, n]) => c.changes.push({ master: c.res.master, table: TABLES.INTRANSIT_CHANNEL_SKU_MAP, rowKey, field, oldValue: o, newValue: n }));
-    if (!c.dryRun) await c.m.query(`UPDATE ${TABLES.INTRANSIT_CHANNEL_SKU_MAP} SET ${diff.map(([f]) => `${f} = ?`).join(', ')} WHERE id = ?`, [...diff.map(([, , n]) => n), now.id]);
+    updates.push({ key: now.id, set: Object.fromEntries(diff.map(([f, , n]) => [f, n])) });
   }
+  if (c.dryRun) return;
+  // 500 rows per INSERT / UPDATE (2026-10-27: was one statement per row)
+  await insertMany(c.m, TABLES.INTRANSIT_CHANNEL_SKU_MAP, ['sku_code', 'channel', 'channel_sku_code', 'final_sku', 'source', 'is_active'], inserts);
+  await updateMany(c.m, TABLES.INTRANSIT_CHANNEL_SKU_MAP, 'id', updates);
 };
 
 /**
@@ -423,7 +450,8 @@ export const importMasterUpload = async (
     try {
       await qr.startTransaction();
       try {
-        await run(qr.manager);
+        // one step line per import: which master, dry run or not, how long (2026-10-27)
+        await step(`import master ${master}${opts.dryRun ? ' (dry run)' : ''}`, () => run(qr.manager));
         if (opts.dryRun) await qr.rollbackTransaction();
         else await qr.commitTransaction();
       } catch (err) {
