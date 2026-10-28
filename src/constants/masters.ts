@@ -12,6 +12,44 @@ export const MASTER_ROUTES = {
   PEP_WAREHOUSES: '/warehouses/pep',
   /** Channel Location Master = the channels' delivery locations, details_channels (own page since 2026-10-16). */
   CHANNEL_LOCATIONS: '/channel-locations',
+  /** Channels (master_channels): POST adds one (2026-10-27); the list stays GET /channel-customers. */
+  CHANNELS: '/channels',
+  /** Dropdowns of the four Add forms. */
+  FORM_OPTIONS: '/form-options',
+} as const;
+
+/*
+ * Add forms on the Masters pages (user, 2026-10-27): admin / developer only; EVERY field of the form is required (only
+ * fields that exist in the DB); nothing is added until all are filled and valid. Add only, no edit yet.
+ */
+export const MASTER_ADD = {
+  /** Request body fields per form (= the frontend's form keys). */
+  SKU: ['pepCode', 'productName', 'brand', 'productType', 'mrp', 'gstTaxType', 'eanCode', 'hsnCode', 'lengthMm', 'widthMm', 'heightMm', 'weightG', 'shelfLife', 'isActive'],
+  CHANNEL_SKU: ['channelId', 'channelCode', 'pepCode', 'productName', 'brand', 'mrp', 'marginPercent', 'rateAfterMargin', 'eanCode'],
+  CHANNEL: ['displayName', 'slug', 'aliases', 'isActive'],
+  LOCATION: ['channelId', 'locationCode', 'uniwareCustomerCode', 'uniwareChannelCode', 'facilityCode', 'consigneeName', 'consigneeGstNumber',
+    'consigneeState', 'consigneePinCode', 'shippingAddress', 'billingAddress', 'buyerType', 'buyerGstNumber', 'buyerState', 'buyerPinCode',
+    'tallyLedgerName', 'appointmentChannel'],
+  /** GST rates offered (stored as text like most rows: "18"). */
+  GST_RATES: ['0', '3', '5', '12', '18', '28'],
+  /** "Appointment via" = details_channels.appointment_channel as stored today. */
+  APPOINTMENT: ['Yes', 'No'],
+  /** details_channels.buyer_type (empty on every row so far): the B2B / B2C split the locations already use (user OK). */
+  BUYER_TYPES: ['B2B', 'B2C'],
+  /** Field formats (the message names the rule). */
+  EAN: { re: /^(\d{8}|\d{12,14})$/, rule: '8, 12, 13 or 14 digits' },
+  HSN: { re: /^\d{4,8}$/, rule: '4 to 8 digits' },
+  PIN: { re: /^[1-9]\d{5}$/, rule: '6 digits' },
+  GSTIN: { re: /^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/, rule: 'a 15-character GSTIN (e.g. 27AAACI1234A1Z5)' },
+  SLUG: { re: /^[a-z0-9]+(-[a-z0-9]+)*$/, rule: 'lower-case letters, digits and dashes (e.g. tata-1mg)' },
+  /** Longest text per field (DB varchar 255; addresses are text). */
+  TEXT_MAX: 255,
+  ADDRESS_MAX: 2000,
+  /** States and union territories offered for consignee / buyer state (the DB has a few wrong ones, e.g. "Mumbai"). */
+  STATES: ['Andaman and Nicobar Islands', 'Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar', 'Chandigarh', 'Chhattisgarh',
+    'Dadra and Nagar Haveli and Daman and Diu', 'Delhi', 'Goa', 'Gujarat', 'Haryana', 'Himachal Pradesh', 'Jammu and Kashmir', 'Jharkhand',
+    'Karnataka', 'Kerala', 'Ladakh', 'Lakshadweep', 'Madhya Pradesh', 'Maharashtra', 'Manipur', 'Meghalaya', 'Mizoram', 'Nagaland', 'Odisha',
+    'Puducherry', 'Punjab', 'Rajasthan', 'Sikkim', 'Tamil Nadu', 'Telangana', 'Tripura', 'Uttar Pradesh', 'Uttarakhand', 'West Bengal'],
 } as const;
 
 /*
