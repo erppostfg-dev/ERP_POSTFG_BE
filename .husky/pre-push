@@ -1,0 +1,3 @@
+# Before every push (2026-10-28): import rules + all tests (the same checks CI runs before a deploy).
+npm run deps
+npm test

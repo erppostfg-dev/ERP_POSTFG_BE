@@ -35,8 +35,9 @@ env:
   AWS_REGION: ap-south-1
 
 jobs:
+  # Every check must pass before anything is deployed (2026-10-28: lint, import rules, unused code, tests).
   check:
-    name: typecheck
+    name: checks (typecheck, lint, deps, knip, tests)
     if: github.ref_name == 'dev' || github.ref_name == 'main'
     runs-on: ubuntu-latest
     steps:
@@ -49,6 +50,10 @@ jobs:
 
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run deps
+      - run: npm run knip
+      - run: npm test
 
   deploy:
     name: deploy ${{ github.ref_name == 'main' && 'prod' || 'dev' }}

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "entry": [
+    "src/server.ts",
+    "src/dev.ts",
+    "src/worker.ts",
+    "src/scripts/*.ts",
+    "src/migrations/*.ts",
+    "src/config/data-source.ts"
+  ],
+  "project": [
+    "src/**/*.ts"
+  ],
+  "ignore": [
+    "src/modules/intransit/**",
+    "src/routes/intransit.routes.ts",
+    "src/scripts/intransit-*.ts",
+    "src/constants/intransit*.ts",
+    "src/entities/intransit-*.entity.ts",
+    "src/entities/master-sku-component.entity.ts"
+  ],
+  "ignoreDependencies": [
+    "ts-node-dev"
+  ],
+  "vitest": {
+    "config": [
+      "vitest.config.ts"
+    ]
+  },
+  "rules": {
+    "files": "error",
+    "dependencies": "error",
+    "devDependencies": "error",
+    "unlisted": "error",
+    "unresolved": "error",
+    "binaries": "error",
+    "exports": "warn",
+    "nsExports": "warn",
+    "types": "off",
+    "nsTypes": "off",
+    "enumMembers": "off",
+    "duplicates": "warn"
+  }
+}

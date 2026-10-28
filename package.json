@@ -12,6 +12,14 @@
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "lint": "eslint src --max-warnings 0",
+    "lint:fix": "eslint src --fix",
+    "lint:prune": "eslint src --prune-suppressions",
+    "deps": "depcruise src --config .dependency-cruiser.cjs --ignore-known --output-type err",
+    "knip": "knip",
+    "test:related": "vitest related --run",
+    "check": "npm run typecheck && npm run lint && npm run deps && npm run knip && npm test",
+    "prepare": "node -e \"import('./.husky/install.mjs').catch(() => {})\"",
     "gmail:token": "ts-node --transpile-only src/scripts/gmail-token.ts",
     "email:route": "ts-node --transpile-only src/scripts/route-label.ts",
     "email:sort": "ts-node --transpile-only src/scripts/sort-emails.ts",
@@ -68,14 +76,25 @@
     "typeorm": "^0.3.20"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/multer": "^2.3.0",
     "@types/node": "^22.10.2",
+    "dependency-cruiser": "^16.10.4",
+    "eslint": "^10.13.0",
+    "globals": "^16.5.0",
+    "husky": "^9.1.7",
+    "knip": "^5.88.1",
+    "lint-staged": "^15.5.2",
     "ts-node": "^10.9.2",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.7.2",
+    "typescript-eslint": "^8.72.1",
     "vitest": "^3.2.4"
+  },
+  "lint-staged": {
+    "src/**/*.ts": "eslint --max-warnings 0 --no-warn-ignored"
   }
 }

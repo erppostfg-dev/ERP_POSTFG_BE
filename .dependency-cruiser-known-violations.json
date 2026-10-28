@@ -1,0 +1,35 @@
+[
+  {
+    "type": "cycle",
+    "from": "src/modules/email-intake/email-storage.service.ts",
+    "to": "src/modules/email-intake/intake-emails.service.ts",
+    "rule": {
+      "severity": "error",
+      "name": "no-circular"
+    },
+    "cycle": [
+      {
+        "name": "src/modules/email-intake/intake-emails.service.ts",
+        "dependencyTypes": [
+          "local",
+          "import"
+        ]
+      },
+      {
+        "name": "src/modules/email-intake/s3-layout.ts",
+        "dependencyTypes": [
+          "local",
+          "type-only",
+          "import"
+        ]
+      },
+      {
+        "name": "src/modules/email-intake/email-storage.service.ts",
+        "dependencyTypes": [
+          "local",
+          "import"
+        ]
+      }
+    ]
+  }
+]

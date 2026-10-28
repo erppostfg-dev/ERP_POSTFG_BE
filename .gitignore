@@ -1,6 +1,8 @@
 node_modules/
 dist/
 .env
+# local test database login (2026-10-28), never committed
+.env.test
 secrets/
 storage/
 *.log
