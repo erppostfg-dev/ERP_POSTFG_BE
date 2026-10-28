@@ -10,3 +10,5 @@ storage/
 .venv-ocr/
 __pycache__/
 .pytest_cache/
+# test runs: throwaway storage (2026-10-28)
+test/.tmp/

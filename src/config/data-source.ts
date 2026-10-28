@@ -2,20 +2,26 @@ import 'reflect-metadata';
 import { AsyncResource } from 'async_hooks';
 import path from 'path';
 import { DataSource, DataSourceOptions } from 'typeorm';
-import { ALLOWED_DATABASES, ERROR_CODES, MIGRATIONS_TABLE } from '../constants';
+import { ALLOWED_DATABASES, ERROR_CODES, MIGRATIONS_TABLE, TEST_DATABASE, TEST_DB_HOSTS } from '../constants';
 import { LOG_SOURCE } from '../constants/logging';
 import { appError } from '../utils/AppError';
 import { log } from '../utils/logger';
 import { DbConsoleLogger } from './db-logger';
+import * as ENTITIES from '../entities';
 import { env } from './env';
 
 /**
  * Refuses a database that is not in ALLOWED_DATABASES (constants/db.ts). The current DB login can also reach other
  * schemas (prod, inv ...), so this keeps the app on mcaff_postfg_dev until dedicated logins exist.
  */
-export const assertAllowedDatabase = (database: string | undefined): void => {
+export const assertAllowedDatabase = (database: string | undefined, host?: string): void => {
   if (!database || !ALLOWED_DATABASES.includes(database)) {
     throw appError(ERROR_CODES.DB_NOT_ALLOWED, String(database), ALLOWED_DATABASES.join(', '));
+  }
+  // `npm test` (NODE_ENV=test, 2026-10-28): ONLY the throwaway test database on this machine / the CI runner, never
+  // the dev or prod DB, whatever the settings say
+  if (process.env.NODE_ENV === 'test' && (database !== TEST_DATABASE || !TEST_DB_HOSTS.includes(String(host)))) {
+    throw appError(ERROR_CODES.DB_NOT_ALLOWED, `${String(database)} on ${String(host)}`, `${TEST_DATABASE} on ${TEST_DB_HOSTS.join(' / ')} (tests)`);
   }
 };
 
@@ -57,7 +63,7 @@ const bindQueryCallbacks = (c: PoolConnection): void => {
 /** A DataSource that checks the database before every connection (server, scripts and the TypeORM CLI). */
 class GuardedDataSource extends DataSource {
   override async initialize(): Promise<this> {
-    assertAllowedDatabase(this.options.database as string | undefined);
+    assertAllowedDatabase(this.options.database as string | undefined, (this.options as { host?: string }).host);
     // Our own copy of the mysql2 module for this driver only (the PEPIMS sources keep theirs), so the pool gets the
     // time limits from its first connection on, including the one TypeORM opens to test the login.
     const driver = this.driver as unknown as { mysql?: MysqlModule };
@@ -92,7 +98,9 @@ const options: DataSourceOptions = {
   synchronize: false,
   migrationsRun: false,
   migrationsTableName: MIGRATIONS_TABLE,
-  migrations: [path.join(__dirname, '../migrations/*.{ts,js}').replace(/\\/g, '/')],
+  // Inside `npm test` the app never runs migrations (test/setup/global.ts runs them once through the TypeORM CLI with
+  // TEST_MIGRATIONS=1), and the test runner cannot load .ts files from a file pattern.
+  migrations: process.env.NODE_ENV === 'test' && process.env.TEST_MIGRATIONS !== '1' ? [] : [path.join(__dirname, '../migrations/*.{ts,js}').replace(/\\/g, '/')],
   logging: ['query', 'error', 'warn'],
   logger: new DbConsoleLogger(env.db.logging),
   // A query slower than this is logged as DB_SLOW_QUERY, always (2026-10-19; DB_SLOW_MS, 0 = off).
@@ -101,8 +109,9 @@ const options: DataSourceOptions = {
   charset: 'utf8mb4',
   // queueLimit: past this many requests waiting for a free connection, the next one fails at once (0 = no limit)
   extra: { connectionLimit: env.db.poolSize, queueLimit: env.db.queueLimit },
-  // Glob needs forward slashes, so normalise Windows paths.
-  entities: [path.join(__dirname, '../entities/**/*.{ts,js}').replace(/\\/g, '/')],
+  // The entity classes themselves (2026-10-28: was a file pattern, which the test runner cannot load; entities/index.ts
+  // exports every entity, so the set is the same).
+  entities: Object.values(ENTITIES),
 };
 
 export const AppDataSource = new GuardedDataSource(options);

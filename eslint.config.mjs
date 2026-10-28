@@ -22,7 +22,7 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,
   {
-    files: ['src/**/*.ts'],
+    files: ['src/**/*.ts', 'test/**/*.ts'],
     languageOptions: {
       globals: globals.node,
       parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname },

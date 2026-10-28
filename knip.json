@@ -6,10 +6,13 @@
     "src/worker.ts",
     "src/scripts/*.ts",
     "src/migrations/*.ts",
-    "src/config/data-source.ts"
+    "src/config/data-source.ts",
+    "test/**/*.test.ts",
+    "test/setup/*.ts"
   ],
   "project": [
-    "src/**/*.ts"
+    "src/**/*.ts",
+    "test/**/*.ts"
   ],
   "ignore": [
     "src/modules/intransit/**",
@@ -20,7 +23,8 @@
     "src/entities/master-sku-component.entity.ts"
   ],
   "ignoreDependencies": [
-    "ts-node-dev"
+    "ts-node-dev",
+    "husky"
   ],
   "vitest": {
     "config": [

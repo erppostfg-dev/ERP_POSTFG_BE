@@ -11,6 +11,8 @@
  * TEST_DATABASE is used only by `npm test` (user, 2026-10-25): the tests refuse any other database.
  */
 export const TEST_DATABASE = 'mcaff_postfg_test';
+/** Hosts the test database may be on (the laptop's local MySQL, the CI job's MySQL service). */
+export const TEST_DB_HOSTS: readonly string[] = ['127.0.0.1', 'localhost'];
 export const ALLOWED_DATABASES: readonly string[] = ['mcaff_postfg_dev', TEST_DATABASE];
 
 /**
