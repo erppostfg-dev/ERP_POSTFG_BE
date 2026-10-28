@@ -1,10 +1,13 @@
 import { inject } from 'vitest';
 import { AppDataSource } from '../../src/config/data-source';
+import { forgetAccess } from '../../src/modules/auth/access.service';
+import { forgetSessions } from '../../src/modules/auth/session.service';
 
 /*
  * The test database (2026-10-28): mcaff_postfg_test, built from all migrations by test/setup/global.ts.
  *   db()       the app's own DataSource, connected once per test file
- *   resetDb()  empties every table the migrations left empty (roles, team access, status lists stay as seeded)
+ *   resetDb()  empties every table the migrations left empty and puts the ones they filled (roles, page access, team
+ *              access, status lists) back exactly as seeded; clears the login caches
  *   insert()   one row, returns its id (raw SQL: tests describe exactly the row they need)
  *   rows()     SELECT helper for checking side effects
  */
@@ -15,12 +18,19 @@ export const db = async () => {
 
 export const resetDb = async (): Promise<void> => {
   const ds = await db();
-  const tables = inject('dataTables');
   await ds.transaction(async (m) => {
     await m.query('SET FOREIGN_KEY_CHECKS = 0');
-    for (const t of tables) await m.query(`DELETE FROM \`${t}\``);
+    for (const t of inject('dataTables')) await m.query(`DELETE FROM \`${t}\``);
+    // back to exactly what the migrations seeded (a test may have changed a role's page access, ...)
+    for (const t of inject('seedTables')) {
+      await m.query(`DELETE FROM \`${t}\``);
+      await m.query(`INSERT INTO \`${t}\` SELECT * FROM \`__seed_${t}\``);
+    }
     await m.query('SET FOREIGN_KEY_CHECKS = 1');
   });
+  // the 30 s login / page-access caches must not carry anything over from the previous test
+  forgetSessions();
+  forgetAccess();
 };
 
 export const insert = async (table: string, row: Record<string, unknown>): Promise<number> => {

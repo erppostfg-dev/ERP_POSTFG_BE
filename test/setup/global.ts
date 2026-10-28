@@ -11,7 +11,8 @@ import { loadTestEnv, ROOT } from './load-env';
  *   2. mcaff_postfg_test is dropped and created empty;
  *   3. ALL migrations run on it (so every run also proves the migrations build the schema from nothing);
  *   4. the tables still empty after the migrations are handed to the tests (inject('dataTables')): resetDb() empties
- *      only those, so what the migrations seed (roles, team access, status lists) stays;
+ *      them; tables the migrations filled (roles, page access, team access, status lists) are copied to __seed_<table>
+ *      and resetDb() restores them, so no test can leak a change into another;
  *   5. test/.tmp (throwaway storage) is emptied.
  * The DB guard (config/data-source.ts) refuses anything but mcaff_postfg_test on 127.0.0.1 / localhost.
  */
@@ -67,13 +68,21 @@ ${(run.stderr ?? '').slice(-3000)}`);
   const t = await connect(name);
   const tables = (await t.query(`SELECT table_name AS t FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE'`)) as [{ t: string }[]];
   const dataTables: string[] = [];
+  const seedTables: string[] = [];
   for (const { t: table } of tables[0]) {
     if (table === 'migrations') continue;
     const [r] = (await t.query(`SELECT COUNT(*) AS n FROM \`${table}\``)) as [{ n: number }[]];
     if (Number(r[0].n) === 0) dataTables.push(table);
+    else {
+      // what the migrations put in (roles, page access, team access, status lists): a copy, so every resetDb() puts
+      // the table back exactly as seeded, whatever a test changed in it
+      seedTables.push(table);
+      await t.query(`CREATE TABLE \`__seed_${table}\` AS SELECT * FROM \`${table}\``);
+    }
   }
   await t.end();
   project.provide('dataTables', dataTables);
+  project.provide('seedTables', seedTables);
 
   fs.rmSync(path.join(ROOT, 'test/.tmp'), { recursive: true, force: true });
 
@@ -94,5 +103,6 @@ ${(run.stderr ?? '').slice(-3000)}`);
 declare module 'vitest' {
   export interface ProvidedContext {
     dataTables: string[];
+    seedTables: string[];
   }
 }
