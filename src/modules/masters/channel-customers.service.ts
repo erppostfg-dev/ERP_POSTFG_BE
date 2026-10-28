@@ -7,6 +7,7 @@ import { DetailsChannel, MasterChannel } from '../../entities';
  * that serve them. Values are sent as stored: an empty column is null, an empty list is [].
  * The page's legal name, type, billing GSTIN, payment terms, default margin and PO source have no column in
  * master_channels (billing details exist only per location, in details_channels), so they are not sent.
+ * Channel type and expiry days (added 2026-10-28 with the new masters) are sent.
  */
 
 export interface ChannelCustomerItem {
@@ -24,6 +25,11 @@ export interface ChannelCustomerItem {
   channelCodes: string[];
   /** details_channels.facility_code values of its locations (the PEP warehouse in Uniware), distinct, sorted. */
   facilityCodes: string[];
+  /** B2B / B2C. */
+  channelType: string | null;
+  /** Expiry the channel accepts, in days ("8 - 12 days" = 8 / 12). */
+  expiryDaysMin: number | null;
+  expiryDaysMax: number | null;
 }
 
 const distinctSorted = (values: (string | null)[]) => [...new Set(values.filter((v): v is string => !!v))].sort();
@@ -44,6 +50,9 @@ export async function listChannelCustomers(): Promise<ChannelCustomerItem[]> {
       locationCount: own.length,
       channelCodes: distinctSorted(own.map((l) => l.channelCode)),
       facilityCodes: distinctSorted(own.map((l) => l.facilityCode)),
+      channelType: c.channelType,
+      expiryDaysMin: c.expiryDaysMin,
+      expiryDaysMax: c.expiryDaysMax,
     };
   });
 }
