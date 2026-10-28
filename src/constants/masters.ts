@@ -20,6 +20,10 @@ export const MASTER_ROUTES = {
   HISTORY: '/history/:type/:id',
   /** Recent changes across the 5 masters (2026-10-28): ?type=&days=. */
   CHANGES: '/changes',
+  /** Edit one row (2026-10-28, PATCH): keys locked, logged. */
+  EDIT: '/edit/:type/:id',
+  /** Switch one row on / off (2026-10-28, POST { active }): never deleted, logged. */
+  ACTIVE: '/active/:type/:id',
 } as const;
 
 /** Masters history (2026-10-28): most entries one call returns, and the "recent changes" look-back (days). */
@@ -59,6 +63,10 @@ export const MASTER_ADD = {
   /** Longest text per field (DB varchar 255; addresses are text). */
   TEXT_MAX: 255,
   ADDRESS_MAX: 2000,
+  /** master_channels.channel_type (2026-10-28 new masters). */
+  CHANNEL_TYPES: ['B2B', 'B2C'],
+  /** Expiry days accepted by a channel (min / max), whole days. */
+  EXPIRY_DAYS: { min: 0, max: 3650 },
   /** The optional remark of a save (master_change_logs.remark; user 2026-10-28: one remark, optional). */
   REMARK_MAX: 1000,
   /** States and union territories offered for consignee / buyer state (the DB has a few wrong ones, e.g. "Mumbai"). */

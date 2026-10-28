@@ -18,7 +18,8 @@ import { addedWith, logMasterChanges } from './master-log';
  *     row's History; the optional `remark` of the form is kept there);
  *   - after a channel SKU or a location is added, that channel's POs in review are re-checked in the background
  *     (a mapping that was missing closes their issues at once).
- * Add only: no edit or delete here.
+ * Only ACTIVE rows count as duplicates of a channel SKU / location (2026-10-28): a wrong key is fixed by switching
+ * the row off and adding the right one. Edit / switch off: master-edit.service.ts. Nothing is ever deleted.
  */
 
 export type Problem = { field: string; code: string; message: string };
@@ -26,7 +27,7 @@ export interface Actor { id: number; email: string }
 type Body = Record<string, unknown>;
 
 /** Field checks: every problem collected, so the form shows them all at once. */
-const checker = (body: unknown) => {
+export const checker = (body: unknown) => {
   const b = (body && typeof body === 'object' && !Array.isArray(body) ? body : {}) as Body;
   const problems: Problem[] = [];
   const bad = (field: string, code: keyof typeof ERROR_CODES, ...args: unknown[]) =>
@@ -170,7 +171,7 @@ export const addChannelSku = async (body: unknown, by: Actor) => {
     if (v.channelId && !channel) c.bad('channelId', 'FIELD_NOT_FOUND', 'channelId', String(v.channelId));
     const sku = v.pepCode ? await one<{ id: number; pep_code: string }>(m, `SELECT id, pep_code FROM ${TABLES.MASTER_SKUS} WHERE LOWER(pep_code) = LOWER(?) LIMIT 1`, [v.pepCode]) : undefined;
     if (v.pepCode && !sku) c.bad('pepCode', 'FIELD_NOT_FOUND', 'pepCode', v.pepCode);
-    if (channel && v.channelCode && (await one(m, `SELECT id FROM ${TABLES.MASTER_CHANNEL_SKUS} WHERE channel_id = ? AND LOWER(TRIM(channel_code)) = LOWER(?) LIMIT 1`, [channel.id, v.channelCode]))) {
+    if (channel && v.channelCode && (await one(m, `SELECT id FROM ${TABLES.MASTER_CHANNEL_SKUS} WHERE channel_id = ? AND LOWER(TRIM(channel_code)) = LOWER(?) AND is_active = 1 LIMIT 1`, [channel.id, v.channelCode]))) {
       c.bad('channelCode', 'FIELD_ALREADY_EXISTS', 'channelCode', `${channel.display_name} ${v.channelCode}`);
     }
     c.done();
@@ -237,7 +238,7 @@ export const addChannelLocation = async (body: unknown, by: Actor) => {
     // facility codes are exact (upper / lower case = main / child warehouse)
     const facility = v.facilityCode ? await one<{ id: number; code: string }>(m, `SELECT id, code FROM ${TABLES.MASTER_FACILITIES} WHERE code = ? AND is_active = 1`, [v.facilityCode]) : undefined;
     if (v.facilityCode && !facility) c.bad('facilityCode', 'FIELD_NOT_FOUND', 'facilityCode', v.facilityCode);
-    if (channel && v.locationCode && (await one(m, `SELECT id FROM ${TABLES.DETAILS_CHANNELS} WHERE channel_id = ? AND LOWER(TRIM(channel_location_code)) = LOWER(?) LIMIT 1`, [channel.id, v.locationCode]))) {
+    if (channel && v.locationCode && (await one(m, `SELECT id FROM ${TABLES.DETAILS_CHANNELS} WHERE channel_id = ? AND LOWER(TRIM(channel_location_code)) = LOWER(?) AND is_active = 1 LIMIT 1`, [channel.id, v.locationCode]))) {
       c.bad('locationCode', 'FIELD_ALREADY_EXISTS', 'locationCode', `${channel.display_name} ${v.locationCode}`);
     }
     c.done();

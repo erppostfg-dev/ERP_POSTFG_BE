@@ -11,7 +11,7 @@ export { matchKey };
  */
 export interface ChannelMasterData {
   channel: MasterChannel;
-  /** master_channel_skus rows of this channel, by channel_code. Several rows for one code = ambiguous. */
+  /** ACTIVE master_channel_skus rows of this channel, by channel_code. Several rows for one code = ambiguous. */
   skusByCode: Map<string, MasterChannelSku[]>;
   /** The same rows by pep_code: what a reviewer can map a line to. */
   skusByPep: Map<string, MasterChannelSku[]>;
@@ -50,7 +50,8 @@ export class MasterDataReader {
     const channel = id === undefined ? null : await this.db.getRepository(MasterChannel).findOneBy({ id });
     if (!channel) return null;
     this.skus ??= new Map((await this.db.getRepository(MasterSku).find()).map((s) => [matchKey(s.pepCode), s]));
-    const channelSkus = await this.db.getRepository(MasterChannelSku).findBy({ channelId: id });
+    // switched-off mappings are not used (2026-10-28): a PO line with that code goes to review
+    const channelSkus = await this.db.getRepository(MasterChannelSku).findBy({ channelId: id, isActive: true });
     const locations = await this.db.getRepository(DetailsChannel).findBy({ channelId: id, isActive: true });
     this.facilities ??= codeIndex(await this.db.getRepository(MasterFacility).find(), EXACT_MATCH);
     return {

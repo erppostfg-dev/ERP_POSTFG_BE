@@ -4,6 +4,7 @@ import { USER_ADMIN_ROLES } from '../constants/users';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
 import { addChannel, addChannelLocation, addChannelSku, addPepSku, formOptions } from '../modules/masters/master-add.service';
 import { isMasterLogType, recentChanges, rowHistory } from '../modules/masters/master-history.service';
+import { editRow, setActive } from '../modules/masters/master-edit.service';
 import { appError } from '../utils/AppError';
 import { listChannelCustomers } from '../modules/masters/channel-customers.service';
 import { listChannelSkus } from '../modules/masters/channel-skus.service';
@@ -44,6 +45,13 @@ import { listChannelWarehouses, listPepWarehouses } from '../modules/masters/war
  *   GET /masters/changes?type=&days= every master's changes of the last `days` days (default 7, max 365), at most 500;
  *                                    viewer on /masters. { data: MasterHistoryItem[] }
  *   400 MASTER_HISTORY_BAD_REQUEST for an unknown type / bad id / bad days.
+ *
+ * Edit + switch on / off (2026-10-28; admin / developer; keys locked; one master_change_logs row per change):
+ *   PATCH /masters/edit/:type/:id    { changes: { field: value }, original: { field: value seen }, remark? }
+ *                                    -> { changed: string[] }; 400 VALIDATION_FAILED (FIELD_LOCKED / FIELD_NOT_EDITABLE /
+ *                                    the Add rules), 404 MASTER_ROW_NOT_FOUND, 409 MASTER_EDIT_CONFLICT [{ field, now }]
+ *   POST  /masters/active/:type/:id  { active: boolean, remark? } -> { active, changed }
+ *   Re-checks the POs in review afterwards (that channel; every channel for a PEP SKU / warehouse).
  */
 
 const router = Router();
@@ -67,6 +75,13 @@ router.post(MASTER_ROUTES.PEP_SKUS, requireAuth, requireMasterAdmin, created((re
 router.post(MASTER_ROUTES.CHANNEL_SKUS, requireAuth, requireMasterAdmin, created((req) => addChannelSku(req.body, actor(req))));
 router.post(MASTER_ROUTES.CHANNELS, requireAuth, requireMasterAdmin, created((req) => addChannel(req.body, actor(req))));
 router.post(MASTER_ROUTES.CHANNEL_LOCATIONS, requireAuth, requireMasterAdmin, created((req) => addChannelLocation(req.body, actor(req))));
+
+// ---- Edit + switch on / off (2026-10-28) -------------------------------------
+const ok = (fn: (req: Request) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => {
+  fn(req).then((data) => res.json({ data })).catch(next);
+};
+router.patch(MASTER_ROUTES.EDIT, requireAuth, requireMasterAdmin, ok((req) => editRow(req.params.type, req.params.id, req.body, actor(req))));
+router.post(MASTER_ROUTES.ACTIVE, requireAuth, requireMasterAdmin, ok((req) => setActive(req.params.type, req.params.id, req.body, actor(req))));
 
 // ---- History (2026-10-28) ---------------------------------------------------
 /** The page whose viewers may read a master's history. */

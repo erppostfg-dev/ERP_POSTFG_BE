@@ -142,6 +142,8 @@ const findLocation = (po: ProcessedPo, master: ChannelMasterData, issues: Valida
     !row.channelCode?.trim() && 'channel_code',
   ].filter(Boolean);
   if (missing.length) issue(VALIDATION_TEXT.LOCATION_INCOMPLETE(row.channelLocationCode ?? row.id, missing.join(', ')));
+  // a warehouse switched off on the Masters page (2026-10-28) ships nothing: the PO goes to review
+  if (facility && !facility.isActive) issue(VALIDATION_TEXT.FACILITY_INACTIVE(row.channelLocationCode ?? row.id, facility.code));
   return {
     locationId: String(row.id),
     locationCode: row.channelLocationCode?.trim() ?? '',
@@ -201,6 +203,8 @@ const validateLine = (
   else if (candidates.length > 1) skuIssue(VALIDATION_TEXT.SKU_MANY(line.channel_sku_code, candidates.map((c) => c.pepCode).join(', ')));
   const mapped = candidates.length === 1 ? candidates[0] : null;
   const sku = mapped ? master.skus.get(matchKey(mapped.pepCode)) : undefined;
+  // a PEP SKU switched off on the Masters page (2026-10-28): the line goes to review (values still filled below)
+  if (sku && sku.isActive === false) skuIssue(VALIDATION_TEXT.SKU_INACTIVE(sku.pepCode));
 
   // The PO's unit price and line value, with tax.
   const landing = num(line.landing_rate);

@@ -5,7 +5,7 @@ import { MasterChannelSku } from '../../entities';
  * GET /masters/channel-skus: every row of master_channel_skus (about 2,300), sorted by channel then channel code.
  * The page searches and filters in the browser, so no paging yet. Values are sent as stored: an empty column is null.
  * A channel code is unique only within its channel (104 codes are used by more than one channel), so `id` is the key.
- * The page's status (Live / Discontinued / Unmapped) has no column in master_channel_skus, so it is not sent.
+ * isActive (2026-10-28, column is_active): switched off on the page = not used by the PO checks.
  */
 
 export interface ChannelSkuItem {
@@ -23,6 +23,7 @@ export interface ChannelSkuItem {
   margin: number | null;
   rateAfterMargin: number | null;
   eanCode: string | null;
+  isActive: boolean;
 }
 
 export async function listChannelSkus(): Promise<ChannelSkuItem[]> {
@@ -39,5 +40,6 @@ export async function listChannelSkus(): Promise<ChannelSkuItem[]> {
     margin: r.margin,
     rateAfterMargin: r.rateAfterMargin,
     eanCode: r.eanCode,
+    isActive: r.isActive !== false,
   }));
 }
