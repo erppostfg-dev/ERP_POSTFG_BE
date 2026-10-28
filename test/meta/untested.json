@@ -1,18 +1,1 @@
-[
-  "GET /admin/po-issues",
-  "GET /admin/po-issues/pos",
-  "GET /amazon/inbound/limits",
-  "GET /amazon/inbound/plans",
-  "GET /amazon/inbound/plans/:planId",
-  "GET /amazon/inbound/shipments",
-  "GET /amazon/inbound/shipments/:externalId",
-  "GET /amazon/inbound/sync",
-  "GET /manual-uploads",
-  "GET /manual-uploads/channels",
-  "PATCH /amazon/inbound/limits/:id",
-  "POST /amazon/inbound/shipments/:externalId/refresh",
-  "POST /manual-uploads",
-  "POST /manual-uploads/:id/cancel",
-  "POST /manual-uploads/:id/retry",
-  "POST /manual-uploads/process"
-]
+[]
