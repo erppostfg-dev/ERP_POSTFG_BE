@@ -104,6 +104,10 @@ export class DetailsChannel {
   @Column({ name: 'intransit_location', type: 'varchar', length: 100, nullable: true })
   intransitLocation: string | null;
 
+  /** The location's city (new masters, 2026-10-28). */
+  @Column({ name: 'city', type: 'varchar', length: 255, nullable: true })
+  city: string | null;
+
   @Column({ name: 'final_shipping_address_embedding', type: 'json', nullable: true })
   finalShippingAddressEmbedding: unknown;
 

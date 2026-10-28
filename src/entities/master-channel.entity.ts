@@ -32,4 +32,15 @@ export class MasterChannel {
 
   @Column({ name: 'created_at', type: 'datetime', precision: 6, default: () => 'CURRENT_TIMESTAMP(6)' })
   createdAt: Date;
+
+  /** B2B / B2C (new masters, 2026-10-28). */
+  @Column({ name: 'channel_type', type: 'varchar', length: 20, nullable: true })
+  channelType: string | null;
+
+  /** Expiry the channel accepts, in days ("8 - 12 Days" = 8 / 12, "15 days" = 15 / 15). */
+  @Column({ name: 'expiry_days_min', type: 'int', nullable: true })
+  expiryDaysMin: number | null;
+
+  @Column({ name: 'expiry_days_max', type: 'int', nullable: true })
+  expiryDaysMax: number | null;
 }
