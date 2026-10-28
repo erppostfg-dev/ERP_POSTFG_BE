@@ -148,12 +148,12 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
     inputs = picked.files.map((f) => `s3://${env.s3.bucket}/${s3Folder}/${f}`);
   }
 
-  // 5. Run the OCR in the email folder (its CSV and result are written there).
+  // 5. Run the OCR (channel + files only). Its JSON (the extracted PO) is saved as the raw JSON, like the sheet reader's.
   log.info(LOG_SOURCE.OCR, `[extractPo] ${config.channel}: ${inputs.join(', ')} (${path.basename(dir)})`);
   await ocrStarted(dir);
-  const run = await step('run OCR', () => runOcr(config.ocrChannel, inputs, dir, FILES.OCR_OUTPUT_CSV), { channel: config.channel, files: inputs.length });
+  const run = await step('run OCR', () => runOcr(config.ocrChannel, inputs), { channel: config.channel, files: inputs.length });
 
-  const ok = run.exitCode === 0 && run.result?.status === RESULT_STATUS.OK;
+  const ok = run.exitCode === 0 && !!run.result && !run.result.error;
   const ocrError = run.result?.error as string | undefined;
   const failure = ok
     ? undefined
@@ -163,6 +163,7 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
         ? why(ERROR_CODES.OCR_FAILED, ocrError)
         : why(ERROR_CODES.OCR_EXITED, run.exitCode);
   const reason = failure?.reason;
+  if (ok) await fs.writeFile(path.join(dir, FILES.OCR_RAW_JSON), JSON.stringify(run.result, null, 2), 'utf8');
 
   const result = await save({
     status: ok ? RESULT_STATUS.OK : RESULT_STATUS.FAILED,

@@ -30,6 +30,12 @@ export const decodeText = (raw: Uint8Array): string => {
 /** CSV lines as raw text cells, blank lines skipped. `sep` is ',' or '\t'. */
 export const tokenizeCsv = (text: string, sep = ','): string[][] => {
   const rows: string[][] = [];
+  eachCsvRow(text, sep, (row) => rows.push(row));
+  return rows;
+};
+
+/** tokenizeCsv one line at a time, so a caller can keep each row's cells without holding every row. */
+export const eachCsvRow = (text: string, sep: string, onRow: (row: string[]) => void): void => {
   let row: string[] = [];
   let cell = '';
   let quoted = false; // inside "..."
@@ -43,7 +49,7 @@ export const tokenizeCsv = (text: string, sep = ','): string[][] => {
   };
   const endLine = (): void => {
     endCell();
-    if (lineHasContent) rows.push(row);
+    if (lineHasContent) onRow(row);
     row = [];
     lineHasContent = false;
   };
@@ -75,7 +81,6 @@ export const tokenizeCsv = (text: string, sep = ','): string[][] => {
     }
   }
   if (cell !== '' || row.length || wasQuoted) endLine();
-  return rows;
 };
 
 /** Header names as pandas makes them: blanks become 'Unnamed: i', repeats get '.1', '.2' ... */
@@ -97,22 +102,39 @@ const headerNames = (raw: string[]): string[] => {
   });
 };
 
-/** Parse CSV text as read_csv(dtype=str): every cell text or NaN (null). */
+/**
+ * Parse CSV text as read_csv(dtype=str): every cell text or NaN (null). Filled row by row into the columns, and a
+ * column's repeated values share one string (channels, statuses, SKUs repeat on most lines): a large input then
+ * takes a fraction of the memory (user, 2026-10-27: a build ran the 1 GB server out of memory).
+ */
 export const parseCsvFrame = (text: string, label = 'csv', sep = ','): Frame => {
-  const rows = tokenizeCsv(text, sep);
-  if (!rows.length) return Frame.empty();
-  const header = headerNames(rows[0]);
-  const width = header.length;
-  const data: Cell[][] = header.map(() => new Array<Cell>(rows.length - 1));
-  for (let r = 1; r < rows.length; r++) {
-    const cells = rows[r];
-    if (cells.length > width) throw new Error(`${label}: line ${r + 1} has ${cells.length} cells, the header has ${width}`);
+  let header: string[] | null = null;
+  let data: Cell[][] = [];
+  let seen: Map<string, string>[] = [];
+  let n = 0;
+  eachCsvRow(text, sep, (cells) => {
+    if (!header) {
+      header = headerNames(cells);
+      data = header.map(() => []);
+      seen = header.map(() => new Map());
+      return;
+    }
+    const width = header.length;
+    if (cells.length > width) throw new Error(`${label}: line ${n + 2} has ${cells.length} cells, the header has ${width}`);
     for (let j = 0; j < width; j++) {
       const v = cells[j];
-      data[j][r - 1] = v === undefined || NA_VALUES.has(v) ? null : v;
+      if (v === undefined || NA_VALUES.has(v)) {
+        data[j].push(null);
+        continue;
+      }
+      const shared = seen[j].get(v);
+      if (shared === undefined) seen[j].set(v, v);
+      data[j].push(shared ?? v);
     }
-  }
-  return Frame.of(header, data, rows.length - 1);
+    n++;
+  });
+  const names = header as string[] | null; // set inside the callback
+  return names ? Frame.of(names, data, n) : Frame.empty();
 };
 
 /** read_csv(path, dtype=str) with the cp1252 fallback. */

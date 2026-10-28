@@ -1,12 +1,15 @@
+import { createWriteStream } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
-import { gzipSync } from 'zlib';
+import { Readable } from 'stream';
+import { pipeline } from 'stream/promises';
+import { createGzip } from 'zlib';
 import { IntransitSource, SHEET_FRAMES } from '../../constants';
 import { checkCombos } from './combo-check';
 import { ConnectorConfig, ConnectorDirs, ConnectorOptions, runConnector } from './connectors';
 import { IntransitSettings } from './context';
 import { runPipeline } from './pipeline';
-import { frameToCsv } from './sources/files';
+import { frameCsvChunks } from './sources/files';
 import { UniwareConfig } from './sources/uniware';
 
 /*
@@ -42,8 +45,9 @@ const run = async (job: WorkerJob): Promise<unknown> => {
       // one gzipped CSV per sheet, from the frames (a preview then needs that sheet only, not the whole workbook)
       const dir = path.join(job.settings.outputDir, 'sheets');
       await fs.mkdir(dir, { recursive: true });
+      // streamed: the biggest sheet is ~100 MB of CSV, never held whole
       for (const [label, frame] of SHEET_FRAMES) {
-        await fs.writeFile(path.join(dir, `${label}.csv.gz`), gzipSync(Buffer.from(frameToCsv(ctx.get(frame)), 'utf8')));
+        await pipeline(Readable.from(frameCsvChunks(ctx.get(frame))), createGzip(), createWriteStream(path.join(dir, `${label}.csv.gz`)));
       }
       log(`sheets: ${SHEET_FRAMES.length} saved for previews`);
     }

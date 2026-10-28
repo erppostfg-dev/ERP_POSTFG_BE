@@ -8,9 +8,10 @@ Picks the pipeline from the files passed in:
     flat csv     extract_flat_csv              (zepto, tat; set by "pipeline": "flat_csv")
 
 Channel settings come from channels.json. If a channel's "expects" doesn't match the
-files given, the run is refused. Nothing is written to disk: the JSON goes to stdout and
-the progress log to stderr, so `> po.json` captures just the JSON. From Python, call
-route(channel, files) to get the same data as a dict.
+files given, the run is refused. Nothing is written to disk and nothing is printed while
+it runs: the only output is the extracted PO as one JSON on stdout, which the backend
+reads in memory (`> po.json` captures it by hand). From Python, call route(channel, files)
+to get the same data as a dict.
 
 Usage:
     python run_po.py <channel> <file> [<file>]
@@ -20,7 +21,7 @@ Usage:
     python run_po.py zepto zepto_po.csv > zepto.json
 
 Files can be local or s3:// paths, in any order.
-Exit codes: 0 ok, 1 pipeline error, 2 bad arguments. On an error the JSON is
+Exit codes: 0 ok, 1 pipeline or other error, 2 bad arguments. On an error the JSON is
 {"channel": ..., "error": ...}.
 """
 
@@ -128,14 +129,17 @@ def main():
     args = parser.parse_args()
 
     try:
-        with contextlib.redirect_stdout(sys.stderr):      # log to stderr, JSON alone on stdout
+        # Quiet run: the pipelines' progress lines and warnings are dropped, the JSON below is the only output
+        with open(os.devnull, "w") as quiet, contextlib.redirect_stdout(quiet), contextlib.redirect_stderr(quiet):
             output, code = route(args.channel, args.files), 0
     except UsageError as e:
         output, code = {"channel": args.channel, "error": str(e)}, 2
     except PIPELINE_ERRORS as e:
         output, code = {"channel": args.channel, "error": str(e)}, 1
+    except Exception as e:                         # S3 / Bedrock / Textract / an unreadable file: same JSON, no traceback
+        output, code = {"channel": args.channel, "error": f"{type(e).__name__}: {e}"}, 1
     sys.stdout.reconfigure(encoding="utf-8")       # Windows defaults to cp1252 when redirected
-    print(json.dumps(output, indent=2, ensure_ascii=False))
+    print(json.dumps(output, ensure_ascii=False))
     sys.exit(code)
 
 
