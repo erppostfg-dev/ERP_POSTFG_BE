@@ -26,7 +26,7 @@ export const OTHER_CHANNEL = 'other';
 
 /**
  * Each channel's name in the OCR repo (ocr-service/dev/scripts/channels.json), passed to run_po.py.
- * Same as ours today; kept apart because it is the OCR team's naming (their PDF channel is "purple").
+ * Same as ours (2026-10-28: the OCR's "purple" entry was renamed to "purplle"); kept apart because it is the OCR team's naming.
  */
 export const OCR_CHANNELS: Record<ChannelName, string> = {
   [CHANNELS.BIGBASKET]: 'bigbasket',

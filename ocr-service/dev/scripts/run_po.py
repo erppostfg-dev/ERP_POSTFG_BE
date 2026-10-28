@@ -3,7 +3,7 @@ Run PO extraction for a channel and print the extracted PO as JSON.
 
 Picks the pipeline from the files passed in:
     pdf + sheet  extract_text_first_excel_v2   (blinkit, myntra)
-    pdf only     extract_hybrid_text_first_v2  (purple, avenue)
+    pdf only     extract_hybrid_text_first_v2  (purplle, avenue)
     sheet only   extract_excel_only_v2         (flipkart, bigbasket, firstcry, scootsy)
     flat csv     extract_flat_csv              (zepto, tat; set by "pipeline": "flat_csv")
 
@@ -17,7 +17,7 @@ Usage:
     python run_po.py <channel> <file> [<file>]
 
     python run_po.py blinkit blinkit_1.pdf blinkit_2.xlsx
-    python run_po.py purple s3://my-bucket/purple/purple_po.PDF
+    python run_po.py purplle s3://my-bucket/purplle/purplle_po.PDF
     python run_po.py zepto zepto_po.csv > zepto.json
 
 Files can be local or s3:// paths, in any order.
@@ -91,7 +91,7 @@ def check_channel_name(channel: str):
     looks_like_file = ("://" in channel or "/" in channel or "\\" in channel
                        or os.path.splitext(channel)[1].lower() in (".pdf", ".xls", ".xlsx", ".xlsm", ".csv", ".tsv", ".txt"))
     if looks_like_file or not CHANNEL_NAME_RE.match(channel):
-        raise UsageError(f"first argument should be a channel name (blinkit, purple, ...), got '{channel}'. "
+        raise UsageError(f"first argument should be a channel name (blinkit, purplle, ...), got '{channel}'. "
                          f"Usage: python run_po.py <channel> <file> [<file>]")
 
 
@@ -112,11 +112,19 @@ def route(channel: str, files: list) -> dict:
     if cfg.get("pipeline") == "flat_csv":
         if received != "sheet":
             raise UsageError(f"channel '{channel}' uses the flat csv pipeline, pass just the csv")
-        result = flat_csv_pipeline.process(sheet, header_columns=cfg.get("header_columns"))
+        result = flat_csv_pipeline.process(sheet, header_columns=cfg.get("header_columns"),
+                                           filename_fields=cfg.get("filename_fields"))
     elif received == "pdf+sheet":
-        result = pdf_plus_sheet_pipeline.process(pdf, sheet)
+        # every per-channel setting of channels.json goes to its pipeline (2026-10-28: before, only
+        # header_notes did, so e.g. Reliance's stacked_table was never used and its stacked cells were glued)
+        result = pdf_plus_sheet_pipeline.process(pdf, sheet, header_notes=cfg.get("header_notes"),
+                                                 pdf_totals=cfg.get("pdf_totals"),
+                                                 read_last_page=bool(cfg.get("read_last_page")))
     elif received == "pdf":
-        result = pdf_only_pipeline.process(pdf, header_notes=cfg.get("header_notes"))
+        result = pdf_only_pipeline.process(pdf, header_notes=cfg.get("header_notes"),
+                                           split_value_rate_cells_enabled=bool(cfg.get("split_value_rate_cells")),
+                                           unlabeled_total_row=bool(cfg.get("unlabeled_total_row")),
+                                           stacked_table=cfg.get("stacked_table"))
     else:
         result = sheet_only_pipeline.process(sheet)
     return {"channel": channel, "input": received, "pdf": pdf, "sheet": sheet, **result}
@@ -124,7 +132,7 @@ def route(channel: str, files: list) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description="Extract a PO for any channel (see channels.json).")
-    parser.add_argument("channel", help="channel name, e.g. blinkit, purple, flipkart")
+    parser.add_argument("channel", help="channel name, e.g. blinkit, purplle, flipkart")
     parser.add_argument("files", nargs="+", help="the PO file(s): a PDF, a spreadsheet, or both (local or s3://)")
     args = parser.parse_args()
 
