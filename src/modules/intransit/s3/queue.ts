@@ -125,17 +125,27 @@ setQueueHook(async (key, from, meta, contentType) => {
 
 let draining: Promise<{ sent: number; left: number }> | null = null;
 
+/** Called after a drain that reached S3 (the queue sent or had nothing to send): work that waited for S3 to be back. */
+const whenReachable: (() => Promise<void>)[] = [];
+export const onS3Reachable = (fn: () => Promise<void>): void => {
+  whenReachable.push(fn);
+};
+
 /** Send what waits, oldest first; stops at the first "unreachable" (tried again next time). */
 export const drainOnce = (): Promise<{ sent: number; left: number }> => {
   draining ??= (async () => {
     const list = await ensureLoaded();
     let sent = 0;
+    let reachable = true;
     for (const item of [...list]) {
       try {
         // the same key and metadata as when it was queued; put() checks it with a HeadObject
         await put(item.key, dataOf(item), item.meta, { noQueue: true, contentType: item.contentType });
       } catch (err) {
-        if (isUnreachable(err)) break;
+        if (isUnreachable(err)) {
+          reachable = false;
+          break;
+        }
         // refused for another reason (rights, a bad key): kept, with the reason for the status page
         item.lastError = (err instanceof Error ? err.message : String(err)).slice(0, 500);
         continue;
@@ -146,6 +156,7 @@ export const drainOnce = (): Promise<{ sent: number; left: number }> => {
       sent++;
     }
     if (sent) appLog.info(LOG_SOURCE.S3, `[intransit-s3] ${sent} queued file(s) sent to S3, ${list.length} waiting`);
+    if (reachable) for (const fn of whenReachable) await fn().catch((err) => logError(LOG_SOURCE.S3, '[intransit-s3] work after the queue failed', err));
     return { sent, left: list.length };
   })().finally(() => {
     draining = null;

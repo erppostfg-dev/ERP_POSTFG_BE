@@ -181,21 +181,44 @@ const registerExtraSheets = (ct: string, wbx: string, rels: string): [string, st
   ];
 };
 
+const bytesOf = (s: string): Buffer => Buffer.from(s, 'latin1');
+
+/**
+ * A template sheet's XML without its old data: everything around <sheetData>, and only the header row inside it
+ * (patchBaseSheet reads the headers there; the data is replaced anyway). The template is usually an earlier report,
+ * whose Intransit_Stock sheet alone is ~100 MB of XML (user, 2026-10-27: a build ran the 1 GB server out of memory).
+ */
+export const withoutOldData = (raw: Uint8Array): string => {
+  const buf = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
+  const start = buf.indexOf(bytesOf('<sheetData>'));
+  const end = start < 0 ? -1 : buf.indexOf(bytesOf('</sheetData>'), start);
+  if (end < 0) return strFromU8(raw);
+  const open = start + '<sheetData>'.length;
+  const firstRowEnd = buf.indexOf(bytesOf('</row>'), open);
+  const header = firstRowEnd < 0 || firstRowEnd > end ? '' : strFromU8(raw.subarray(open, firstRowEnd + '</row>'.length));
+  // a first row that is not the header (r="1"): keep it all, as before
+  if (header && !HDR_ROW_RE.test(header)) return strFromU8(raw);
+  return `${strFromU8(raw.subarray(0, open))}${header}${strFromU8(raw.subarray(end))}`;
+};
+
 /** Writes the 20-sheet report next to the run's other files; returns its path. */
 export const writeReport = async (ctx: Context, reportPath: string): Promise<string> => {
   await fs.mkdir(path.dirname(reportPath), { recursive: true });
   const tmp = `${reportPath}.part`;
-  const files = unzipSync(new Uint8Array(await fs.readFile(ctx.settings.templateXlsx)));
+  // the template's own sheets 4.. (an earlier report's) are dropped, so they are never unzipped
+  const files = unzipSync(new Uint8Array(await fs.readFile(ctx.settings.templateXlsx)), { filter: (f) => !EXTRA_PART_RE.test(f.name) });
   const shared = sharedStrings(files);
+  const baseParts = new Set(BASE_SHEETS.map(([part]) => part));
   const text = (name: string): string => {
     const raw = files[name];
     if (!raw) throw new Error(`template has no ${name}`);
-    return strFromU8(raw);
+    return baseParts.has(name) ? withoutOldData(raw) : strFromU8(raw);
   };
 
   const replaced = new Map<string, Iterable<string>>();
   for (const [part, frame, headerStyle, fallback, label] of BASE_SHEETS) {
     const [before, data, after] = patchBaseSheet(ctx, text(part), ctx.get(frame), headerStyle, fallback, label, shared);
+    files[part] = new Uint8Array(0); // replaced below; its old bytes can go
     replaced.set(part, (function* () {
       yield before;
       yield* data;

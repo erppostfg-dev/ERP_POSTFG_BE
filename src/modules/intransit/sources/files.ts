@@ -113,9 +113,18 @@ const csvCell = (s: string): string => (/[",\r\n]/.test(s) ? `"${s.replace(/"/g,
 /** Rows as CSV (QUOTE_MINIMAL, as Python's csv.writer and pandas to_csv). */
 export const toCsv = (rows: readonly (readonly string[])[]): string => rows.map((r) => r.map(csvCell).join(',')).join('\n') + '\n';
 
+/** frameToCsv in pieces of `rowsPerChunk` lines, so a big sheet can be streamed to a file without one huge string. */
+export function* frameCsvChunks(df: Frame, rowsPerChunk = 1000): Generator<string> {
+  const cols = df.columns.map((c) => df.get(c));
+  yield toCsv([[...df.columns]]);
+  for (let start = 0; start < df.length; start += rowsPerChunk) {
+    const end = Math.min(start + rowsPerChunk, df.length);
+    yield toCsv(Array.from({ length: end - start }, (_, k) => cols.map((col) => fmtVal(col[start + k] as Cell))));
+  }
+}
+
 /** A frame as CSV (pandas to_csv(index=False): NaN blank, whole floats as ints). */
-export const frameToCsv = (df: Frame): string =>
-  toCsv([[...df.columns], ...Array.from({ length: df.length }, (_, i) => df.columns.map((c) => fmtVal(df.get(c)[i] as Cell)))]);
+export const frameToCsv = (df: Frame): string => [...frameCsvChunks(df)].join('');
 
 /** Write a file via <file>.part + rename. */
 export const writeAtomic = async (file: string, data: string | Uint8Array): Promise<void> => {
