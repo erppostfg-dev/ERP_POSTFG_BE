@@ -1,10 +1,10 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { INTRANSIT_SOURCE, IntransitSource } from '../../constants';
+import { INPUT_CATALOG, INTRANSIT_SOURCE, IntransitSource } from '../../constants';
 import { validateInput } from './catalog';
 import { writeWithMeta } from './input-store';
 import { AmazonConfig, fetchAmazon } from './sources/amazon';
-import { fetchFlipkart, FlipkartConfig } from './sources/flipkart';
+import { fetchFlipkart, FlipkartConfig, usesSellerHub } from './sources/flipkart';
 import { Log } from './sources/http';
 import { fetchMyntra, MyntraConfig } from './sources/myntra-partner-portal';
 import { fetchUniware, UniwareConfig } from './sources/uniware';
@@ -51,6 +51,8 @@ export interface ConnectorResult {
   saved: string[];
   /** Files that failed the check: name -> problems (left in the export folder). */
   rejected: Record<string, string[]>;
+  /** Files asked for that did not come (their download failed: see the log). */
+  missing?: string[];
 }
 
 /** The `only` option as a list (empty = everything). */
@@ -76,6 +78,17 @@ export const fetchSource = (source: IntransitSource, cfg: ConnectorConfig, dirs:
   }
 };
 
+/**
+ * The files a fetch should bring (Amazon, the Seller Hub and Myntra robots: one file per export; Uniware's names vary
+ * by facility and the Flipkart API brings SOH only, so they are not counted). A file asked for that does not come is
+ * reported as missing (user, 2026-10-29: a robot that lost one of its two files used to pass silently).
+ */
+const expectedFiles = (source: IntransitSource, cfg: ConnectorConfig, only: string[]): string[] => {
+  const counted = source === INTRANSIT_SOURCE.AMAZON || source === INTRANSIT_SOURCE.MYNTRA || (source === INTRANSIT_SOURCE.FLIPKART && usesSellerHub(cfg.flipkart));
+  if (!counted) return [];
+  return INPUT_CATALOG.filter((f) => f.connector === source && f.fetchKey && (!only.length || only.includes(f.fetchKey))).map((f) => f.name);
+};
+
 /** Fetch, check, and store the good files as the day's inputs. */
 export const runConnector = async (source: IntransitSource, cfg: ConnectorConfig, dirs: ConnectorDirs, opts: ConnectorOptions, log: Log): Promise<ConnectorResult> => {
   await fs.mkdir(dirs.exportDir, { recursive: true });
@@ -95,6 +108,11 @@ export const runConnector = async (source: IntransitSource, cfg: ConnectorConfig
       log(`  ${name} now used as the input of ${path.basename(dirs.targetDir)}`);
     } else log(`  ${name} passed the check`);
     result.saved.push(name);
+  }
+  const missing = expectedFiles(source, cfg, onlyList(opts.only)).filter((n) => !written.includes(n));
+  if (missing.length) {
+    result.missing = missing;
+    log(`  NOT fetched: ${missing.join(', ')} (see the lines above)`);
   }
   return result;
 };

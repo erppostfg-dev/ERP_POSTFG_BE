@@ -55,7 +55,8 @@
     "intransit:pepims": "ts-node --transpile-only src/scripts/intransit-pepims.ts",
     "intransit:masters": "ts-node --transpile-only src/scripts/intransit-masters.ts",
     "intransit:compare": "ts-node --transpile-only src/scripts/intransit-compare.ts",
-    "intransit:s3-migrate": "ts-node --transpile-only src/scripts/intransit-s3-migrate.ts"
+    "intransit:s3-migrate": "ts-node --transpile-only src/scripts/intransit-s3-migrate.ts",
+    "intransit:session": "ts-node --transpile-only src/scripts/intransit-session.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1146.0",

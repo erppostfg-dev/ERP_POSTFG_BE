@@ -2,8 +2,8 @@ import { spawn } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
 import type { Browser, BrowserContext, Download, Locator, Page, Response } from 'playwright';
-import { fileKind, frameToCsv, readReport, writeAtomic } from './files';
 import { Log, sleep } from './http';
+import { downloadEach, LIGHT_ARGS, RobotFile, skipHeavyContent } from './robot-files';
 
 /*
  * Myntra Partner Portal robot (user, 2026-10-28; steps watched in a person's session the same day): a headless browser
@@ -20,7 +20,9 @@ const HOME = 'https://partners.myntrainfo.com/';
 const DASHBOARD = 'https://partners.myntrainfo.com/Dashboard';
 const STOCK_MOVEMENT = 'https://partners.myntrainfo.com/StockMovement/order';
 const OPS_REPORTS = 'https://partners.myntrainfo.com/Reports/ops-reports';
-const SESSION_FILE = 'myntra-partner-portal-session.json';
+/** The saved login (cookies); kept between jobs with the other caches (s3/caches.ts) where the S3 store is on. */
+export const MYNTRA_SESSION_FILE = 'myntra-partner-portal-session.json';
+const SESSION_FILE = MYNTRA_SESSION_FILE;
 /** A top-menu entry the portal shows only to a logged-in partner. */
 const PORTAL_MENU = 'Buying & Inventory';
 /** The team chosen after login (as the team does by hand): the card, and the option it selects. */
@@ -55,7 +57,7 @@ const requireLogin = (cfg: MyntraConfig): { user: string; password: string } => 
 /** A private X display for the browser on a server without a screen (Xvfb, installed in the Docker image). */
 const startXvfb = async (): Promise<{ display: string; stop: () => void }> => {
   const display = `:${100 + Math.floor(Math.random() * 400)}`;
-  const xvfb = spawn('Xvfb', [display, '-screen', '0', '1920x1080x24', '-nolisten', 'tcp'], { stdio: 'ignore' });
+  const xvfb = spawn('Xvfb', [display, '-screen', '0', '1600x1000x24', '-nolisten', 'tcp'], { stdio: 'ignore' });
   const failed = await new Promise<Error | null>((resolve) => {
     xvfb.once('error', resolve);
     xvfb.once('exit', (code) => resolve(new Error(`Xvfb exited (${code})`)));
@@ -74,7 +76,9 @@ const startXvfb = async (): Promise<{ display: string; stop: () => void }> => {
 const openBrowser = async (cfg: MyntraConfig, sessionFile: string): Promise<{ browser: Browser; context: BrowserContext }> => {
   const { chromium } = await import('playwright');
   const hidden = cfg.headless ?? true;
-  const args = ['--disable-blink-features=AutomationControlled'];
+  // --disable-dev-shm-usage: Docker's 64 MB /dev/shm is too small for Chromium (it crashes on big pages)
+  // no --disable-gpu here: Akamai reads the graphics (WebGL) a browser reports, and a missing one looks like a robot
+  const args = ['--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage', ...LIGHT_ARGS];
   let screen: { display: string; stop: () => void } | null = null;
   if (hidden && process.platform === 'linux' && !process.env.DISPLAY) screen = await startXvfb();
   else if (hidden) args.push('--window-position=-32000,-32000');
@@ -133,20 +137,65 @@ const inPortal = (page: Page, timeoutMs: number): Promise<boolean> =>
  * which selects PARTNER_SELLER (its radio is hidden inside the card), then DONE. Without it the session stays on the
  * account's default team, whose Lot View names the STR column "PO Code" instead of "STR Code".
  */
-const chooseTeam = async (page: Page, log: Log): Promise<void> => {
+const chooseTeam = async (page: Page, log: Log, required = true): Promise<void> => {
   const card = page.getByText(TEAM_CARD, { exact: true }).first();
-  if (!(await card.waitFor({ state: 'visible', timeout: 20_000 }).then(() => true, () => false))) {
+  if (!(await card.waitFor({ state: 'visible', timeout: required ? 20_000 : 10_000 }).then(() => true, () => false))) {
+    if (!required) {
+      log('Myntra: no team chooser (the team chosen at the last login stays; the GRN column check catches a wrong one)');
+      return;
+    }
     throw new Error(`the team chooser ("${TEAM_CARD}") did not show after login`);
   }
   await humanClick(page, card);
   // the portal tags elements with data-test-id (hyphenated), not Playwright's default data-testid
   const option = page.locator(`[data-test-id="${TEAM}"]`);
-  if (!(await option.isChecked({ timeout: 5_000 }).catch(() => false))) await option.check({ force: true });
-  const switched = page.waitForResponse((r) => r.url().includes('/team/switch'), { timeout: STEP_TIMEOUT_MS });
-  await humanClick(page, page.getByRole('button', { name: 'DONE' }));
+  // the card click selects it; the radio is only a fallback (the chooser opened from GO TO DASHBOARD has none, 29-Oct)
+  if ((await option.count()) && !(await option.isChecked().catch(() => false))) await option.check({ force: true, timeout: 5_000 }).catch(() => undefined);
+  // caught here: when DONE is not found the wait must not end the process as an unhandled rejection
+  const switched = page.waitForResponse((r) => r.url().includes('/team/switch'), { timeout: required ? STEP_TIMEOUT_MS : 15_000 })
+    .then((r) => r, () => null);
+  const done = page.getByRole('button', { name: 'DONE' });
+  if (!required && !(await done.waitFor({ state: 'visible', timeout: 10_000 }).then(() => true, () => false))) {
+    log('Myntra: team unchanged (the chooser has no DONE; the GRN column check catches a wrong team)');
+    return;
+  }
+  await humanClick(page, done);
   const res = await switched;
+  if (!res) {
+    // after GO TO DASHBOARD the team is usually still the one chosen at the last login: DONE switches nothing (29-Oct)
+    if (!required) {
+      log('Myntra: team unchanged (no switch was needed; the GRN column check catches a wrong team)');
+      return;
+    }
+    throw new Error('Myntra did not switch the team after DONE');
+  }
   if (!res.ok()) throw new Error(`Myntra team switch answered ${res.status()}`);
   log(`Myntra: team ${TEAM}`);
+};
+
+/**
+ * From the landing page to the email login form (at a person's pace: the bot check scores the mouse moves). The page
+ * shows LOGIN, or - while Myntra's account login is still alive but the portal's session ended (another login of the
+ * account ends it, 29-Oct) - GO TO DASHBOARD, which may open the portal without a password ('portal').
+ */
+const openLoginForm = async (page: Page): Promise<'form' | 'portal' | null> => {
+  await page.goto(HOME);
+  const login = page.getByRole('button', { name: /^login$/i });
+  const toDashboard = page.getByText(/^\s*go to dashboard\s*$/i).first();
+  const useEmail = page.getByRole('button', { name: /Use Email/i });
+  await login.or(toDashboard).first().waitFor({ state: 'visible', timeout: 30_000 }).catch(() => undefined);
+  if (await toDashboard.isVisible()) {
+    await humanClick(page, toDashboard);
+  } else if (await login.isVisible()) {
+    await humanClick(page, login);
+  } else return null;
+  // in the portal = off the landing page (its menu shows only once the team is chosen: the chooser may be up first)
+  const opened = await Promise.race([
+    page.waitForURL(/partners\.myntrainfo\.com\/(?!$|\?)/, { timeout: 30_000 }).then(() => 'portal' as const),
+    useEmail.waitFor({ state: 'visible', timeout: 30_000 }).then(() => 'form' as const),
+  ]).catch(() => null);
+  if (opened === 'form') await humanClick(page, useEmail);
+  return opened;
 };
 
 /** Open the portal; when the saved session has expired, log in with the email and password. */
@@ -159,11 +208,25 @@ const ensureLogin = async (page: Page, context: BrowserContext, cfg: MyntraConfi
   } else {
     const { user, password } = requireLogin(cfg);
     log('Myntra: logging in');
-    await page.goto(HOME);
-    const loginButton = page.getByRole('button', { name: /^login$/i });
-    // at a person's pace: the bot check scores the login's mouse moves and typing
-    await humanClick(page, loginButton);
-    await humanClick(page, page.getByRole('button', { name: /Use Email/i }));
+    // the login form sometimes does not open (2026-10-29, dev server: no "Use Email"): try once more after a pause
+    let opened = await openLoginForm(page);
+    if (!opened) {
+      log(`Myntra: the login form did not open (${await pageState(page)}); trying once more`);
+      await page.waitForTimeout(between(8_000, 15_000));
+      opened = await openLoginForm(page);
+      if (!opened) {
+        throw new Error(`the Myntra login form did not open - ${await pageState(page)}. Myntra's bot check may be blocking this server: `
+          + 'log in on a laptop and hand the session over (npm run intransit:session -- --source myntra --scope test|prod)');
+      }
+    }
+    if (opened === 'portal') {
+      log('Myntra: logged in (account still logged in: GO TO DASHBOARD)');
+      // best effort here: the session usually keeps its team, and a wrong one fails the GRN column check visibly
+      await chooseTeam(page, log, false).catch((err: unknown) => log(`Myntra: team not chosen (${err instanceof Error ? err.message.split('\n')[0] : err})`));
+      await fs.mkdir(path.dirname(sessionFile), { recursive: true });
+      await context.storageState({ path: sessionFile });
+      return;
+    }
     await humanType(page, page.getByRole('textbox', { name: 'Email' }), user);
     await humanType(page, page.getByRole('textbox', { name: 'Password' }), password);
     await page.mouse.move(between(300, 1200), between(200, 700), { steps: 20 });
@@ -289,7 +352,7 @@ const downloadSoh = async (page: Page, log: Log): Promise<Uint8Array> => {
   throw new Error(`${REPORT.name} not ready after ${JOB_TIMEOUT_MS / 60_000} min - Myntra may be slow; fetch again`);
 };
 
-const FILES: Record<MyntraFile, { name: string; download: (page: Page, log: Log) => Promise<Uint8Array> }> = {
+const FILES: Record<MyntraFile, RobotFile> = {
   soh: { name: 'Myntra_SOH.csv', download: downloadSoh },
   grn: { name: 'Myntra_GRN.csv', download: downloadGrn },
 };
@@ -297,13 +360,24 @@ const FILES: Record<MyntraFile, { name: string; download: (page: Page, log: Log)
 const withPortal = async <T>(cfg: MyntraConfig, cacheDir: string, log: Log, work: (page: Page) => Promise<T>): Promise<T> => {
   const sessionFile = path.join(cacheDir, SESSION_FILE);
   const { browser, context } = await openBrowser(cfg, sessionFile);
+  const page = await context.newPage();
   try {
-    const page = await context.newPage();
     await ensureLogin(page, context, cfg, sessionFile, log);
+    await skipHeavyContent(context);
     return await work(page);
+  } catch (err) {
+    log(`  Myntra page when it failed: ${await pageState(page)}`);
+    throw err;
   } finally {
     await browser.close();
   }
+};
+
+/** Where the browser was and what it showed (for a failed step's log: on a server nobody sees the window). */
+const pageState = async (page: Page): Promise<string> => {
+  const title = await page.title().catch(() => '');
+  const text = ((await page.locator('body').innerText({ timeout: 2_000 }).catch(() => '')) || '').replace(/\s+/g, ' ').trim();
+  return `${page.url()} "${title}" - ${text.slice(0, 300) || '(no text)'}`;
 };
 
 /**
@@ -313,26 +387,13 @@ const withPortal = async <T>(cfg: MyntraConfig, cacheDir: string, log: Log, work
 export const fetchMyntra = async (cfg: MyntraConfig, dirs: { outDir: string; cacheDir: string }, log: Log, only?: string[]): Promise<string[]> => {
   // GRN first: it takes seconds, the SOH job minutes
   const wanted = (['grn', 'soh'] as MyntraFile[]).filter((k) => !only?.length || only.includes(k));
-  const written: string[] = [];
-  const failed: string[] = [];
-  await withPortal(cfg, dirs.cacheDir, log, async (page) => {
-    for (const key of wanted) {
-      const { name, download } = FILES[key];
-      log(`${name}: downloading from the Myntra Partner Portal ...`);
-      try {
-        const raw = await download(page, log);
-        // the download as it came, next to the CSV the pipeline reads
-        await writeAtomic(path.join(dirs.outDir, `${path.parse(name).name}.download.${fileKind(raw)}`), raw);
-        const df = readReport(raw);
-        await writeAtomic(path.join(dirs.outDir, name), frameToCsv(df));
-        log(`${name}: ${df.length.toLocaleString('en-US')} rows`);
-        written.push(name);
-      } catch (err) {
-        failed.push(name);
-        log(`${name}: FAILED - ${err instanceof Error ? err.message : err}`);
-      }
-    }
-  });
+  const { written, failed } = await withPortal(cfg, dirs.cacheDir, log, (page) => downloadEach(page, wanted.map((k) => FILES[k]), {
+    outDir: dirs.outDir,
+    portal: 'the Myntra Partner Portal',
+    log,
+    restart: async (p) => void (await p.goto(DASHBOARD)),
+    describe: pageState,
+  }));
   if (!written.length) throw new Error(`Myntra: nothing downloaded (${failed.join(', ')} failed)`);
   return written;
 };
