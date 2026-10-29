@@ -205,6 +205,20 @@ export const env = {
     flipkart: {
       appId: process.env.FLIPKART_APP_ID,
       appSecret: process.env.FLIPKART_APP_SECRET,
+      // Seller Hub robot (user, 2026-10-28): when set, FK_SOH + FK_GRN come from Seller Hub instead of the Seller API;
+      // the login OTP is read from the intake mailbox (GMAIL_*). FLIPKART_SELLER_HEADLESS=false shows the browser.
+      sellerHub: {
+        user: process.env.FLIPKART_SELLER_USER,
+        password: process.env.FLIPKART_SELLER_PASSWORD,
+        headless: (process.env.FLIPKART_SELLER_HEADLESS ?? 'true').trim().toLowerCase() !== 'false',
+      },
+    },
+    // Myntra Partner Portal robot (user, 2026-10-28): Myntra_SOH + Myntra_GRN. Email + password, no OTP. The browser is
+    // never shown unless MYNTRA_PARTNER_HEADLESS=false (it runs on a private Xvfb screen on the server).
+    myntra: {
+      user: process.env.MYNTRA_PARTNER_USER,
+      password: process.env.MYNTRA_PARTNER_PASSWORD,
+      headless: (process.env.MYNTRA_PARTNER_HEADLESS ?? 'true').trim().toLowerCase() !== 'false',
     },
     uniware: {
       // tenant name, or the address copied from the browser (https://<tenant>.unicommerce.com/...)

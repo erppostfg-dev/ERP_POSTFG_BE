@@ -6,7 +6,7 @@ import { User } from './auth.entities';
 /**
  * intransit_runs (2026-10-15, user): every In-transit Stock job, newest first on the page.
  *   kind report:                    a report build from the uploaded inputs (as_of, summary, sheet_rows, report_path).
- *   kind amazon / uniware / flipkart: a connector fetch whose files replace those inputs (`result`: files written).
+ *   kind amazon / uniware / flipkart / myntra: a connector fetch whose files replace those inputs (`result`: files written).
  * A run left queued or running when the server stops is marked failed at the next start.
  */
 @Entity({ name: TABLES.INTRANSIT_RUNS })

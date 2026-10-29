@@ -2,9 +2,13 @@ import crypto from 'crypto';
 import path from 'path';
 import { Frame } from '../frame';
 import { fileKind, frameToCsv, readReport, writeAtomic } from './files';
+import { checkSellerHub, fetchSellerHub, SellerHubConfig } from './flipkart-seller-hub';
 import { bytesOf, Log, sendRetry, sleep } from './http';
 
 /*
+ * When FLIPKART_SELLER_USER is set, fetch and check go to the Seller Hub robot instead (flipkart-seller-hub.ts,
+ * 2026-10-28: the Seller API answers "Incorrect Partner ID" for our app, and has no GRNs anyway).
+ *
  * Flipkart Seller API connector (port of intransit-service/intransit/sources/flipkart.py, Reports API).
  *   fetch  FK_SOH.csv from current_inventory_report, in the layout stage inventory reads
  *          (FSN, SKU, Title, Warehouse Id, Live on Website).
@@ -33,9 +37,14 @@ const REPORT_TIMEOUT_MS = 60 * 60 * 1000;
 export interface FlipkartConfig {
   appId?: string;
   appSecret?: string;
+  /** Set = FK_SOH + FK_GRN come from the Seller Hub robot (sources/flipkart-seller-hub.ts), not the Seller API. */
+  sellerHub?: SellerHubConfig;
 }
 
 export const FLIPKART_KEYS = ['FLIPKART_APP_ID', 'FLIPKART_APP_SECRET'];
+
+/** The robot is used once its login is in .env. */
+export const usesSellerHub = (cfg: FlipkartConfig): boolean => Boolean(cfg.sellerHub?.user);
 
 /** Minimal Flipkart Seller API client: client-credentials token + retry on 429. */
 export class FlipkartApi {
@@ -123,8 +132,10 @@ const toFkSoh = (report: Frame, log: Log): Frame => {
 
 const todayUtc = (): number => Date.parse(new Date().toISOString().slice(0, 10));
 
-/** Writes FK_SOH.csv into outDir; returns the file names written. */
-export const fetchFlipkart = async (cfg: FlipkartConfig, outDir: string, log: Log, days = 1): Promise<string[]> => {
+/** Writes FK_SOH.csv (Seller API) or FK_SOH.csv + FK_GRN.csv (Seller Hub robot) into outDir; returns the file names written. */
+export const fetchFlipkart = async (cfg: FlipkartConfig, dirs: { outDir: string; cacheDir: string }, log: Log, only?: string[], days = 1): Promise<string[]> => {
+  if (usesSellerHub(cfg)) return fetchSellerHub(cfg.sellerHub ?? {}, dirs, log, only);
+  const outDir = dirs.outDir;
   const api = new FlipkartApi(requireConfig(cfg));
   const raw = await runReport(api, 'current_inventory_report', inventoryParams(todayUtc(), days), log);
   const soh = toFkSoh(readReport(raw), log);
@@ -163,8 +174,9 @@ export const probeFlipkart = async (cfg: FlipkartConfig, outDir: string, log: Lo
   );
 };
 
-/** Login check only (gets an access token). */
-export const checkFlipkart = async (cfg: FlipkartConfig, log: Log): Promise<void> => {
+/** Login check only (Seller Hub: opens the dashboard, logging in if needed; Seller API: gets an access token). */
+export const checkFlipkart = async (cfg: FlipkartConfig, log: Log, cacheDir = ''): Promise<void> => {
+  if (usesSellerHub(cfg)) return checkSellerHub(cfg.sellerHub ?? {}, cacheDir, log);
   await new FlipkartApi(requireConfig(cfg)).login();
   log('Flipkart login: OK');
 };
