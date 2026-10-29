@@ -2,8 +2,8 @@ import fs from 'fs/promises';
 import path from 'path';
 import type { Browser, BrowserContext, Download, Page } from 'playwright';
 import { waitForOtp } from '../../email-intake/otp-mail';
-import { fileKind, frameToCsv, readReport, writeAtomic } from './files';
 import { Log, sleep } from './http';
+import { downloadEach, LIGHT_ARGS, RobotFile, skipHeavyContent } from './robot-files';
 
 /*
  * Flipkart Seller Hub robot (port of intransit-service/intransit/sources/flipkart_rpa.py; user, 2026-10-28): a
@@ -17,7 +17,9 @@ import { Log, sleep } from './http';
  */
 
 const HOME = 'https://seller.flipkart.com/';
-const SESSION_FILE = 'flipkart-seller-hub-session.json';
+/** The saved login (cookies); kept between jobs with the other caches (s3/caches.ts) where the S3 store is on. */
+export const SELLER_HUB_SESSION_FILE = 'flipkart-seller-hub-session.json';
+const SESSION_FILE = SELLER_HUB_SESSION_FILE;
 /** Seller Hub's OTP mail: "Flipkart Account - 123456 is your verification code for secure access". */
 const OTP_QUERY = 'from:noreply@rmo.flipkart.com';
 export const OTP_PATTERN = /\b(\d{6})\b[^\n]*verification code/i;
@@ -26,6 +28,14 @@ export const OTP_PATTERN = /\b(\d{6})\b[^\n]*verification code/i;
 const MENU_INVENTORY = 'trigger-menu-nav-menu-Inventory';
 const NAV_INVENTORY = 'option-item-Sales & Inventory-nav-menu-Inventory';
 const NAV_CONSIGNMENT = 'option-item-Consignment-nav-menu-Inventory';
+
+/** Popup buttons that only dismiss (closePopups): never Yes / Confirm / Delete. */
+const POPUP_DISMISS = /^\s*(close|ok|okay|got it|cancel|skip|dismiss|not now|later|remind me later|no thanks|×|x)\s*$/i;
+
+/** In-page: close every open popup with no text (a <dialog> by close(), else removed); returns the start of each one's HTML. */
+const CLOSE_EMPTY_POPUPS = `[...document.querySelectorAll('dialog[open], [role="alertdialog"]')]
+  .filter((d) => !d.innerText.trim())
+  .map((d) => { const html = d.outerHTML.slice(0, 200); if (typeof d.close === 'function') d.close(); else d.remove(); return html; })`;
 
 const STEP_TIMEOUT_MS = 60_000;
 const DOWNLOAD_TIMEOUT_MS = 180_000;
@@ -59,7 +69,9 @@ const openBrowser = async (cfg: SellerHubConfig, sessionFile: string): Promise<{
   const browser = await chromium.launch({
     headless: cfg.headless ?? true,
     ignoreDefaultArgs: ['--enable-automation'],
-    args: ['--disable-blink-features=AutomationControlled'],
+    // --disable-dev-shm-usage: Docker's 64 MB /dev/shm is too small for Chromium (it crashes on big pages)
+    // --disable-gpu: headless has no GPU to use anyway, and Seller Hub has no bot check that looks at it
+    args: ['--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage', '--disable-gpu', ...LIGHT_ARGS],
   });
   const platform = process.platform === 'win32' ? 'Windows NT 10.0; Win64; x64' : process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10_15_7' : 'X11; Linux x86_64';
   const major = browser.version().split('.')[0];
@@ -147,18 +159,58 @@ const downloadGrn = async (page: Page, log: Log): Promise<Uint8Array> => {
   return downloadBy(page, () => page.getByRole('button', { name: /Bulk Consignment File/ }).click(), log);
 };
 
-const FILES: Record<SellerHubFile, { name: string; download: (page: Page, log: Log) => Promise<Uint8Array> }> = {
+const FILES: Record<SellerHubFile, RobotFile> = {
   soh: { name: 'FK_SOH.csv', download: downloadSoh },
   grn: { name: 'FK_GRN.csv', download: downloadGrn },
+};
+
+/** Where the browser was and what it showed (for a failed step's log: on a server nobody sees the window). */
+const pageState = async (page: Page): Promise<string> => {
+  const title = await page.title().catch(() => '');
+  const text = ((await page.locator('body').innerText({ timeout: 2_000 }).catch(() => '')) || '').replace(/\s+/g, ' ').trim();
+  return `${page.url()} "${title}" - ${text.slice(0, 300) || '(no text)'}`;
+};
+
+/**
+ * A Seller Hub popup (role=alertdialog) over the page blocks every click (2026-10-29: FK_GRN timed out behind one).
+ * Whenever one is in the way, log its text and close it with a dismiss-type button (never one that confirms), else
+ * Escape; Playwright then retries the click.
+ */
+const closePopups = async (page: Page, log: Log): Promise<void> => {
+  const popup = page.locator('[role="alertdialog"]:visible, dialog[open]:visible').first();
+  await page.addLocatorHandler(popup, async () => {
+    // never throws: the page can close under it (the run ending) and a failed close only means the click retries
+    try {
+      const text = ((await popup.innerText({ timeout: 2_000 }).catch(() => '')) || '').replace(/\s+/g, ' ').trim();
+      if (!text) {
+        // an empty modal <dialog> (its content never loaded) still blocks the whole page, and Escape does not close it
+        const closed = await page.evaluate<string[]>(CLOSE_EMPTY_POPUPS);
+        log(`  Seller Hub empty popup closed: ${closed.join(' | ')}`);
+        return;
+      }
+      log(`  Seller Hub popup in the way: "${text.slice(0, 160)}"`);
+      const dismiss = popup.getByRole('button', { name: POPUP_DISMISS })
+        .or(popup.locator('[aria-label*="close" i], [data-testid*="close" i]')).first();
+      if (await dismiss.isVisible().catch(() => false)) await dismiss.click({ timeout: 5_000 });
+      else await page.keyboard.press('Escape');
+    } catch {
+      // the click is retried (and the handler run again) while the popup stays
+    }
+  }, { noWaitAfter: true });
 };
 
 const withSellerHub = async <T>(cfg: SellerHubConfig, cacheDir: string, log: Log, work: (page: Page) => Promise<T>): Promise<T> => {
   const sessionFile = path.join(cacheDir, SESSION_FILE);
   const { browser, context } = await openBrowser(cfg, sessionFile);
+  const page = await context.newPage();
   try {
-    const page = await context.newPage();
     await ensureLogin(page, context, cfg, sessionFile, log);
+    await closePopups(page, log); // after login: the OTP step must never be dismissed
+    await skipHeavyContent(context);
     return await work(page);
+  } catch (err) {
+    log(`  Seller Hub page when it failed: ${await pageState(page)}`);
+    throw err;
   } finally {
     await browser.close();
   }
@@ -169,27 +221,18 @@ const withSellerHub = async <T>(cfg: SellerHubConfig, cacheDir: string, log: Log
  * fails is logged and left out, so one slow report does not lose the other; it throws only when none was written.
  */
 export const fetchSellerHub = async (cfg: SellerHubConfig, dirs: { outDir: string; cacheDir: string }, log: Log, only?: string[]): Promise<string[]> => {
-  const wanted = (Object.keys(FILES) as SellerHubFile[]).filter((k) => !only?.length || only.includes(k));
-  const written: string[] = [];
-  const failed: string[] = [];
-  await withSellerHub(cfg, dirs.cacheDir, log, async (page) => {
-    for (const key of wanted) {
-      const { name, download } = FILES[key];
-      log(`${name}: downloading from Seller Hub ...`);
-      try {
-        const raw = await download(page, log);
-        // the download as it came, next to the CSV the pipeline reads
-        await writeAtomic(path.join(dirs.outDir, `${path.parse(name).name}.download.${fileKind(raw)}`), raw);
-        const df = readReport(raw);
-        await writeAtomic(path.join(dirs.outDir, name), frameToCsv(df));
-        log(`${name}: ${df.length.toLocaleString('en-US')} rows`);
-        written.push(name);
-      } catch (err) {
-        failed.push(name);
-        log(`${name}: FAILED - ${err instanceof Error ? err.message : err}`);
-      }
-    }
-  });
+  // GRN first: it takes seconds, Current Inventory minutes (and GRN failed behind a popup when it came second, 29-Oct)
+  const wanted = (['grn', 'soh'] as SellerHubFile[]).filter((k) => !only?.length || only.includes(k));
+  const { written, failed } = await withSellerHub(cfg, dirs.cacheDir, log, (page) => downloadEach(page, wanted.map((k) => FILES[k]), {
+    outDir: dirs.outDir,
+    portal: 'Seller Hub',
+    log,
+    restart: async (p) => {
+      await p.goto(HOME);
+      await onDashboard(p, DASHBOARD_TIMEOUT_MS);
+    },
+    describe: pageState,
+  }));
   if (!written.length) throw new Error(`Seller Hub: nothing downloaded (${failed.join(', ')} failed)`);
   return written;
 };

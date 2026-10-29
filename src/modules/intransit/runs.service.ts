@@ -1,4 +1,5 @@
 import { fork } from 'child_process';
+import os from 'os';
 import fs from 'fs';
 import fsp from 'fs/promises';
 import path from 'path';
@@ -50,7 +51,7 @@ import { AMAZON_KEYS } from './sources/amazon';
 import { FLIPKART_KEYS, usesSellerHub } from './sources/flipkart';
 import { SELLER_HUB_KEYS } from './sources/flipkart-seller-hub';
 import { MYNTRA_KEYS } from './sources/myntra-partner-portal';
-import { fetchPepimsTracker } from './sources/pepims';
+import { fetchPepimsTracker, PEPIMS_FILES } from './sources/pepims';
 import { UNIWARE_KEYS } from './sources/uniware';
 import { uniwareConfig } from './uniware-facilities';
 import { LOG_SOURCE } from '../../constants/logging';
@@ -78,6 +79,13 @@ const exportDir = (source: string, id: string): string => path.join(DIR(), INTRA
 const filesDirOf = (run: IntransitRun): string => (run.kind === INTRANSIT_RUN_KIND.REPORT ? runDir(run.id) : exportDir(run.kind, run.id));
 const cacheDir = (): string => path.join(DIR(), INTRANSIT_FOLDERS.CACHE);
 const LOG_FLUSH_MS = 2000;
+/**
+ * A portal or API is asked again only this long after its last fetch on this server ended (user, 2026-10-29: fetches
+ * of the same source back to back - GRN only, then SOH only - failed with errors and network failures).
+ */
+const SOURCE_COOLDOWN_MS = 60_000;
+/** When each source's last fetch ended on this server (for SOURCE_COOLDOWN_MS). */
+const fetchEnded = new Map<string, number>();
 const HEARTBEAT_MS = 30_000;
 /** Another machine's queued/running run quiet for this long is failed ("host stopped"). */
 const STALE_RUN_MS = 10 * 60_000;
@@ -434,6 +442,14 @@ const forkWorker = (job: WorkerJob, timeoutMs: number, onLog: (line: string) => 
       execArgv: [...(ext === '.ts' ? ['-r', 'ts-node/register/transpile-only'] : []), `--max-old-space-size=${env.intransit.workerMaxMemoryMb}`],
       stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
     });
+    // lower priority (Linux "nice"; inherited by the browser it starts): the API keeps the CPU it needs
+    if (child.pid && env.intransit.workerNice) {
+      try {
+        os.setPriority(child.pid, env.intransit.workerNice);
+      } catch (err) {
+        onLog(`(job priority not lowered: ${err instanceof Error ? err.message : String(err)})`);
+      }
+    }
     let settled = false;
     const finish = (err: Error | null, result?: unknown): void => {
       if (settled) return;
@@ -673,6 +689,7 @@ const execute = async (id: string): Promise<void> => {
       const day = checkDate(opts.date ?? run.asOf ?? undefined);
       // the day's Shipment_Status.csv (Amazon GRN reads it) in the job's own folder: from S3, or from the disk copy
       const inputDir = stored ? await prepareConnector(run, day) : await diskShipmentStatus(run.id, day);
+      await shipmentStatusForAmazon(run, opts, inputDir, day, onLog);
       const exportTo = stored ? path.join(jobDir(id), 'export') : exportDir(run.kind, id);
       const caches = stored ? path.join(jobDir(id), 'cache') : cacheDir();
       const loaded = stored ? await cachesIn(caches) : null;
@@ -682,8 +699,13 @@ const execute = async (id: string): Promise<void> => {
         dirs: { targetDir: stored ? null : dailyDir(day), mastersDir: inputDir, exportDir: exportTo, cacheDir: caches },
         options: opts,
       };
+      const pause = (fetchEnded.get(run.kind) ?? 0) + SOURCE_COOLDOWN_MS - Date.now();
+      if (pause > 0) {
+        onLog(`waiting ${Math.ceil(pause / 1000)} s: the last ${run.kind} fetch ended just now, and asked again at once it fails`);
+        await new Promise((resolve) => setTimeout(resolve, pause));
+      }
       const started = Date.now();
-      const result = (await runInWorker(job, env.intransit.connectorTimeoutMs, onLog)) as ConnectorResult;
+      const result = (await runInWorker(job, env.intransit.connectorTimeoutMs, onLog).finally(() => fetchEnded.set(run.kind, Date.now()))) as ConnectorResult;
       if (stored) {
         const keys = await storeOrKeep('the fetch', async () => {
           if (loaded) await cachesOut(caches, loaded);
@@ -693,9 +715,15 @@ const execute = async (id: string): Promise<void> => {
       }
       await flushAll();
       const rejected = Object.keys(result.rejected);
+      const missing = result.missing ?? [];
+      // a file that failed the check or did not come is named in error, so the page can say so (not only the log)
+      const problems = [
+        ...(missing.length ? [`not fetched: ${missing.join(', ')}`] : []),
+        ...(rejected.length ? [`not used (failed the column check): ${rejected.join(', ')}`] : []),
+      ];
       await repo().update({ id }, {
-        status: rejected.length && !result.saved.length ? INTRANSIT_RUN_STATUS.FAILED : INTRANSIT_RUN_STATUS.SUCCEEDED,
-        error: rejected.length ? `not used (failed the column check): ${rejected.join(', ')}` : null,
+        status: problems.length && !result.saved.length ? INTRANSIT_RUN_STATUS.FAILED : INTRANSIT_RUN_STATUS.SUCCEEDED,
+        error: problems.length ? problems.join('; ').slice(0, ERROR_MAX) : null,
         finishedAt: new Date(),
         timings: { total: Math.round((Date.now() - started) / 10) / 100 },
         result: result as unknown as QueryDeepPartialEntity<IntransitRun>['result'],
@@ -723,6 +751,29 @@ const diskShipmentStatus = async (id: string, day: string): Promise<string> => {
   const ss = (await resolveInputs(day)).files.find((f) => f.name === 'Shipment_Status.csv');
   if (ss) await fsp.copyFile(ss.path, path.join(dir, ss.name));
   return dir;
+};
+
+/**
+ * Amazon_GRN needs the day's Shipment_Status.csv (its Amazon shipment ids). It is read from PEPIMS only by a build, so
+ * a fetch of Amazon on its own failed with "upload it first" until a build had run that day (user, 2026-10-29). When
+ * the day has none, read it from PEPIMS here, for this fetch only (the build still saves the day's copy); on failure
+ * the fetch stops with its usual message.
+ */
+const shipmentStatusForAmazon = async (run: IntransitRun, opts: ConnectorOptions, inputDir: string, day: string, log: (line: string) => void): Promise<void> => {
+  const only = onlyList(opts.only);
+  if (run.kind !== INTRANSIT_SOURCE.AMAZON || (only.length && !only.includes('grn')) || env.intransit.poSource !== 'pepims') return;
+  const target = path.join(inputDir, PEPIMS_FILES.SHIPMENT_STATUS);
+  if (fs.existsSync(target)) return;
+  const tmp = path.join(inputDir, '_pepims');
+  try {
+    const r = await fetchPepimsTracker(env.db, tmp, day, log);
+    await fsp.copyFile(path.join(tmp, PEPIMS_FILES.SHIPMENT_STATUS), target);
+    log(`pepims: the day has no Shipment_Status.csv yet, so it was read from PEPIMS for Amazon_GRN (${r.pos} POs, Entry Date ${r.from} .. ${r.to})`);
+  } catch (err) {
+    log(`pepims: Shipment_Status.csv could not be read from PEPIMS - ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    await fsp.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
+  }
 };
 
 /** A run has ended: its run.json, beside its files (disk) or in its Full Report folder (S3; builds only). */
