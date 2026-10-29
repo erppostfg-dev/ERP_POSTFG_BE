@@ -79,6 +79,21 @@ describe('PO Review lists and one PO', () => {
     expect(refused.body.error.details.map((d: { field: string }) => d.field).sort()).toEqual(['from', 'status']);
   });
 
+  it('PO Date and Processed At on both lists (In Review: date read from the PO, before any saved PO)', async () => {
+    const done = await runPo(bigBasketPo(m, { po_date: '2026-10-20' }));
+    const bad = await runPo(bigBasketPo(m, { po_number: 'IRA90000002', po_date: '2026-10-21T00:00:00Z', delivery_facility_code: 'WMS-UNKNOWN', delivery_pincode: '999999' }));
+    // the chain stores the PO's own date (day only) on the row
+    expect((await rows<{ po_date: unknown }>('SELECT DATE_FORMAT(po_date, "%Y-%m-%d") AS po_date FROM po_uploads WHERE id = ?', [bad.id]))[0].po_date).toBe('2026-10-21');
+    const review = (await api().get(`${V}/po-review`).set('Cookie', reviewer.cookie).expect(200)).body.data[0];
+    expect(review.poDate).toBe('2026-10-21');
+    expect(review.processedAt).toBeTruthy();
+    expect(review.receivedAt).toBeTruthy();
+    const processed = (await api().get(`${V}/po-review?status=completed`).set('Cookie', reviewer.cookie).expect(200)).body.data[0];
+    expect(processed.uploadId).toBe(done.id);
+    expect(processed.poDate).toBe('2026-10-20');
+    expect(processed.processedAt).toBe(processed.completedAt);
+  });
+
   it('one PO: issues, PO lines from processed.json (S3), the channel SKUs to pick from; unknown id -> 404', async () => {
     const bad = await reviewPo();
     const res = await api().get(`${V}/po-review/${bad.id}`).set('Cookie', reviewer.cookie).expect(200);

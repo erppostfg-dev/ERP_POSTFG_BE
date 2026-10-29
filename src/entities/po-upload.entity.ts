@@ -120,6 +120,13 @@ export class PoUpload {
   @Column({ name: 'uniware_uploaded_by', type: 'int', nullable: true })
   uniwareUploadedBy: number | null;
 
+  /**
+   * The PO's own date as read from the PO (processed.json po_date, YYYY-MM-DD), written every time the chain checks the
+   * PO (2026-10-29, user: PO Date on the In Review tab, where no saved PO exists yet). Null when the PO has none.
+   */
+  @Column({ name: 'po_date', type: 'date', nullable: true })
+  poDate: string | null;
+
   /** PO intake (2026-10-23): when a HELD PO was let go; it counts against THAT day's limit, not its arrival day's. */
   @Column({ name: 'released_at', type: 'datetime', nullable: true })
   releasedAt: Date | null;

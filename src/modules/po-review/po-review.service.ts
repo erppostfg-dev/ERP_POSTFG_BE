@@ -47,9 +47,15 @@ export interface PoReviewListItem {
   /** The email's subject; for an API PO the channel's own name for it (Amazon: the shipment name). Copied on the screen. */
   subject: string | null;
   fileName: string;
+  /** The PO's own date: the saved PO's, else as read from the PO (po_uploads.po_date, for POs in review). */
   poDate: string | null;
   receivedAt: string | null;
   completedAt: string | null;
+  /**
+   * When the system processed it (2026-10-29): completed = completedAt; otherwise when the PO was read (OCR finished),
+   * or, for POs read without OCR (sheets, API), when the row was made.
+   */
+  processedAt: string | null;
   brand: string | null;
   saleOrderCode: string | null;
   lines: number | null;
@@ -144,9 +150,10 @@ export const listPoReview = async (query: PoReviewListQuery): Promise<{ items: P
       source: u.source,
       subject: u.emailSubject,
       fileName: u.fileName,
-      poDate: po?.poDate ? String(po.poDate) : null,
+      poDate: po?.poDate ? String(po.poDate) : u.poDate ? String(u.poDate) : null,
       receivedAt: iso(u.emailReceivedAt ?? u.createdAt),
       completedAt: iso(u.completedAt),
+      processedAt: iso(u.completedAt ?? u.ocrFinishedAt ?? u.createdAt),
       brand: po?.brandName ?? null,
       saleOrderCode: po?.orderNo1 ?? null,
       // Before the PO is saved, the line count comes from the OCR summary.
