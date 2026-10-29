@@ -39,6 +39,8 @@ const CONTENT_TYPES: Record<string, string> = {
   '.xls': 'application/vnd.ms-excel',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
 };
 
 const METADATA = FILES.METADATA;
@@ -101,6 +103,15 @@ export const writeS3Text = async (s3Url: string, body: string): Promise<void> =>
   const key = keyOfS3Url(s3Url);
   await putBody(key, body, key);
 };
+
+/** Writes a file (bytes) to S3 by its s3:// URL; the type comes from the name (Feedback images, 2026-10-29). */
+export const writeS3File = async (s3Url: string, body: Buffer): Promise<void> => {
+  const key = keyOfS3Url(s3Url);
+  await putBody(key, body, key);
+};
+
+/** The s3:// URL of a key in our bucket. */
+export const s3UrlOfKey = (key: string): string => `s3://${env.s3.bucket}/${key}`;
 
 /**
  * A short-lived https link to an S3 file, for the browser (it cannot open s3://). The file is served with its type

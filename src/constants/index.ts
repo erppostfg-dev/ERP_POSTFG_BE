@@ -6,6 +6,7 @@ export * from './auth';
 export * from './channel-api';
 export * from './channels';
 export * from './dates';
+export * from './feedback';
 export * from './db';
 export * from './errors';
 export * from './files';

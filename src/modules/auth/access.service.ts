@@ -1,6 +1,6 @@
 import { AppDataSource } from '../../config/data-source';
 import { env } from '../../config/env';
-import { ACCESS_LEVEL, AccessLevel, CAPABILITIES, Capability, PAGES, TABLES } from '../../constants';
+import { ACCESS_LEVEL, AccessLevel, CAPABILITIES, Capability, OPEN_PAGES, PAGES, TABLES } from '../../constants';
 import { USER_ADMIN_ROLES } from '../../constants/users';
 
 /*
@@ -70,6 +70,8 @@ export const loadAccess = async (userId: number, roles: string[]): Promise<Acces
 
 /** The rules above, on rows already loaded: no query. */
 export const accessFrom = (rows: AccessRows, pageSlug: string): AccessLevel => {
+  // pages open to every signed-in person (OPEN_PAGES): no grants needed or read
+  if (OPEN_PAGES.some((p) => pageSlug === p.slug || pageSlug.startsWith(`${p.slug}/`))) return ACCESS_LEVEL.EDITOR;
   for (let slug: string | null = pageSlug; slug; slug = parentSlug(slug)) {
     const own = rows.own.get(slug);
     if (own) return own;
@@ -99,5 +101,5 @@ export const resolveCapabilities = async (userId: number, roles: string[], rows?
 /** Every page's level for the user (for /auth/me: the sidebar hides `none` and locks `viewer`; pass `rows` to reuse a load). */
 export const resolveAllAccess = async (userId: number, roles: string[], rows?: AccessRows): Promise<Record<string, AccessLevel>> => {
   const loaded = rows ?? (await loadAccess(userId, roles));
-  return Object.fromEntries(PAGES.map((p) => [p.slug, accessFrom(loaded, p.slug)]));
+  return Object.fromEntries([...PAGES, ...OPEN_PAGES].map((p) => [p.slug, accessFrom(loaded, p.slug)]));
 };

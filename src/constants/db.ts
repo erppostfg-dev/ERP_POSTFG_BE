@@ -76,6 +76,11 @@ export const TABLES = {
   // Who changed what in the 5 Masters tabs (2026-10-28): one row per changed field, read by the History button.
   MASTER_CHANGE_LOGS: 'master_change_logs',
   // Inbound plan + shipment tracking (2026-10-19, constants/inbound.ts).
+  // Feedback (2026-10-29, constants/feedback.ts): items, the people added to each, images (S3), comments + changes.
+  FEEDBACK_ITEMS: 'feedback_items',
+  FEEDBACK_MEMBERS: 'feedback_members',
+  FEEDBACK_IMAGES: 'feedback_images',
+  FEEDBACK_COMMENTS: 'feedback_comments',
   INBOUND_PLANS: 'inbound_plans',
   INBOUND_SHIPMENTS: 'inbound_shipments',
   INBOUND_SHIPMENT_LINES: 'inbound_shipment_lines',

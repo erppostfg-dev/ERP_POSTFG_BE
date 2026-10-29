@@ -120,6 +120,12 @@ export const ERRORS = {
   MASTER_ROW_NOT_FOUND: define(404, (type: string, id: string) => `No ${type} row ${id}`),
   MASTER_EDIT_CONFLICT: define(409, () => 'Someone else changed this row while you were editing: reload it and save again'),
   USER_ID_NOT_FOUND: define(404, (id: string) => `No user ${id}`),
+  // --- Feedback (2026-10-29, constants/feedback.ts) ---
+  FEEDBACK_NOT_FOUND: define(404, (id: string) => `No feedback item ${id}`),
+  FEEDBACK_NOT_ALLOWED: define(403, () => 'Only the person who added this item, the people added to it, or a developer / admin can change it'),
+  FEEDBACK_IMAGE_LIMIT: define(400, (max: number, have: number) => `At most ${max} images per item (it has ${have})`),
+  FEEDBACK_IMAGE_TYPE: define(400, (name: string) => `${name} is not a PNG, JPEG, WEBP or GIF image`),
+  FEEDBACK_IMAGE_NOT_FOUND: define(404, (id: string) => `No image ${id} on this item`),
   USER_EXISTS: define(409, (email: string) => `${email} is already a user`),
   EMAIL_DOMAIN_NOT_ALLOWED: define(400, (domain: string) => `Only ${domain} email addresses can be added (they sign in with Google)`),
   ROLE_NOT_FOUND: define(400, (role: string) => `No role "${role}"`),
