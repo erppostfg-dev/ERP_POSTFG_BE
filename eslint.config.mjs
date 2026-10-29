@@ -25,7 +25,8 @@ export default tseslint.config(
     files: ['src/**/*.ts', 'test/**/*.ts'],
     languageOptions: {
       globals: globals.node,
-      parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname },
+      // one program for src + test (tsconfig.eslint.json): projectService made one per tsconfig and ran out of memory in CI
+      parserOptions: { project: ['./tsconfig.eslint.json'], tsconfigRootDir: import.meta.dirname },
     },
     rules: {
       // the bugs that hurt us most: a promise nobody waits for / catches, an async function where a plain one is expected
