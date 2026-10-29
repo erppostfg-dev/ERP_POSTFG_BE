@@ -57,6 +57,13 @@ const n = (v: unknown): number => {
 
 // ---- The switch per channel (Users & Roles -> Settings) ----------------------------------------------------------------
 
+/**
+ * A channel name as MySQL compares it (case and outer spaces ignored). The 28 Oct masters renamed some channels only in
+ * case ("Gluzo" -> "GLUZO"): their saved switch rows kept the old spelling, MySQL still matched them on save but the
+ * exact compares here did not, so the switch showed the default and could not be turned OFF (fixed 2026-10-29).
+ */
+const channelKey = (name: string) => name.trim().toLowerCase();
+
 /** Channel -> ON / OFF as saved; a channel without a row uses PO_VERIFY_REQUIRED (.env). */
 const switches = async (): Promise<(channel: string | null) => boolean> => {
   // Before the PoVerifyChannelSettings migration has run: every channel uses the .env default.
@@ -64,8 +71,8 @@ const switches = async (): Promise<(channel: string | null) => boolean> => {
     if (err.code === 'ER_NO_SUCH_TABLE') return [];
     throw err;
   });
-  const byChannel = new Map(rows.map((r) => [r.channel, r.required]));
-  return (channel) => (channel !== null && byChannel.has(channel) ? byChannel.get(channel)! : env.poVerify.required);
+  const byChannel = new Map(rows.map((r) => [channelKey(r.channel), r.required]));
+  return (channel) => (channel !== null && byChannel.has(channelKey(channel)) ? byChannel.get(channelKey(channel))! : env.poVerify.required);
 };
 
 export interface VerifyChannelSetting {
@@ -86,11 +93,12 @@ export const listChannelSettings = async (): Promise<{ defaultRequired: boolean;
   const counts = (await AppDataSource.query(
     `SELECT u.channel, v.action, COUNT(*) n FROM ${TABLES.PO_VERIFICATIONS} v JOIN ${TABLES.PO_UPLOADS} u ON u.id = v.upload_id GROUP BY u.channel, v.action`,
   )) as { channel: string | null; action: string; n: string | number }[];
-  const count = (channel: string, action: string) => Number(counts.find((c) => c.channel === channel && c.action === action)?.n ?? 0);
+  const count = (channel: string, action: string) =>
+    counts.filter((c) => c.channel !== null && channelKey(c.channel) === channelKey(channel) && c.action === action).reduce((n, c) => n + Number(c.n), 0);
   return {
     defaultRequired: env.poVerify.required,
     channels: channels.map((c) => {
-      const r = rows.find((x) => x.channel === c.displayName);
+      const r = rows.find((x) => channelKey(x.channel) === channelKey(c.displayName));
       return {
         channel: c.displayName,
         required: r ? r.required : env.poVerify.required,
@@ -107,12 +115,14 @@ export const listChannelSettings = async (): Promise<{ defaultRequired: boolean;
 export const updateChannelSetting = async (channel: string, required: boolean, by: Actor): Promise<VerifyChannelSetting> => {
   const known = await AppDataSource.getRepository(MasterChannel).findOneBy({ displayName: channel });
   if (!known) throw appError(ERROR_CODES.VERIFY_CHANNEL_NOT_FOUND, channel);
+  const name = known.displayName;
   const repo = AppDataSource.getRepository(PoVerifyChannelSetting);
-  const row = (await repo.findOneBy({ channel })) ?? repo.create({ channel });
-  await repo.save({ ...row, required, updatedBy: by.id, updatedAt: new Date() });
-  await audit(by, `po verify: ${channel} switched ${required ? 'ON' : 'OFF'}`);
+  // MySQL finds the row whatever its spelling; it takes the channel's current one
+  const row = (await repo.findOneBy({ channel: name })) ?? repo.create({ channel: name });
+  await repo.save({ ...row, channel: name, required, updatedBy: by.id, updatedAt: new Date() });
+  await audit(by, `po verify: ${name} switched ${required ? 'ON' : 'OFF'}`);
   bumpReview();
-  return (await listChannelSettings()).channels.find((c) => c.channel === channel)!;
+  return (await listChannelSettings()).channels.find((c) => channelKey(c.channel) === channelKey(name))!;
 };
 
 // ---- States (the Processed tab's Verified / To verify badges) ------------------------------------------------------
