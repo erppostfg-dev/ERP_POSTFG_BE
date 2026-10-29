@@ -1,8 +1,7 @@
-import { In } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
-import { ACCESS_LEVEL, AccessLevel, CAPABILITIES, Capability, PAGES } from '../../constants';
+import { env } from '../../config/env';
+import { ACCESS_LEVEL, AccessLevel, CAPABILITIES, Capability, PAGES, TABLES } from '../../constants';
 import { USER_ADMIN_ROLES } from '../../constants/users';
-import { PagePermission, UserPagePermission } from '../../entities';
 
 /*
  * Page access, ported from prefg's lib/permissions.ts resolveAccess:
@@ -36,17 +35,37 @@ export interface AccessRows {
   roles: string[];
 }
 
-/** 2 queries, only the 2 columns used (2026-10-27: was 2 per page per level, ~45-90 for /auth/me). */
+/*
+ * A person's access rows kept for AUTH_CACHE_SECONDS (2026-10-27, user OK with 30 s), per user + roles. Changes in
+ * Users & Roles clear them at once (forgetAccess).
+ */
+const accessCache = new Map<number, { roles: string; rows: AccessRows; until: number }>();
+
+/** Clears cached access rows: of one user, or of everyone (a role's page access changed). */
+export const forgetAccess = (userId?: number): void => void (userId === undefined ? accessCache.clear() : accessCache.delete(userId));
+
+/**
+ * One query, only the 2 columns used (2026-10-27: was 2 per page per level, ~45-90 for /auth/me, then 2): the person's
+ * overrides and their roles' grants together (UNION ALL), then kept for AUTH_CACHE_SECONDS.
+ */
 export const loadAccess = async (userId: number, roles: string[]): Promise<AccessRows> => {
-  const [own, grants] = await Promise.all([
-    AppDataSource.getRepository(UserPagePermission).find({ select: { pageSlug: true, accessLevel: true }, where: { userId } }),
-    roles.length
-      ? AppDataSource.getRepository(PagePermission).find({ select: { pageSlug: true, accessLevel: true }, where: { role: In(roles) } })
-      : Promise.resolve([]),
-  ]);
+  const key = [...roles].sort().join(',');
+  const hit = accessCache.get(userId);
+  if (hit && hit.roles === key && hit.until > Date.now()) return hit.rows;
+
+  const sql = `SELECT 'own' kind, page_slug, access_level FROM ${TABLES.USER_PAGE_PERMISSIONS} WHERE user_id = ?${
+    roles.length ? ` UNION ALL SELECT 'role' kind, page_slug, access_level FROM ${TABLES.PAGE_PERMISSIONS} WHERE role IN (?)` : ''
+  }`;
+  const found = (await AppDataSource.query(sql, roles.length ? [userId, roles] : [userId])) as { kind: 'own' | 'role'; page_slug: string; access_level: AccessLevel }[];
+  const own = new Map<string, AccessLevel>();
   const byPage = new Map<string, AccessLevel[]>();
-  for (const g of grants) byPage.set(g.pageSlug, [...(byPage.get(g.pageSlug) ?? []), g.accessLevel]);
-  return { own: new Map(own.map((o) => [o.pageSlug, o.accessLevel])), grants: byPage, roles };
+  for (const f of found) {
+    if (f.kind === 'own') own.set(f.page_slug, f.access_level);
+    else byPage.set(f.page_slug, [...(byPage.get(f.page_slug) ?? []), f.access_level]);
+  }
+  const rows: AccessRows = { own, grants: byPage, roles };
+  if (env.auth.cacheSeconds > 0) accessCache.set(userId, { roles: key, rows, until: Date.now() + env.auth.cacheSeconds * 1000 });
+  return rows;
 };
 
 /** The rules above, on rows already loaded: no query. */

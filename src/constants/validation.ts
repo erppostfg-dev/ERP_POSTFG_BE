@@ -181,6 +181,9 @@ export const VALIDATION_TEXT = {
     `channel SKU code ${code} is not in master_channel_skus for this channel; the PO says it is our SKU ${pepCode} (in master_skus): add ${code} -> ${pepCode} with its rate to this channel's SKUs, then Re-check`,
   SKU_MANY: (code: string, pepCodes: string) => `channel SKU code ${code} maps to several of our SKUs (${pepCodes})`,
   SKU_NO_RATE: (pepCode: string) => `our SKU ${pepCode} has no rate_after_margin in master_channel_skus`,
+  /** Switched off on the Masters page (2026-10-28): the PO line or location goes to review. */
+  SKU_INACTIVE: (pepCode: string) => `our SKU ${pepCode} is inactive in the PEP SKU master (switch it on, or map the line to another SKU)`,
+  FACILITY_INACTIVE: (code: string, facility: string) => `location "${code}" is served by warehouse ${facility}, which is inactive in the Warehouses master`,
   QTY_MISSING: 'no quantity on the PO line',
   PRICE_MISSING: 'no unit price on the PO line (neither landing rate nor unit cost)',
   GST_MISSING: (pepCode: string) => `no GST rate for ${pepCode} (neither on the PO nor in master_skus)`,

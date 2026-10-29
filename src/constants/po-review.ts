@@ -125,5 +125,5 @@ export const REVIEW_RECHECK = {
   FIRST_DELAY_MS: 60_000,
   REMARK: 'Fixed in master, re-checked automatically',
   ROUTE: '/recheck',
-  TRIGGER: { TIMER: 'timer', MASTER_LOAD: 'master_load', BUTTON: 'button' },
+  TRIGGER: { TIMER: 'timer', MASTER_LOAD: 'master_load', BUTTON: 'button', MASTER_ADD: 'master_add', MASTER_EDIT: 'master_edit' },
 } as const;

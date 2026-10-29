@@ -1,0 +1,3 @@
+# Before every commit (2026-10-28): lint the staged files + typecheck. Fails = no commit; fix and commit again.
+npx lint-staged
+npm run typecheck

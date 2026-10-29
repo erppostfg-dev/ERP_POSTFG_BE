@@ -15,6 +15,7 @@ import { ActivityLog, PagePermission, Role } from '../../entities';
 import { appError } from '../../utils/AppError';
 import { LOG_SOURCE } from '../../constants/logging';
 import { log } from '../../utils/logger';
+import { forgetAccess } from '../auth/access.service';
 
 /*
  * Roles (2026-10-15, user: "based on the role he can only access a few routes"). A role = a label + page grants
@@ -101,5 +102,6 @@ export const updateRole = async (key: string, input: { grants: Grants }, by: { i
     await audit(m, by.id, `roles: page access of ${key} -> ${summary(input.grants)}`);
   });
   log.info(LOG_SOURCE.APP, `[roles] ${by.email} changed role ${key}`);
+  forgetAccess(); // everyone with this role sees the new page access at once (2026-10-27)
   return (await listRoles()).find((r) => r.key === key)!;
 };

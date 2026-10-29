@@ -1,0 +1,8 @@
+{
+  // Type checking for the tests (2026-10-28): the app's settings, plus test/ and the unit tests next to the code.
+  // Never used for the build (the root tsconfig.json builds src/ only).
+  "extends": "../tsconfig.json",
+  "compilerOptions": { "rootDir": "..", "noEmit": true, "types": ["node"] },
+  "include": ["../src/**/*.ts", "./**/*.ts"],
+  "exclude": ["../node_modules", "../dist"]
+}

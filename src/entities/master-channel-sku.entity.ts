@@ -54,6 +54,13 @@ export class MasterChannelSku {
   @Column({ name: 'pep_sku_id', type: 'int', nullable: true })
   pepSkuId: number | null;
 
+  /**
+   * Switched off on the Masters page (2026-10-28, migration ChannelSkuActive; every existing row active): PO checks,
+   * the review SKU picker and the Amazon inbound lines use active rows only; only active rows count as duplicates.
+   */
+  @Column({ name: 'is_active', type: 'boolean', default: true })
+  isActive: boolean;
+
   /** pep_code -> master_skus.pep_code (join only; no FK in the live table). */
   @ManyToOne(() => MasterSku, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'pep_code', referencedColumnName: 'pepCode' })

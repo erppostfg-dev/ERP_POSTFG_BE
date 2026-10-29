@@ -103,7 +103,8 @@ const start = async (): Promise<void> => {
 
   // Manual uploads (2026-10-22): ones queued by a Process click (or cut off while processing) continue, one at a time.
   // "uploaded" ones wait for a Process click.
-  if (AppDataSource.isInitialized) void resumeManualQueue();
+  // Not in laptop mode (2026-10-27): the dev EC2 owns the shared DB's queue.
+  if (AppDataSource.isInitialized && !env.laptopMode) void resumeManualQueue();
 
   // Re-check of POs in review after master fixes (2026-10-22): every RECHECK_MINUTES (0 = off), first one a minute after
   // start. A run never overlaps the previous one.
@@ -122,7 +123,8 @@ const start = async (): Promise<void> => {
   // PO intake per channel (2026-10-23): held POs of channels that are ON with room today go on, one by one; a new day
   // frees the limit, so this looks again every RELEASE_EVERY_MINUTES.
   let releaseTimer: NodeJS.Timeout | undefined;
-  if (AppDataSource.isInitialized) {
+  // Not in laptop mode (2026-10-27): 529 held POs sit in the shared DB; only the dev EC2 releases them.
+  if (AppDataSource.isInitialized && !env.laptopMode) {
     setTimeout(kickRelease, PO_INTAKE.RELEASE_FIRST_DELAY_MS);
     releaseTimer = setInterval(kickRelease, PO_INTAKE.RELEASE_EVERY_MINUTES * 60_000);
   }

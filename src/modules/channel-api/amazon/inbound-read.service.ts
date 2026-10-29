@@ -175,7 +175,7 @@ export const getShipment = async (externalId: string) => {
   const lines = await AppDataSource.getRepository(InboundShipmentLine).find({ where: { shipmentId: row.id }, order: { sellerSku: 'ASC' } });
   // Our PEP code + name for each line: Amazon SKU master by FNSKU (master_channel_skus.channel_code).
   const fnskus = lines.map((l) => l.fnsku).filter((x): x is string => !!x);
-  const master = fnskus.length ? await AppDataSource.getRepository(MasterChannelSku).find({ select: ['channelCode', 'pepCode', 'productName'], where: { channelCode: In(fnskus) } }) : [];
+  const master = fnskus.length ? await AppDataSource.getRepository(MasterChannelSku).find({ select: ['channelCode', 'pepCode', 'productName'], where: { channelCode: In(fnskus), isActive: true } }) : [];
   return {
     shipment: item,
     lines: lines.map((l) => {

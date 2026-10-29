@@ -1,0 +1,337 @@
+{
+  "src/config/db-logger.ts": {
+    "@typescript-eslint/no-base-to-string": {
+      "count": 1
+    }
+  },
+  "src/config/env.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 3
+    }
+  },
+  "src/dev.ts": {
+    "@typescript-eslint/no-require-imports": {
+      "count": 1
+    }
+  },
+  "src/middlewares/request-log.ts": {
+    "@typescript-eslint/no-base-to-string": {
+      "count": 1
+    }
+  },
+  "src/modules/admin/roles.service.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 3
+    }
+  },
+  "src/modules/admin/users.service.ts": {
+    "@typescript-eslint/await-thenable": {
+      "count": 1
+    },
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    }
+  },
+  "src/modules/auth/access.service.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    }
+  },
+  "src/modules/auth/auth.middleware.ts": {
+    "@typescript-eslint/no-unused-expressions": {
+      "count": 1
+    }
+  },
+  "src/modules/auth/session.service.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    }
+  },
+  "src/modules/channel-api/amazon/amazon.connector.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 4
+    }
+  },
+  "src/modules/channel-api/amazon/inbound-sync.service.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    }
+  },
+  "src/modules/email-intake/email-storage.service.ts": {
+    "no-control-regex": {
+      "count": 1
+    }
+  },
+  "src/modules/email-intake/gmail-watch.service.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 2
+    }
+  },
+  "src/modules/email-intake/intake-emails.service.ts": {
+    "@typescript-eslint/no-base-to-string": {
+      "count": 1
+    }
+  },
+  "src/modules/email-intake/s3-mirror.service.ts": {
+    "@typescript-eslint/no-base-to-string": {
+      "count": 1
+    }
+  },
+  "src/modules/manual-upload/amazon-tsv.ts": {
+    "no-irregular-whitespace": {
+      "count": 1
+    }
+  },
+  "src/modules/manual-upload/manual-upload.service.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    }
+  },
+  "src/modules/masters/master-add.service.ts": {
+    "@typescript-eslint/no-base-to-string": {
+      "count": 1
+    },
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 6
+    }
+  },
+  "src/modules/masters/master-edit.service.ts": {
+    "@typescript-eslint/no-base-to-string": {
+      "count": 9
+    },
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 5
+    }
+  },
+  "src/modules/masters/master-history.service.ts": {
+    "@typescript-eslint/no-base-to-string": {
+      "count": 2
+    },
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 7
+    }
+  },
+  "src/modules/masters/master-load.service.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 3
+    }
+  },
+  "src/modules/masters/master-log.ts": {
+    "@typescript-eslint/no-base-to-string": {
+      "count": 1
+    }
+  },
+  "src/modules/masters/pepims-source.ts": {
+    "@typescript-eslint/no-base-to-string": {
+      "count": 1
+    }
+  },
+  "src/modules/ocr/link-downloader.ts": {
+    "no-control-regex": {
+      "count": 1
+    }
+  },
+  "src/modules/ocr/sheet-reader.ts": {
+    "no-irregular-whitespace": {
+      "count": 1
+    }
+  },
+  "src/modules/po-issues/po-issues.service.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 2
+    }
+  },
+  "src/modules/po-jobs/po-jobs.worker.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 2
+    }
+  },
+  "src/modules/po-overview/po-overview.edit.ts": {
+    "@typescript-eslint/no-base-to-string": {
+      "count": 8
+    },
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 3
+    }
+  },
+  "src/modules/po-overview/po-overview.live.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 2
+    }
+  },
+  "src/modules/po-overview/po-overview.queries.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    }
+  },
+  "src/modules/po-overview/po-overview.service.ts": {
+    "@typescript-eslint/no-base-to-string": {
+      "count": 2
+    }
+  },
+  "src/modules/po-pipeline/pipeline.service.ts": {
+    "@typescript-eslint/no-base-to-string": {
+      "count": 1
+    },
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 2
+    }
+  },
+  "src/modules/po-pipeline/po-save.service.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    }
+  },
+  "src/modules/po-pipeline/po-uploads.service.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    }
+  },
+  "src/modules/po-processing/channels/bigbasket/bigbasket.handler.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    }
+  },
+  "src/modules/po-processing/channels/nykaa/nykaa.handler.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 2
+    }
+  },
+  "src/modules/po-processing/channels/purplle/purplle.handler.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 2
+    }
+  },
+  "src/modules/po-processing/channels/reliance/reliance.handler.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 3
+    }
+  },
+  "src/modules/po-processing/channels/scootsy/scootsy.handler.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    }
+  },
+  "src/modules/po-processing/channels/tata1mg/tata1mg.handler.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 2
+    }
+  },
+  "src/modules/po-processing/channels/zepto/zepto.handler.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    }
+  },
+  "src/modules/po-processing/common/email-sources.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    }
+  },
+  "src/modules/po-processing/common/raw-reader.ts": {
+    "@typescript-eslint/no-base-to-string": {
+      "count": 1
+    },
+    "no-irregular-whitespace": {
+      "count": 1
+    }
+  },
+  "src/modules/po-review/po-review-actions.service.ts": {
+    "@typescript-eslint/no-base-to-string": {
+      "count": 2
+    }
+  },
+  "src/modules/po-review/po-review-approvals.service.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 4
+    }
+  },
+  "src/modules/po-review/po-review.live.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    }
+  },
+  "src/modules/po-review/po-review.service.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    }
+  },
+  "src/modules/po-validation/validate-po.ts": {
+    "@typescript-eslint/no-redundant-type-constituents": {
+      "count": 1
+    }
+  },
+  "src/modules/po-verify/po-verify.service.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    }
+  },
+  "src/routes/approvals.routes.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 2
+    }
+  },
+  "src/routes/manual-upload.routes.ts": {
+    "@typescript-eslint/no-base-to-string": {
+      "count": 1
+    }
+  },
+  "src/routes/po-intake-control.routes.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    }
+  },
+  "src/routes/po-issues.routes.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    }
+  },
+  "src/routes/po-overview.routes.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    }
+  },
+  "src/routes/po-review.routes.ts": {
+    "@typescript-eslint/no-base-to-string": {
+      "count": 1
+    }
+  },
+  "src/scripts/auth-seed.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 2
+    }
+  },
+  "src/scripts/auth-user.ts": {
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    }
+  },
+  "src/scripts/masters-replace.ts": {
+    "@typescript-eslint/no-base-to-string": {
+      "count": 2
+    },
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 5
+    },
+    "no-irregular-whitespace": {
+      "count": 1
+    }
+  },
+  "src/scripts/po-validate.ts": {
+    "@typescript-eslint/no-base-to-string": {
+      "count": 1
+    },
+    "no-irregular-whitespace": {
+      "count": 1
+    }
+  },
+  "src/utils/csv.ts": {
+    "no-irregular-whitespace": {
+      "count": 1
+    }
+  },
+  "src/utils/logger.ts": {
+    "@typescript-eslint/no-base-to-string": {
+      "count": 5
+    }
+  }
+}

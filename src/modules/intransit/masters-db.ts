@@ -57,6 +57,41 @@ export const logChanges = async (m: EntityManager, changes: Change[], who: Who, 
 
 const lc = (s: string): string => s.trim().toLowerCase();
 
+/*
+ * Bulk writes for the master uploads (2026-10-27): one statement per BULK_ROWS rows instead of one per row, inside the
+ * caller's transaction (all or nothing as before). A 2,000-row file was ~2,000 queries in one long transaction.
+ */
+export const BULK_ROWS = 500;
+const col = (c: string): string => `\`${c}\``;
+
+/** INSERT the rows, BULK_ROWS per statement. */
+export const insertMany = async (m: EntityManager, table: string, cols: string[], rows: unknown[][]): Promise<void> => {
+  for (let i = 0; i < rows.length; i += BULK_ROWS) {
+    const part = rows.slice(i, i + BULK_ROWS);
+    await m.query(`INSERT INTO ${table} (${cols.map(col).join(', ')}) VALUES ${part.map(() => `(${cols.map(() => '?').join(', ')})`).join(', ')}`, part.flat());
+  }
+};
+
+/**
+ * UPDATE rows by a key column, BULK_ROWS per statement: each column is set only on the rows that change it
+ * (`c = CASE key WHEN ? THEN ? ... ELSE c END`), so rows with different changed columns share one statement.
+ * The key is compared like `WHERE key = ?` was (the column's collation).
+ */
+export const updateMany = async (m: EntityManager, table: string, keyCol: string, rows: { key: unknown; set: Record<string, unknown> }[]): Promise<void> => {
+  for (let i = 0; i < rows.length; i += BULK_ROWS) {
+    const part = rows.slice(i, i + BULK_ROWS);
+    const cols = [...new Set(part.flatMap((r) => Object.keys(r.set)))];
+    const params: unknown[] = [];
+    const sets = cols.map((c) => {
+      const having = part.filter((r) => c in r.set);
+      having.forEach((r) => params.push(r.key, r.set[c]));
+      return `${col(c)} = CASE ${col(keyCol)} ${having.map(() => 'WHEN ? THEN ?').join(' ')} ELSE ${col(c)} END`;
+    });
+    params.push(...part.map((r) => r.key));
+    await m.query(`UPDATE ${table} SET ${sets.join(', ')} WHERE ${col(keyCol)} IN (${part.map(() => '?').join(', ')})`, params);
+  }
+};
+
 /**
  * Make sure every SKU is a master_skus row (the combo parts' foreign keys need them): the missing ones are added from
  * Uniware. Refused, listing them, when Uniware does not know them or cannot be asked. Returns lower-case -> pep_code

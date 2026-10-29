@@ -34,6 +34,13 @@ export const ERRORS = {
   FIELD_NOT_NUMBER: define(400, (field: string) => `${field} must be a number of 0 or more`),
   FIELD_NOT_LIST: define(400, (field: string) => `${field} must be a list`),
   FIELD_NOT_OBJECT: define(400, (field: string) => `${field} must be an object`),
+  FIELD_BAD_FORMAT: define(400, (field: string, rule: string) => `${field} must be ${rule}`),
+  FIELD_NOT_POSITIVE: define(400, (field: string) => `${field} must be a number above 0`),
+  FIELD_OUT_OF_RANGE: define(400, (field: string, min: number, max: number) => `${field} must be from ${min} to ${max}`),
+  FIELD_ALREADY_EXISTS: define(400, (field: string, value: string) => `${value} already exists (${field})`),
+  FIELD_NOT_FOUND: define(400, (field: string, value: string) => `${value} was not found (${field})`),
+  FIELD_LOCKED: define(400, (field: string) => `${field} is a key and cannot be edited: switch the row off and add a new one`),
+  FIELD_NOT_EDITABLE: define(400, (field: string) => `${field} cannot be edited here`),
 
   // --- Configuration (.env) ---------------------------------------------------------------------------------------
   ENV_MISSING: define(500, (key: string) => `Missing required environment variable: ${key}`),
@@ -108,6 +115,10 @@ export const ERRORS = {
   CONNECTOR_UNKNOWN: define(400, (key: string, known: string) => `No channel API connector "${key}" (known: ${known})`),
   // --- Users & Roles admin (2026-10-15) ---
   NOT_A_USER_ADMIN: define(403, (roles: string) => `Only ${roles} can add or change users and roles`),
+  MASTER_ADD_NOT_ALLOWED: define(403, (roles: string) => `Only ${roles} can add to the masters`),
+  MASTER_HISTORY_BAD_REQUEST: define(400, (what: string) => `Masters history: ${what}`),
+  MASTER_ROW_NOT_FOUND: define(404, (type: string, id: string) => `No ${type} row ${id}`),
+  MASTER_EDIT_CONFLICT: define(409, () => 'Someone else changed this row while you were editing: reload it and save again'),
   USER_ID_NOT_FOUND: define(404, (id: string) => `No user ${id}`),
   USER_EXISTS: define(409, (email: string) => `${email} is already a user`),
   EMAIL_DOMAIN_NOT_ALLOWED: define(400, (domain: string) => `Only ${domain} email addresses can be added (they sign in with Google)`),

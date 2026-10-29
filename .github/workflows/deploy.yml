@@ -35,10 +35,28 @@ env:
   AWS_REGION: ap-south-1
 
 jobs:
+  # Every check must pass before anything is deployed (2026-10-28: lint, import rules, unused code, tests).
   check:
-    name: typecheck
+    name: checks (typecheck, lint, deps, knip, tests)
     if: github.ref_name == 'dev' || github.ref_name == 'main'
     runs-on: ubuntu-latest
+    # The API tests run against a throwaway MySQL 8.0 (same as RDS); test/setup/global.ts builds mcaff_postfg_test on it
+    # from all migrations. Never the dev / prod database: the app refuses anything else while NODE_ENV=test.
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: test-only
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -ptest-only"
+          --health-interval=5s --health-timeout=5s --health-retries=30
+    env:
+      TEST_DB_HOST: 127.0.0.1
+      TEST_DB_PORT: '3306'
+      TEST_DB_USER: root
+      TEST_DB_PASSWORD: test-only
+      TEST_DB_NAME: mcaff_postfg_test
     steps:
       - uses: actions/checkout@v5
 
@@ -49,6 +67,12 @@ jobs:
 
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run deps
+      - run: npm run knip
+      # same SQL mode and time zone as the RDS (checked 2026-10-28)
+      - run: mysql -h 127.0.0.1 -P 3306 -uroot -ptest-only -e "SET GLOBAL sql_mode = 'IGNORE_SPACE,NO_ENGINE_SUBSTITUTION'; SET GLOBAL time_zone = '+00:00';"
+      - run: npm test
 
   deploy:
     name: deploy ${{ github.ref_name == 'main' && 'prod' || 'dev' }}

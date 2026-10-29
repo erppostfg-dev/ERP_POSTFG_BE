@@ -11,6 +11,8 @@
  * TEST_DATABASE is used only by `npm test` (user, 2026-10-25): the tests refuse any other database.
  */
 export const TEST_DATABASE = 'mcaff_postfg_test';
+/** Hosts the test database may be on (the laptop's local MySQL, the CI job's MySQL service). */
+export const TEST_DB_HOSTS: readonly string[] = ['127.0.0.1', 'localhost'];
 export const ALLOWED_DATABASES: readonly string[] = ['mcaff_postfg_dev', TEST_DATABASE];
 
 /**
@@ -71,6 +73,8 @@ export const TABLES = {
   INTRANSIT_CHANNEL_SKU_MAP: 'intransit_channel_sku_map',
   // Every change of an in-transit master in the database (2026-10-25).
   INTRANSIT_MASTER_CHANGES: 'intransit_master_changes',
+  // Who changed what in the 5 Masters tabs (2026-10-28): one row per changed field, read by the History button.
+  MASTER_CHANGE_LOGS: 'master_change_logs',
   // Inbound plan + shipment tracking (2026-10-19, constants/inbound.ts).
   INBOUND_PLANS: 'inbound_plans',
   INBOUND_SHIPMENTS: 'inbound_shipments',
@@ -237,3 +241,35 @@ export const SHIPMENT_LOG_SOURCE = {
   SCRIPT: 'script',
 } as const;
 export type ShipmentLogSource = (typeof SHIPMENT_LOG_SOURCE)[keyof typeof SHIPMENT_LOG_SOURCE];
+
+/**
+ * master_change_logs (2026-10-28, user: "log every change in the masters so anyone can see who changed it from the
+ * History button"): which master a row belongs to = the 5 Masters tabs.
+ */
+export const MASTER_LOG_TYPE = {
+  PEP_SKU: 'pep_sku',
+  CHANNEL_SKU: 'channel_sku',
+  CHANNEL: 'channel',
+  LOCATION: 'location',
+  FACILITY: 'facility',
+} as const;
+export type MasterLogType = (typeof MASTER_LOG_TYPE)[keyof typeof MASTER_LOG_TYPE];
+
+/** master_change_logs.action */
+export const MASTER_LOG_ACTION = {
+  /** The row was added (one row, new_value = every value it was added with). */
+  CREATED: 'created',
+  FIELD_CHANGED: 'field_changed',
+  DEACTIVATED: 'deactivated',
+  ACTIVATED: 'activated',
+  /** The whole master was reloaded from files (npm run masters:replace): one summary row per master, no row id. */
+  REPLACED: 'replaced',
+} as const;
+export type MasterLogAction = (typeof MASTER_LOG_ACTION)[keyof typeof MASTER_LOG_ACTION];
+
+/** master_change_logs.source: where the change came from. */
+export const MASTER_LOG_SOURCE = {
+  SCREEN: 'screen',
+  SCRIPT: 'script',
+} as const;
+export type MasterLogSource = (typeof MASTER_LOG_SOURCE)[keyof typeof MASTER_LOG_SOURCE];

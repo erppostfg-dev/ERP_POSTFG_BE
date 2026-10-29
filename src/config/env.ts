@@ -13,7 +13,8 @@ dotenv.config();
 /**
  * Laptop mode (user, 2026-10-27): the laptop and the dev EC2 share mcaff_postfg_dev, so `npm run dev` (src/dev.ts sets
  * LAPTOP_MODE=true) never does background work on it: no Gmail / Pub/Sub intake, OCR, OCR backlog, resume, channel API
- * polling, local cleanup, SQS worker, and no timed re-check. .env keeps its own values for `npm run dev:full` / EC2.
+ * polling, local cleanup, SQS worker, and no timed re-check; server.ts also skips the intake release and the
+ * manual-upload queue resume. .env keeps its own values for `npm run dev:full` / EC2.
  */
 const laptopMode = process.env.LAPTOP_MODE === 'true';
 export const LAPTOP_MODE_OFF = {
@@ -148,6 +149,9 @@ export const env = {
     frontendOrigin: process.env.FRONTEND_ORIGIN ?? 'http://localhost:5173',
     allowedEmailDomain: (process.env.ALLOWED_EMAIL_DOMAIN ?? 'mcaffeine.com').toLowerCase(),
     sessionDays: Number(process.env.SESSION_DAYS ?? 7),
+    // Seconds a session check and a person's page access are kept in memory (2026-10-27; 0 = always read the DB).
+    // Logout and every change in Users & Roles clear them at once; a change made by another server waits this long.
+    cacheSeconds: Number(process.env.AUTH_CACHE_SECONDS ?? 30),
     cookieSecure: flag('COOKIE_SECURE'),
   },
   // The chain after intake (po_uploads -> OCR -> processed.json -> validation -> DB -> Uniware CSV).
