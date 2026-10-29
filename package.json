@@ -44,6 +44,7 @@
     "masters:load": "ts-node --transpile-only src/scripts/masters-load.ts",
     "masters:replace": "ts-node --transpile-only src/scripts/masters-replace.ts",
     "po:brand-fill": "ts-node --transpile-only src/scripts/brand-fill.ts",
+    "po:po-date-fill": "ts-node --transpile-only src/scripts/po-date-fill.ts",
     "masters:link": "ts-node --transpile-only src/scripts/masters-link.ts",
     "auth:user": "ts-node --transpile-only src/scripts/auth-user.ts",
     "amazon:check": "ts-node --transpile-only src/scripts/channel-api.ts check amazon_spapi",

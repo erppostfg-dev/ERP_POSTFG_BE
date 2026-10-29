@@ -21,8 +21,6 @@ const router = Router();
 router.use('/health', healthRoutes);
 router.use('/auth', authRoutes);
 router.use('/approvals', approvalsRoutes);
-// Before /admin: its own sub-path (Users & Roles -> PO issues).
-router.use(PO_ISSUES.BASE, poIssuesRoutes);
 router.use(PO_INTAKE.BASE, poIntakeControlRoutes);
 router.use('/admin', adminRoutes);
 router.use(INBOUND_ROUTES.BASE, amazonInboundRoutes);
@@ -30,6 +28,8 @@ router.use('/intransit', intransitRoutes);
 router.use('/masters', mastersRoutes);
 router.use('/po-intake', poIntakeRoutes);
 router.use('/po-overview', poOverviewRoutes);
+// PO issues (a PO review tab, 2026-10-29): before the review routes, so /po-review/issues is not an upload id.
+router.use(PO_ISSUES.BASE, poIssuesRoutes);
 // The verification gate runs first and only for the Uniware hand-off calls; the review routes are unchanged.
 router.use('/po-review', poVerifyGate);
 router.use('/po-review', poReviewRoutes);

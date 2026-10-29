@@ -261,6 +261,12 @@ export interface EmailPlan {
   rows: RowPlan[];
 }
 
+/** YYYY-MM-DD from the PO's po_date (a full date-time keeps its day; anything else = null, never a bad DATE value). */
+export const dateOnly = (v: unknown): string | null => {
+  const m = typeof v === 'string' ? /^(\d{4}-\d{2}-\d{2})/.exec(v.trim()) : null;
+  return m && !Number.isNaN(Date.parse(m[1])) ? m[1] : null;
+};
+
 /** Works out what to write for one email folder. Reads only. */
 export const planEmail = async (db: DataSource, reader: MasterDataReader, folder: string, now = new Date()): Promise<EmailPlan> => {
   const pos = await readFolderPos(folder);
@@ -295,6 +301,7 @@ export const planEmail = async (db: DataSource, reader: MasterDataReader, folder
       ...base,
       ...(own ? { fileName: own, fileUrl: s3UrlFor(folder, meta, own), fileType: extOf(own) || null } : {}),
       poNumber: poNumber || null,
+      poDate: dateOnly(fp.po.po_date),
       ocrStatus: hasOcrIssue ? UPLOAD_OCR_STATUS.ISSUE : (base.ocrStatus as UploadOcrStatus),
       // The chain counts OCR runs on the row (ocrStarted); ocr-result.json only says whether one happened.
       ocrAttempts: Math.max(existing?.ocrAttempts ?? 0, base.ocrAttempts ?? 0),

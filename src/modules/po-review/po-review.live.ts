@@ -5,6 +5,7 @@ import { LIVE, REVIEW_LIVE, TABLES } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
 import { logError } from '../../utils/classify-error';
 import { inBackground } from '../../utils/log-context';
+import { forgetPoIssues } from '../po-issues/po-issues.cache';
 
 /*
  * Live PO Review + Approvals (2026-10-15, user: "on sync just like the live option on PO Overview"). The lists are small,
@@ -49,6 +50,8 @@ const check = (): Promise<string> => {
 
 /** After our own review actions: the screens hear at once (no-op while no screen is connected). */
 export const bumpReview = (): void => {
+  // a review decision / re-check / upload changed what PO issues shows: its shared answer is dropped (2026-10-29)
+  forgetPoIssues();
   if (bus.listenerCount('change')) void check();
 };
 

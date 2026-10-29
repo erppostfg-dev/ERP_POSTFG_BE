@@ -2,9 +2,8 @@ import { AppDataSource } from '../../config/data-source';
 import {
   CHANNEL_MASTER_IDS, CHANNEL_TOLERANCES, ChannelName, ISSUE_STATUS, ISSUE_TYPE, PO_ISSUES, PO_VERIFY_ACTION, REVIEW_SUBMISSION_STATUS, TABLES,
 } from '../../constants';
-import { MasterChannel } from '../../entities';
 import { matchKey } from '../masters/master-match';
-import { ChannelMasterData, MasterDataReader } from '../po-validation/master-data';
+import { cachedPoIssues } from './po-issues.cache';
 
 /*
  * PO issues per channel (user, 2026-10-22: "channel based: what kind of issues each channel has, and inside it every
@@ -18,12 +17,18 @@ import { ChannelMasterData, MasterDataReader } from '../po-validation/master-dat
  * A window of days on po_uploads.created_at (when the PO came in).
  *
  * Is it still a problem? (user, 2026-10-22: not by time, "even after 30 days unchanged it is still an issue") Checked
- * LIVE against today's master on every load, with the same rules as validation, no cache (a few lookups):
+ * against today's master with the same rules as validation:
  *   SKU not mapped       exactly one master_channel_skus row for that channel SKU now -> fixed
  *   Location not mapped  one complete active location by code, else by pincode, now -> fixed
  *   MRP / Price mismatch the PO's latest value vs our master MRP / rate now, within the channel's tolerance -> fixed
  *   every other kind     a one-off problem of the PO: fixed when none of its issue rows is still open (resolved in review)
  *   Rejected / Sent back final outcomes, shown as they are.
+ *
+ * Load (2026-10-29, user: used by everyone with PO Review): the screen's answer is SHARED for PO_ISSUES.CACHE_SECONDS
+ * (po-issues.cache.ts; dropped at once on master / review changes); a download asks with `fresh` and is always computed
+ * now. The live check reads ONLY the master rows its items name (active channel SKUs by code, active locations by code /
+ * pincode: ~100 rows), not every master of the channel (was ~6,000 rows per load: all PEP SKUs, all channel SKUs of each
+ * channel, locations, warehouses). Same rules and results (checked old vs new on the dev data).
  */
 
 /** What a problem is about: the channel SKU, else the PO's own value (location, PO number, date), else its text. */
@@ -52,9 +57,21 @@ export interface ChannelIssues {
 const num = (v: unknown): number => Number(v ?? 0) || 0;
 const iso = (v: unknown): string => new Date(v as string).toISOString();
 
-export const poIssuesByChannel = async (days: number): Promise<{ days: number; since: string; channels: ChannelIssues[] }> => {
+export interface PoIssuesResult { days: number; since: string; channels: ChannelIssues[] }
+
+/**
+ * The PO issues of the last `days` days: the shared answer (at most PO_ISSUES.CACHE_SECONDS old) unless `fresh` (a
+ * download: always computed now). `computedAt` says when it was computed, `cached` whether it was shared.
+ */
+export const poIssuesByChannel = async (days: number, opts: { fresh?: boolean } = {}): Promise<PoIssuesResult & { computedAt: string; cached: boolean }> => {
+  if (opts.fresh) return { ...(await computePoIssues(days)), computedAt: new Date().toISOString(), cached: false };
+  const r = cachedPoIssues(days, PO_ISSUES.CACHE_SECONDS * 1000, () => computePoIssues(days));
+  return { ...(await r.value), computedAt: new Date(r.at).toISOString(), cached: r.cached };
+};
+
+const computePoIssues = async (days: number): Promise<PoIssuesResult> => {
   const since = new Date(Date.now() - days * 864e5);
-  const q = <T>(sql: string, params: unknown[]) => AppDataSource.query(sql, params) as Promise<T[]>;
+  const q = <T>(sql: string, params: unknown[]) => AppDataSource.query<T[]>(sql, params);
 
   const [statuses, perType, items, withIssues, rejected, sentBack] = await Promise.all([
     q<{ channel: string; status: string; n: string }>(
@@ -83,7 +100,7 @@ export const poIssuesByChannel = async (days: number): Promise<{ days: number; s
         WHERE v.action = ? AND u.created_at >= ? GROUP BY u.channel, item ORDER BY n DESC`, [PO_VERIFY_ACTION.SENT_BACK, since]).catch(() => []),
   ]);
 
-  const checkOf = await liveChecks([...new Set(items.map((i) => i.channel))]);
+  const checkOf = await liveChecks(items);
 
   const channels = new Map<string, ChannelIssues>();
   const of = (channel: string) => {
@@ -138,43 +155,79 @@ type Check = (kind: string, item: string, lastPo: string | null, openRows: numbe
 
 const rupees = (n: number) => `₹${n.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 
-/** One master load per channel that has issues (the same reader validation uses), then a check per item in memory. */
-const liveChecks = async (displayNames: string[]): Promise<(channel: string) => Check> => {
-  const masters = await AppDataSource.getRepository(MasterChannel).find();
-  const reader = new MasterDataReader(AppDataSource);
-  const loaded = new Map<string, { data: ChannelMasterData | null; slug: ChannelName | null }>();
-  for (const name of displayNames) {
-    const id = masters.find((m) => m.displayName === name)?.id;
+type LiveChannelSku = { channel_id: number; channel_code: string | null; mrp: string | null; rate_after_margin: string | null };
+type LiveLocation = {
+  channel_id: number; channel_location_code: string | null; consignee_pin_code: string | null;
+  uniware_customer_code: string | null; facility_code: string | null; channel_code: string | null;
+};
+
+/**
+ * The master rows the items name, read in 3 small queries (channel ids, the active channel SKUs by code, the active
+ * locations by code or pincode), then a check per item in memory with the same rules as before (exact match by
+ * matchKey: SQL only narrows the rows).
+ */
+const liveChecks = async (items: { channel: string; kind: string; item: string | null }[]): Promise<(channel: string) => Check> => {
+  const SKU_KINDS: string[] = [ISSUE_TYPE.SKU_NOT_MAPPED, ISSUE_TYPE.MRP_MISMATCH, ISSUE_TYPE.PRICE_MISMATCH];
+  const channels = [...new Set(items.map((i) => i.channel))];
+  const masters = channels.length
+    ? await AppDataSource.query<{ id: number; display_name: string }[]>(`SELECT id, display_name FROM ${TABLES.MASTER_CHANNELS} WHERE display_name IN (?)`, [channels])
+    : [];
+  const idOf = new Map(masters.map((m) => [m.display_name, Number(m.id)]));
+  // only channels the PO checks know (CHANNEL_MASTER_IDS): the others are judged by their review state, as before
+  const known = new Set(Object.values(CHANNEL_MASTER_IDS).map(Number));
+  const ids = [...new Set([...idOf.values()].filter((id) => known.has(id)))];
+  const keys = (kinds: string[]) => [...new Set(items.filter((i) => kinds.includes(i.kind) && idOf.has(i.channel)).map((i) => matchKey(i.item)).filter(Boolean))];
+  const skuKeys = keys(SKU_KINDS);
+  const locKeys = keys([ISSUE_TYPE.LOCATION_NOT_MAPPED]);
+  const [skus, locations] = await Promise.all([
+    ids.length && skuKeys.length
+      ? AppDataSource.query<LiveChannelSku[]>(
+        `SELECT channel_id, channel_code, mrp, rate_after_margin FROM ${TABLES.MASTER_CHANNEL_SKUS}
+          WHERE is_active = 1 AND channel_id IN (?) AND LOWER(TRIM(channel_code)) IN (?)`, [ids, skuKeys])
+      : Promise.resolve([] as LiveChannelSku[]),
+    ids.length && locKeys.length
+      ? AppDataSource.query<LiveLocation[]>(
+        `SELECT channel_id, channel_location_code, consignee_pin_code, uniware_customer_code, facility_code, channel_code
+           FROM ${TABLES.DETAILS_CHANNELS}
+          WHERE is_active = 1 AND channel_id IN (?) AND (LOWER(TRIM(channel_location_code)) IN (?) OR LOWER(TRIM(consignee_pin_code)) IN (?))`,
+        [ids, locKeys, locKeys])
+      : Promise.resolve([] as LiveLocation[]),
+  ]);
+  const loaded = new Map<string, { slug: ChannelName; skusByCode: Map<string, LiveChannelSku[]>; locations: LiveLocation[] }>();
+  for (const name of channels) {
+    const id = idOf.get(name);
     const slug = (Object.entries(CHANNEL_MASTER_IDS).find(([, v]) => v === id)?.[0] ?? null) as ChannelName | null;
-    loaded.set(name, { slug, data: slug ? await reader.forChannel(slug) : null });
+    if (!slug || id === undefined) continue;
+    const skusByCode = new Map<string, LiveChannelSku[]>();
+    for (const r of skus.filter((x) => Number(x.channel_id) === id)) skusByCode.set(matchKey(r.channel_code), [...(skusByCode.get(matchKey(r.channel_code)) ?? []), r]);
+    loaded.set(name, { slug, skusByCode, locations: locations.filter((x) => Number(x.channel_id) === id) });
   }
   const N = PO_ISSUES.NOTE;
   return (channel) => (kind, item, lastPo, openRows) => {
     const byReview = () => (openRows > 0 ? { state: 'open' as const, note: N.OPEN_IN_REVIEW } : { state: 'fixed' as const, note: N.RESOLVED_IN_REVIEW });
     const m = loaded.get(channel);
-    if (!m?.data) return byReview();
-    const master = m.data;
-    const tol = m.slug ? CHANNEL_TOLERANCES[m.slug] : undefined;
-    const rows = master.skusByCode.get(matchKey(item)) ?? [];
+    if (!m) return byReview();
+    const tol = CHANNEL_TOLERANCES[m.slug];
+    const rows = m.skusByCode.get(matchKey(item)) ?? [];
     switch (kind) {
       case ISSUE_TYPE.SKU_NOT_MAPPED:
         return rows.length === 1 ? { state: 'fixed', note: N.SKU_IN_MASTER }
           : rows.length > 1 ? { state: 'open', note: N.SKU_AMBIGUOUS(rows.length) } : { state: 'open', note: N.SKU_MISSING };
       case ISSUE_TYPE.LOCATION_NOT_MAPPED: {
         const key = matchKey(item);
-        let found = master.locations.filter((l) => matchKey(l.channelLocationCode) === key);
-        if (!found.length) found = master.locations.filter((l) => matchKey(l.consigneePinCode) === key);
+        let found = m.locations.filter((l) => matchKey(l.channel_location_code) === key);
+        if (!found.length) found = m.locations.filter((l) => matchKey(l.consignee_pin_code) === key);
         if (found.length > 1) return { state: 'open', note: N.LOCATION_MANY(found.length) };
         if (!found.length) return { state: 'open', note: N.LOCATION_MISSING };
         const [l] = found;
-        const complete = !!(l.uniwareCustomerCode?.trim() && l.facilityCode?.trim() && l.channelCode?.trim());
+        const complete = !!(l.uniware_customer_code?.trim() && l.facility_code?.trim() && l.channel_code?.trim());
         return complete ? { state: 'fixed', note: N.LOCATION_FOUND } : { state: 'open', note: N.LOCATION_INCOMPLETE };
       }
       case ISSUE_TYPE.MRP_MISMATCH:
       case ISSUE_TYPE.PRICE_MISMATCH: {
         if (rows.length !== 1) return { state: 'open', note: N.SKU_MISSING };
         const isMrp = kind === ISSUE_TYPE.MRP_MISMATCH;
-        const ours = isMrp ? rows[0].mrp : rows[0].rateAfterMargin;
+        const ours = isMrp ? rows[0].mrp : rows[0].rate_after_margin;
         const po = Number(lastPo);
         if (ours === null || ours === undefined || !Number.isFinite(po)) return byReview();
         const limit = (isMrp ? tol?.mrpPerSku : tol?.pricePerSku) ?? 0;
@@ -203,8 +256,7 @@ export const poIssuePos = async (channel: string, kind: string, item: string, da
         : `SELECT DISTINCT u.id, u.po_number, u.status, u.created_at FROM ${TABLES.PO_ISSUES} i JOIN ${TABLES.PO_UPLOADS} u ON u.id = i.upload_id
             WHERE u.channel = ? AND i.issue_type = ? AND ${ITEM} = ? AND u.created_at >= ?`;
   const params = kind === PO_ISSUES.KIND.REJECTED || kind === PO_ISSUES.KIND.SENT_BACK ? [channel, item, since] : [channel, kind, item, since];
-  const rows = (await AppDataSource.query(`${sql} ORDER BY u.id DESC LIMIT ${PO_ISSUES.POS_MAX}`, params)) as {
-    id: string | number; po_number: string | null; status: string; created_at: Date;
-  }[];
+  const rows = await AppDataSource.query<{ id: string | number; po_number: string | null; status: string; created_at: Date }[]>(
+    `${sql} ORDER BY u.id DESC LIMIT ${PO_ISSUES.POS_MAX}`, params);
   return rows.map((r) => ({ uploadId: String(r.id), poNumber: r.po_number, status: r.status, createdAt: iso(r.created_at) }));
 };

@@ -1,11 +1,14 @@
 /*
- * PO issues per channel (user, 2026-10-22; Users & Roles -> PO issues, admin / developer): counts from what is already
+ * PO issues per channel (user, 2026-10-22; PO Processing & Review -> PO issues since 2026-10-29, everyone with that page): counts from what is already
  * stored (po_uploads, po_issues, po_review_submissions, po_verifications), once per PO. No table of its own.
  */
 export const PO_ISSUES = {
-  BASE: '/admin/po-issues',
+  /** A tab of PO Processing & Review since 2026-10-29 (was /admin/po-issues, Users & Roles). */
+  BASE: '/po-review/issues',
   ROUTES: { LIST: '/', POS: '/pos' },
-  QUERY: { DAYS: 'days', CHANNEL: 'channel', KIND: 'kind', ITEM: 'item' },
+  QUERY: { DAYS: 'days', CHANNEL: 'channel', KIND: 'kind', ITEM: 'item', FRESH: 'fresh' },
+  /** The screen's answer is shared by everyone this long (po-issues.cache.ts); downloads ask `fresh=1` (never shared). */
+  CACHE_SECONDS: 60,
   /** Window choices (days back from now, on the PO's arrival); default 30. */
   DAYS: [7, 30, 90, 365] as readonly number[],
   DEFAULT_DAYS: 30,
