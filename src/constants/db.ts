@@ -81,6 +81,9 @@ export const TABLES = {
   FEEDBACK_MEMBERS: 'feedback_members',
   FEEDBACK_IMAGES: 'feedback_images',
   FEEDBACK_COMMENTS: 'feedback_comments',
+  // Gmail intake (2026-10-29, constants/gmail-intake.ts): each labelled email's channel once read; catch-ups as rows.
+  GMAIL_MESSAGES: 'gmail_messages',
+  INTAKE_CATCHUPS: 'intake_catchups',
   INBOUND_PLANS: 'inbound_plans',
   INBOUND_SHIPMENTS: 'inbound_shipments',
   INBOUND_SHIPMENT_LINES: 'inbound_shipment_lines',

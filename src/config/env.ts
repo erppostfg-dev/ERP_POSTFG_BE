@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { ERROR_CODES } from '../constants/errors';
+import { GMAIL_PACE } from '../constants/gmail-intake';
 import { LOG_DEFAULTS, LOG_FORMAT, LOG_LEVEL_RANK, type LogFormat, type LogLevel } from '../constants/logging';
 import { PO_JOBS, QUEUE_MODE, type QueueMode } from '../constants/po-jobs';
 import { REVIEW_RECHECK } from '../constants/po-review';
@@ -104,6 +105,10 @@ export const env = {
     oauthRefreshToken: process.env.GMAIL_OAUTH_REFRESH_TOKEN,
     // one outgoing email (welcome) gives up after this; its retries then take over (2026-10-27)
     sendTimeoutMs: Number(process.env.MAIL_SEND_TIMEOUT_MS ?? 30_000),
+    // our share of the mailbox's Gmail quota (6,000 units / min per user), all intake calls together (2026-10-29)
+    unitsPerMinute: Number(process.env.GMAIL_UNITS_PER_MINUTE ?? GMAIL_PACE.UNITS_PER_MINUTE),
+    // first wait after a rate-limited Gmail call (then doubled); tests set it tiny
+    retryFirstWaitMs: Number(process.env.GMAIL_RETRY_FIRST_WAIT_MS ?? GMAIL_PACE.FIRST_WAIT_MS),
   },
   // Gmail watch -> Pub/Sub topic -> pull subscription read by this server.
   pubsub: {

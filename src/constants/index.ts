@@ -13,6 +13,7 @@ export * from './files';
 export * from './folders';
 export * from './inbound';
 export * from './intake';
+export * from './gmail-intake';
 export * from './intransit';
 export * from './intransit-uniware-exports';
 export * from './intransit-pepims';

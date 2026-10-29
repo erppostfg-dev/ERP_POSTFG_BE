@@ -13,9 +13,10 @@ import { covers } from '../helpers/routes';
 covers(['GET /admin/po-intake', 'PATCH /admin/po-intake/:channel', 'PATCH /admin/po-intake/universal', 'POST /po-intake/email']);
 
 const calls = vi.hoisted(() => ({ backfill: [] as [string, string][], rewind: [] as [string, string][], runNow: [] as string[] }));
-vi.mock('../../src/modules/email-intake/label-router.service', async (orig) => ({
+// the Gmail catch-up itself (a saved row + one pass) is tested in test/flows/gmail-intake.test.ts
+vi.mock('../../src/modules/email-intake/catchup.service', async (orig) => ({
   ...(await orig<object>()),
-  backfillSince: vi.fn(async (after: Date, channel: string) => { calls.backfill.push([channel, after.toISOString()]); }),
+  requestCatchUp: vi.fn(async (channel: string, after: Date) => { calls.backfill.push([channel, after.toISOString()]); }),
 }));
 vi.mock('../../src/modules/channel-api/runner', async (orig) => ({
   ...(await orig<object>()),

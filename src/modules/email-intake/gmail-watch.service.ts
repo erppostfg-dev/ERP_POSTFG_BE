@@ -2,11 +2,11 @@ import fs from 'fs/promises';
 import path from 'path';
 import { AppDataSource } from '../../config/data-source';
 import { env } from '../../config/env';
-import { APP_STATE_KEY, ERROR_CODES } from '../../constants';
+import { APP_STATE_KEY, ERROR_CODES, GMAIL_UNITS } from '../../constants';
 import { AppState } from '../../entities';
 import { appError } from '../../utils/AppError';
 import { LOG_SOURCE } from '../../constants/logging';
-import { logCall } from '../../utils/log-call';
+import { gmailCall } from './gmail-pace';
 import { logError } from '../../utils/classify-error';
 import { log } from '../../utils/logger';
 import { getGmail } from './gmail.client';
@@ -79,7 +79,7 @@ export const writeState = async (patch: GmailState): Promise<void> => {
 
 /** Looks up the Gmail label id for every route. Fails if a label does not exist in the mailbox. */
 export const resolveRoutes = async (): Promise<ResolvedRoute[]> => {
-  const res = await logCall(LOG_SOURCE.GMAIL, 'labels.list', () => getGmail().users.labels.list({ userId: 'me' }));
+  const res = await gmailCall('labels.list', GMAIL_UNITS.LABELS_LIST, () => getGmail().users.labels.list({ userId: 'me' }));
   const byName = new Map((res.data.labels ?? []).map((l) => [(l.name ?? '').toLowerCase(), l.id ?? '']));
 
   return labelRoutes.map((route) => {
@@ -96,7 +96,7 @@ export const startWatch = async (routes: ResolvedRoute[]): Promise<void> => {
   const { projectId, topic } = env.pubsub;
   if (!projectId || !topic) throw appError(ERROR_CODES.GMAIL_WATCH_CONFIG_MISSING);
 
-  const res = await logCall(LOG_SOURCE.GMAIL, 'watch', () => getGmail().users.watch({
+  const res = await gmailCall('watch', GMAIL_UNITS.WATCH, () => getGmail().users.watch({
     userId: 'me',
     requestBody: {
       topicName: `projects/${projectId}/topics/${topic}`,

@@ -11,6 +11,7 @@ import { getAuthClient } from './gmail.client';
 import { keepWatching, resolveRoutes } from './gmail-watch.service';
 import { groupDirFor, NOT_PO_SUFFIX } from './email-storage.service';
 import { catchUpOnStart, processGmailChanges } from './label-router.service';
+import { resumeCatchUps } from './catchup.service';
 import { mirrorLater, syncLabelToS3 } from './s3-mirror.service';
 import { queueOcrBacklog } from '../ocr/extract-po.service';
 import { admitToOcr } from '../po-pipeline/pipeline.service';
@@ -42,6 +43,8 @@ export const startEmailListener = async (): Promise<{ stop: () => Promise<void> 
   let queue: Promise<void> = runJob('gmail-catch-up', () => catchUpOnStart(routes)).catch((err) => {
     logError(LOG_SOURCE.GMAIL, 'startup catch-up failed; the next notification retries it', err);
   });
+  // Then: channel catch-ups a stop left unfinished, and failed ones whose retry time came (2026-10-29).
+  void queue.then(() => resumeCatchUps()).catch((err) => logError(LOG_SOURCE.GMAIL, 'resuming catch-ups failed (a switch or the next start tries again)', err));
   // Then: OCR for stored POs that never had it (OCR_ENABLED + OCR_BACKLOG; only <label>/, never <label>-not-po/).
   void queue.then(async () => {
     if (!env.ocr.enabled || !env.ocr.backlog) return;
