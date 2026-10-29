@@ -36,6 +36,8 @@ export const INTRANSIT_SOURCE = {
   AMAZON: 'amazon',
   UNIWARE: 'uniware',
   FLIPKART: 'flipkart',
+  // Myntra Partner Portal robot (2026-10-28; intransit_runs.kind gains it in migration IntransitRunsMyntra)
+  MYNTRA: 'myntra',
 } as const;
 export type IntransitSource = (typeof INTRANSIT_SOURCE)[keyof typeof INTRANSIT_SOURCE];
 
@@ -92,14 +94,20 @@ export const INPUT_CATALOG: readonly InputFile[] = [
   { name: INTRANSIT_TEMPLATE_NAME, group: 'master', refresh: 'on-change', source: 'Report template: the workbook whose formatting the report reuses', required: [] },
 
   // ---- daily, uploaded
-  { name: 'FK_GRN.csv', group: 'daily-upload', source: 'Flipkart Seller Hub - consignment GRN', required: ['Consignment Id', 'GRN Status', 'GRN Qty'] },
   {
-    name: 'Myntra_SOH.csv', group: 'daily-upload', source: 'Myntra Partner Portal - inventory',
+    name: 'FK_GRN.csv', group: 'daily-upload', source: 'Flipkart Seller Hub - consignment GRN (or the Seller Hub robot)', connector: 'flipkart', fetchKey: 'grn', fetchable: 'today-only',
+    required: ['Consignment Id', 'GRN Status', 'GRN Qty'],
+  },
+  {
+    name: 'Myntra_SOH.csv', group: 'daily-upload', source: 'Myntra Partner Portal - inventory (or the Partner Portal robot)', connector: 'myntra', fetchKey: 'soh', fetchable: 'today-only',
     required: ['sku code', 'seller sku code', 'warehouse id', 'po_type', 'inventory count'],
   },
-  { name: 'Myntra_GRN.csv', group: 'daily-upload', source: 'Myntra Partner Portal - STR inward', required: ['STR Code', 'Lot Status', 'Inward Qty'] },
   {
-    name: 'FK_SOH.csv', group: 'daily-upload', source: 'Flipkart Seller Hub - inventory (or the Flipkart API)', connector: 'flipkart', fetchKey: 'soh', fetchable: 'today-only',
+    name: 'Myntra_GRN.csv', group: 'daily-upload', source: 'Myntra Partner Portal - STR inward (or the Partner Portal robot)', connector: 'myntra', fetchKey: 'grn', fetchable: 'today-only',
+    required: ['STR Code', 'Lot Status', 'Inward Qty'],
+  },
+  {
+    name: 'FK_SOH.csv', group: 'daily-upload', source: 'Flipkart Seller Hub - inventory (or the Seller Hub robot / Flipkart API)', connector: 'flipkart', fetchKey: 'soh', fetchable: 'today-only',
     required: ['FSN', 'SKU', 'Title', 'Warehouse Id', 'Live on Website'],
   },
 

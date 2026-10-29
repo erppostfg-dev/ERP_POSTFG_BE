@@ -6,6 +6,7 @@ import { writeWithMeta } from './input-store';
 import { AmazonConfig, fetchAmazon } from './sources/amazon';
 import { fetchFlipkart, FlipkartConfig } from './sources/flipkart';
 import { Log } from './sources/http';
+import { fetchMyntra, MyntraConfig } from './sources/myntra-partner-portal';
 import { fetchUniware, UniwareConfig } from './sources/uniware';
 
 /*
@@ -18,13 +19,14 @@ import { fetchUniware, UniwareConfig } from './sources/uniware';
 export interface ConnectorConfig {
   amazon: AmazonConfig;
   flipkart: FlipkartConfig;
+  myntra: MyntraConfig;
   uniware: UniwareConfig;
 }
 
 export interface ConnectorOptions {
   /** The day fetched for (YYYY-MM-DD, IST); data up to the end of that day. Default today. */
   date?: string;
-  /** amazon: 'soh' | 'grn'; uniware: 'b2b' | 'po' | 'inventory' (only these exports); empty = all. */
+  /** amazon / flipkart (Seller Hub) / myntra: 'soh' | 'grn'; uniware: 'b2b' | 'po' | 'inventory' (only these exports); empty = all. */
   only?: string | string[];
   /** Who asked (written into the files' meta). */
   by?: number | null;
@@ -68,7 +70,9 @@ export const fetchSource = (source: IntransitSource, cfg: ConnectorConfig, dirs:
     case INTRANSIT_SOURCE.UNIWARE:
       return fetchUniware(cfg.uniware, dirs.exportDir, log, only.length ? only : undefined, opts.date);
     case INTRANSIT_SOURCE.FLIPKART:
-      return fetchFlipkart(cfg.flipkart, dirs.exportDir, log);
+      return fetchFlipkart(cfg.flipkart, { outDir: dirs.exportDir, cacheDir: dirs.cacheDir }, log, only.length ? only : undefined);
+    case INTRANSIT_SOURCE.MYNTRA:
+      return fetchMyntra(cfg.myntra, { outDir: dirs.exportDir, cacheDir: dirs.cacheDir }, log, only.length ? only : undefined);
   }
 };
 
