@@ -64,8 +64,8 @@ extractPo(<stored email folder>)
   - `npm run ocr:run -- --folder <email folder>` runs one email.
   - `npm run ocr:run -- --label po-intake` runs every stored email in a label folder.
   - Add `--detect` to only show the detected channel, without running OCR.
-- **Python setup:** `ocr-service/` is a git submodule. Run `git submodule update --init` after cloning.
-  - `python -m venv ocr-service/.venv`, then pip install `boto3 pymupdf openpyxl xlrd`.
+- **Python setup:** the OCR scripts are in this repository, `ocr-service/dev/scripts/`.
+  - `python -m venv ocr-service/.venv`, then `pip install -r requirements-ocr.txt`.
   - Set `PYTHON_BIN` to that venv's python.
   - AWS credentials need Textract, Bedrock and S3 (ap-south-1).
 
@@ -84,7 +84,7 @@ src/
   utils/         ApiError etc.
   app.ts         Express app
   server.ts      DB (optional) + listen + email listener
-ocr-service/     Python OCR (git submodule)
+ocr-service/     Python OCR scripts (dev/scripts/run_po.py, extract_*.py, channels.json)
 ```
 
 ## Deployment (Docker -> ECR -> EC2)
@@ -106,10 +106,19 @@ push to main  -> .github/workflows/deploy.yml -> GitHub Environment "prod" -> EC
   | `AWS_ROLE_ARN` | secret | `app_deploy_role_arn` |
   | `ECR_REPOSITORY` | variable | `app_ecr_repository_url` |
   | `EC2_INSTANCE_ID` | variable | `app_instance_id` |
-  | `SUBMODULE_TOKEN` | secret, optional | token with read access to the `ocr-service` repository; without it the image has no OCR scripts |
 
 - **Redeploy / rollback:** Actions -> deploy -> Run workflow on the branch, `image_tag` = an earlier commit's SHA (the image is not rebuilt).
-- **Logs / shell:** Systems Manager -> Session Manager on the instance, then `docker logs -f post-fg-api`. Scripts inside the container run from `dist/`, e.g. `docker exec post-fg-api node dist/scripts/ocr-run.js --folder <email folder>`.
+- **Logs (CloudWatch -> Log groups, retention 30 days):**
+
+  | Log group | What |
+  | --- | --- |
+  | `/mcaffeine-erp-post-fg/<env>/api` | Everything the backend prints (requests, OCR, pipeline, errors); one stream per deployed image, `post-fg-api/<git sha>` |
+  | `/mcaffeine-erp-post-fg/<env>/deploy` | Each deploy's output (`deploy/deploy.sh`) |
+  | `/mcaffeine-erp-post-fg/<env>/nginx` | nginx access / error (requests from CloudFront) |
+  | `/mcaffeine-erp-post-fg/<env>/system` | `/var/log/messages`, cloud-init |
+
+  Memory, swap and disk usage: CloudWatch -> Metrics -> `CWAgent`. With `LOG_FORMAT=json` the api log can be queried by field in Logs Insights.
+- **Shell:** Systems Manager -> Session Manager on the instance, then `docker logs -f post-fg-api`. Scripts inside the container run from `dist/`, e.g. `docker exec post-fg-api node dist/scripts/ocr-run.js --folder <email folder>`.
 
 ## Adding an API
 

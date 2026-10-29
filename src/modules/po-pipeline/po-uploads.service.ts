@@ -94,6 +94,20 @@ const pickPoFile = (meta: EmailMetadata, run: OcrRun | null): string => {
   return pick(run?.files ?? []) ?? pick((meta.files ?? []).map((f) => (typeof f === 'string' ? f : f.filename))) ?? FILES.BODY_HTML;
 };
 
+/**
+ * The PO's own file in an email with several POs (2026-10-26, Tata 1mg: one PDF + CSV per PO): the file whose name holds
+ * the PO number (PDF first). Undefined when no file name carries it (Purplle: one summary file for all), so the PO keeps
+ * the email's file.
+ */
+export const ownPoFile = (meta: EmailMetadata, poNumber: string): string | undefined => {
+  if (!poNumber) return undefined;
+  const isPo = (n: string) => (PO_FILE_EXTENSIONS as readonly string[]).includes(extOf(n));
+  const escaped = poNumber.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const holds = new RegExp(`(^|[^0-9A-Za-z])${escaped}([^0-9A-Za-z]|$)`);
+  const mine = (meta.files ?? []).map((f) => (typeof f === 'string' ? f : f.filename)).filter((n) => isPo(n) && holds.test(n));
+  return mine.find((n) => extOf(n) === 'pdf') ?? mine[0];
+};
+
 const asDate = (v?: string): Date | null => (v && !Number.isNaN(Date.parse(v)) ? new Date(v) : null);
 
 /** The po_uploads values every PO of an email shares: source, email, file and OCR details. */
@@ -102,6 +116,48 @@ export const emailValues = async (folder: string, channelDisplayName: string | n
     path.join(folder, FILES.METADATA),
   )) ?? {};
   const run = await readJson<OcrRun>(path.join(folder, FILES.OCR_RESULT));
+  // A channel API PO (2026-10-16): no email and no OCR; the "file" is the API's own JSON.
+  if (meta.provider === PROVIDERS.CHANNEL_API) {
+    return {
+      source: UPLOAD_SOURCE.API,
+      channel: channelDisplayName,
+      fileName: FILES.API_RAW,
+      fileUrl: s3UrlFor(folder, meta, FILES.API_RAW),
+      fileType: extOf(FILES.API_RAW),
+      emailMessageId: meta.messageId ?? null,
+      emailFrom: null,
+      // The channel's name for the PO (Amazon: "FBA STA (28/09/2026 08:03)-DEL5"), shown / copied like an email subject.
+      emailSubject: meta.subject?.slice(0, 500) ?? null,
+      emailReceivedAt: asDate(meta.receivedAt),
+      sourceSystem: meta.sourceSystem ?? null,
+      externalId: meta.externalId ?? null,
+      // Nothing to read with OCR: the data came structured, so its "extraction" is done.
+      ocrStatus: UPLOAD_OCR_STATUS.SUCCESS,
+      ocrStartedAt: null,
+      ocrFinishedAt: null,
+      ocrAttempts: 0,
+    };
+  }
+  // A manual upload of a structured file (Amazon shipment .tsv, 2026-10-22): no OCR, the file is the PO.
+  if (meta.provider === PROVIDERS.MANUAL && meta.structured && meta.sourceFile) {
+    return {
+      source: UPLOAD_SOURCE.MANUAL,
+      channel: channelDisplayName,
+      fileName: meta.sourceFile,
+      fileUrl: s3UrlFor(folder, meta, meta.sourceFile),
+      fileType: extOf(meta.sourceFile) || null,
+      emailMessageId: meta.messageId ?? null,
+      emailFrom: null,
+      emailSubject: meta.subject?.slice(0, 500) ?? null,
+      emailReceivedAt: asDate(meta.receivedAt),
+      sourceSystem: meta.sourceSystem ?? null,
+      externalId: meta.externalId ?? null,
+      ocrStatus: UPLOAD_OCR_STATUS.SUCCESS,
+      ocrStartedAt: null,
+      ocrFinishedAt: null,
+      ocrAttempts: 0,
+    };
+  }
   const fileName = pickPoFile(meta, run);
   const fromLabel = meta.provider === PROVIDERS.GMAIL_PUBSUB || !!meta.labels?.length;
   return {
@@ -124,6 +180,17 @@ export const emailValues = async (folder: string, channelDisplayName: string | n
 /** po_uploads.ocr_result for one PO: where its files are and what the OCR / processing reported (decided: a summary). */
 const ocrSummary = async (folder: string, fp: FolderPo): Promise<Record<string, unknown>> => {
   const meta = (await readJson<EmailMetadata>(path.join(folder, FILES.METADATA))) ?? {};
+  if (meta.provider === PROVIDERS.CHANNEL_API || (meta.structured && meta.sourceFile)) {
+    return {
+      raw_output: s3UrlFor(folder, meta, meta.structured && meta.sourceFile ? meta.sourceFile : FILES.API_RAW),
+      processed_json: s3UrlFor(folder, meta, fp.relPath),
+      input_type: fp.po.input_type,
+      source_system: meta.sourceSystem ?? null,
+      external_status: meta.externalStatus ?? null,
+      lines: fp.po.line_items.length,
+      processing_warnings: fp.po.warnings,
+    };
+  }
   const out = await readJson<OcrOutput>(path.join(folder, FILES.OCR_OUTPUT_RESULT));
   const run = await readJson<OcrRun>(path.join(folder, FILES.OCR_RESULT));
   return {
@@ -141,7 +208,7 @@ const ocrSummary = async (folder: string, fp: FolderPo): Promise<Record<string, 
 };
 
 /** po_issues.original_values: the PO's value and ours, so the reviewer sees both. */
-const originalValues = (issue: ValidationIssue, r: ValidationResult): Record<string, unknown> => {
+export const originalValues = (issue: ValidationIssue, r: ValidationResult): Record<string, unknown> => {
   const line = issue.lineNo === undefined || issue.lineNo === '' ? undefined : r.lines.find((l) => l.lineNo === issue.lineNo);
   const tolerances = CHANNEL_TOLERANCES[r.channel];
   const tolerance =
@@ -194,6 +261,12 @@ export interface EmailPlan {
   rows: RowPlan[];
 }
 
+/** YYYY-MM-DD from the PO's po_date (a full date-time keeps its day; anything else = null, never a bad DATE value). */
+export const dateOnly = (v: unknown): string | null => {
+  const m = typeof v === 'string' ? /^(\d{4}-\d{2}-\d{2})/.exec(v.trim()) : null;
+  return m && !Number.isNaN(Date.parse(m[1])) ? m[1] : null;
+};
+
 /** Works out what to write for one email folder. Reads only. */
 export const planEmail = async (db: DataSource, reader: MasterDataReader, folder: string, now = new Date()): Promise<EmailPlan> => {
   const pos = await readFolderPos(folder);
@@ -202,6 +275,7 @@ export const planEmail = async (db: DataSource, reader: MasterDataReader, folder
   const master = await reader.forChannel(channel);
   const base = await emailValues(folder, master?.channel.displayName ?? null);
   const messageId = base.emailMessageId ?? null;
+  const meta = pos.length > 1 ? ((await readJson<EmailMetadata>(path.join(folder, FILES.METADATA))) ?? {}) : {};
 
   const uploads = db.getRepository(PoUpload);
   const issuesRepo = db.getRepository(PoIssue);
@@ -221,9 +295,13 @@ export const planEmail = async (db: DataSource, reader: MasterDataReader, folder
     const validation = await validatePo(fp.po, master, now);
     const hasOcrIssue = validation.issues.some((i) => i.type === ISSUE_TYPE.OCR_ISSUE);
 
+    // Several POs in one email: each PO points to its own file when one carries its number.
+    const own = pos.length > 1 ? ownPoFile(meta, poNumber) : undefined;
     const values: Partial<PoUpload> = {
       ...base,
+      ...(own ? { fileName: own, fileUrl: s3UrlFor(folder, meta, own), fileType: extOf(own) || null } : {}),
       poNumber: poNumber || null,
+      poDate: dateOnly(fp.po.po_date),
       ocrStatus: hasOcrIssue ? UPLOAD_OCR_STATUS.ISSUE : (base.ocrStatus as UploadOcrStatus),
       // The chain counts OCR runs on the row (ocrStarted); ocr-result.json only says whether one happened.
       ocrAttempts: Math.max(existing?.ocrAttempts ?? 0, base.ocrAttempts ?? 0),

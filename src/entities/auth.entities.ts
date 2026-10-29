@@ -51,6 +51,54 @@ export class User {
    */
   @Column({ name: 'po_team', type: 'enum', enum: Object.values(USER_TEAM), nullable: true })
   poTeam: UserTeam | null;
+
+  /** Who added the person from the Users page (users.id); null for people added by a script or the seed. */
+  @Column({ name: 'added_by', type: 'int', nullable: true })
+  addedBy: number | null;
+
+  /** Why the last welcome email failed (null = sent, or never tried); welcome_sent_at is set when it goes out. */
+  @Column({ name: 'welcome_error', type: 'varchar', length: 500, nullable: true })
+  welcomeError: string | null;
+
+  /** fk_users_added_by */
+  @ManyToOne(() => User, { nullable: true, onDelete: 'RESTRICT', onUpdate: 'CASCADE' })
+  @JoinColumn({ name: 'added_by', referencedColumnName: 'id', foreignKeyConstraintName: 'fk_users_added_by' })
+  adder: User | null;
+}
+
+/**
+ * roles (2026-10-15): the roles a person can be given. A role's only power is its page grants (page_permissions):
+ * which routes it may open and whether it may view or edit them. developer / admin are built-in (is_system) and keep
+ * full access; others are made on the Users page.
+ */
+@Entity({ name: TABLES.ROLES })
+export class Role {
+  /** What user_roles.role and page_permissions.role store. */
+  @PrimaryColumn({ name: 'role_key', type: 'varchar', length: 100 })
+  key: string;
+
+  @Column({ name: 'label', type: 'varchar', length: 100 })
+  label: string;
+
+  @Column({ name: 'description', type: 'varchar', length: 255, nullable: true })
+  description: string | null;
+
+  @Column({ name: 'is_system', type: 'boolean', default: false })
+  isSystem: boolean;
+
+  @Column({ name: 'created_by', type: 'int', nullable: true })
+  createdBy: number | null;
+
+  @Column({ name: 'created_at', type: 'datetime', default: () => 'CURRENT_TIMESTAMP', update: false })
+  createdAt: Date;
+
+  @Column({ name: 'updated_at', type: 'datetime', default: () => 'CURRENT_TIMESTAMP', onUpdate: 'CURRENT_TIMESTAMP', update: false })
+  updatedAt: Date;
+
+  /** fk_roles_created_by */
+  @ManyToOne(() => User, { nullable: true, onDelete: 'RESTRICT', onUpdate: 'CASCADE' })
+  @JoinColumn({ name: 'created_by', referencedColumnName: 'id', foreignKeyConstraintName: 'fk_roles_created_by' })
+  creator: User | null;
 }
 
 /** user_roles: a user's roles (keys from constants/auth ROLES). */

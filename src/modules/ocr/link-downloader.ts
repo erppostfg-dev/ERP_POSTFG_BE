@@ -2,6 +2,8 @@ import fs from 'fs/promises';
 import path from 'path';
 import { ERROR_CODES, errorMessage, FILES } from '../../constants';
 import { appError } from '../../utils/AppError';
+import { LOG_SOURCE } from '../../constants/logging';
+import { logCall } from '../../utils/log-call';
 import { ChannelConfig } from './channels.config';
 
 export interface DownloadedLink {
@@ -49,7 +51,9 @@ const fetchFile = async (start: string, allowedHosts: string[]): Promise<{ buf: 
     if (url.protocol !== 'https:' || !allowedHosts.includes(url.host)) {
       throw appError(ERROR_CODES.LINK_HOST_NOT_ALLOWED, url.protocol, url.host);
     }
-    const res = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(TIMEOUT_MS) });
+    const target = url;
+    const res = await logCall(LOG_SOURCE.HTTP, 'download link', () => fetch(target, { redirect: 'manual', signal: AbortSignal.timeout(TIMEOUT_MS) }),
+      { fields: { host: target.host, hop }, failedStatus: (r) => ((r as Response).status >= 400 ? (r as Response).status : undefined) });
     if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {
       url = new URL(res.headers.get('location') as string, url);
       continue;

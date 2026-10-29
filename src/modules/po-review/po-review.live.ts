@@ -2,6 +2,10 @@ import { EventEmitter } from 'events';
 import { Request, Response } from 'express';
 import { AppDataSource } from '../../config/data-source';
 import { LIVE, REVIEW_LIVE, TABLES } from '../../constants';
+import { LOG_SOURCE } from '../../constants/logging';
+import { logError } from '../../utils/classify-error';
+import { inBackground } from '../../utils/log-context';
+import { forgetPoIssues } from '../po-issues/po-issues.cache';
 
 /*
  * Live PO Review + Approvals (2026-10-15, user: "on sync just like the live option on PO Overview"). The lists are small,
@@ -37,7 +41,7 @@ const check = (): Promise<string> => {
       return v;
     })
     .catch((err) => {
-      console.error('[review-live] version check failed:', err instanceof Error ? err.message : err);
+      logError(LOG_SOURCE.DB, '[review-live] version check failed (retried on the next check)', err);
       return version;
     })
     .finally(() => { checking = undefined; });
@@ -46,6 +50,8 @@ const check = (): Promise<string> => {
 
 /** After our own review actions: the screens hear at once (no-op while no screen is connected). */
 export const bumpReview = (): void => {
+  // a review decision / re-check / upload changed what PO issues shows: its shared answer is dropped (2026-10-29)
+  forgetPoIssues();
   if (bus.listenerCount('change')) void check();
 };
 
@@ -56,7 +62,8 @@ export const reviewEvents = async (req: Request, res: Response): Promise<void> =
   const send = (event: string, data: unknown) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   const onChange = (v: string) => send(REVIEW_LIVE.EVENT_CHANGE, { version: v });
   bus.on('change', onChange);
-  watcher ??= setInterval(() => void check(), REVIEW_LIVE.WATCH_MS);
+  // its own job name: started by the first screen's request, it must not carry that request on every tick (2026-10-27)
+  watcher ??= inBackground('live-po-review', () => setInterval(() => void check(), REVIEW_LIVE.WATCH_MS));
   send(LIVE.EVENT_PING, { version: await check() });
   const beat = setInterval(() => send(LIVE.EVENT_PING, { version }), LIVE.HEARTBEAT_MS);
   req.on('close', () => {

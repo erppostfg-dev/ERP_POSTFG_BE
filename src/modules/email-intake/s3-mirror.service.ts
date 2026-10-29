@@ -2,13 +2,18 @@ import crypto from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
 import { Readable } from 'stream';
-import { DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { env } from '../../config/env';
+import { s3Client } from '../../config/s3';
 import { ERROR_CODES, FILES, OWN_FILES } from '../../constants';
 import { appError } from '../../utils/AppError';
+import { LOG_SOURCE } from '../../constants/logging';
+import { logError } from '../../utils/classify-error';
+import { log } from '../../utils/logger';
 import { emailInfo } from '../ocr/channel-detector';
 import { EmailMetadata, plannedS3Folder } from './s3-layout';
+import { recordEmail } from './intake-emails.service';
 
 /*
  * Copies the local email storage to S3 in the folder layout of s3-layout.ts:
@@ -21,8 +26,8 @@ import { EmailMetadata, plannedS3Folder } from './s3-layout';
  * Anything missed (S3 down, server stopped) is uploaded at startup or by `npm run s3:sync`.
  */
 
-let client: S3Client | undefined;
-const s3 = (): S3Client => (client ??= new S3Client({ region: env.s3.region }));
+/** The app's one S3 client (config/s3.ts), every command timed and logged there. */
+const s3 = s3Client;
 
 const CONTENT_TYPES: Record<string, string> = {
   '.json': 'application/json',
@@ -240,7 +245,7 @@ const recordDuplicate = async (dir: string, s3Folder: string, firstFolder: strin
   await putBody(csvKey, csv, DUPLICATES_CSV);
   await fs.writeFile(path.join(labelDir, DUPLICATES_CSV), csv, 'utf8');
 
-  console.log(`[duplicate] ${path.posix.basename(firstFolder)} arrived again -> ${s3Folder}/ (${kind})`);
+  log.info(LOG_SOURCE.S3, `[duplicate] ${path.posix.basename(firstFolder)} arrived again -> ${s3Folder}/ (${kind})`);
 };
 
 /**
@@ -265,7 +270,38 @@ export const syncEmailToS3 = async (dir: string): Promise<{ s3Folder: string; up
     await putBody(key, body, file);
     uploaded++;
   }
+  await recordEmail(dir); // the DB row gets its S3 folder (intake_emails, 2026-10-23)
   return { s3Folder, uploaded, same };
+};
+
+/**
+ * Local cleanup check (2026-10-23): is EVERY local file of this folder in its S3 folder with the same content (MD5 vs
+ * ETag)? Missing / different files are listed; nothing is uploaded here.
+ */
+export const verifyInS3 = async (dir: string): Promise<{ s3Folder: string | null; missing: string[] }> => {
+  const meta = await readMeta(dir);
+  if (!env.s3.enabled || !meta.s3Folder) return { s3Folder: meta.s3Folder ?? null, missing: ['(not uploaded yet)'] };
+  const remote = await listPrefix(`${meta.s3Folder}/`);
+  const missing: string[] = [];
+  for (const file of await localFiles(dir)) {
+    const rel = path.relative(dir, file).split(path.sep).join('/');
+    if (remote.get(`${meta.s3Folder}/${rel}`) !== md5(await fs.readFile(file))) missing.push(rel);
+  }
+  return { s3Folder: meta.s3Folder, missing };
+};
+
+/** Copies every file of an S3 folder into a local folder (an email whose local copy was removed is needed again). */
+export const downloadS3Folder = async (s3Folder: string, dir: string): Promise<number> => {
+  let n = 0;
+  for (const key of (await listPrefix(`${s3Folder}/`)).keys()) {
+    const rel = key.slice(s3Folder.length + 1);
+    const out = path.join(dir, ...rel.split('/'));
+    await fs.mkdir(path.dirname(out), { recursive: true });
+    const body = await (await s3().send(new GetObjectCommand({ Bucket: env.s3.bucket, Key: key }))).Body?.transformToByteArray();
+    await fs.writeFile(out, Buffer.from(body ?? new Uint8Array()));
+    n++;
+  }
+  return n;
 };
 
 /** Uploads one file kept directly in a label folder (report.csv, duplicates.csv). */
@@ -315,7 +351,7 @@ export const moveEmailInS3 = async (newDir: string): Promise<void> => {
     } catch (err) {
       if ((err as { name?: string }).name !== 'AccessDenied') throw err;
       deleteDenied = true;
-      console.warn(`[s3] no s3:DeleteObject permission: old copies stay in S3 (first one: ${key})`);
+      log.warn(LOG_SOURCE.S3, 'no s3:DeleteObject permission: old copies stay in S3 (ask the AWS admin for it)', { key });
       return;
     }
   }
@@ -324,5 +360,5 @@ export const moveEmailInS3 = async (newDir: string): Promise<void> => {
 /** Runs an S3 step without blocking or failing the caller; errors are logged (the next sync retries). */
 export const mirrorLater = (what: string, step: () => Promise<unknown>): void => {
   if (!env.s3.enabled) return;
-  step().catch((err) => console.error(`[s3] ${what} failed (retried by the next sync):`, (err as Error).message ?? err));
+  step().catch((err) => logError(LOG_SOURCE.S3, `${what} failed (retried by the next sync)`, err));
 };

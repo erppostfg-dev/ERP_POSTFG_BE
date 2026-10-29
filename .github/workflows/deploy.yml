@@ -8,8 +8,8 @@
 #
 # Each GitHub Environment holds: secret AWS_ROLE_ARN (Terraform output app_deploy_role_arn),
 # variables ECR_REPOSITORY (app_ecr_repository_url) and EC2_INSTANCE_ID (app_instance_id).
-# Optional secret SUBMODULE_TOKEN: read access to the ocr-service submodule's repository.
 # The app's settings are not here: the instance reads /mcaffeine-erp-post-fg/<env>/api/env from SSM.
+# The OCR scripts are part of this repository (ocr-service/dev/scripts).
 name: deploy
 
 on:
@@ -35,20 +35,44 @@ env:
   AWS_REGION: ap-south-1
 
 jobs:
+  # Every check must pass before anything is deployed (2026-10-28: lint, import rules, unused code, tests).
   check:
-    name: typecheck
+    name: checks (typecheck, lint, deps, knip, tests)
     if: github.ref_name == 'dev' || github.ref_name == 'main'
     runs-on: ubuntu-latest
+    # The API tests run against a throwaway MySQL 8.0 (same as RDS); test/setup/global.ts builds mcaff_postfg_test on it
+    # from all migrations. Never the dev / prod database: the app refuses anything else while NODE_ENV=test.
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: test-only
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -ptest-only"
+          --health-interval=5s --health-timeout=5s --health-retries=30
+    env:
+      TEST_DB_HOST: 127.0.0.1
+      TEST_DB_PORT: '3306'
+      TEST_DB_USER: root
+      TEST_DB_PASSWORD: test-only
+      TEST_DB_NAME: mcaff_postfg_test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
 
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run deps
+      - run: npm run knip
+      # same SQL mode and time zone as the RDS (checked 2026-10-28)
+      - run: mysql -h 127.0.0.1 -P 3306 -uroot -ptest-only -e "SET GLOBAL sql_mode = 'IGNORE_SPACE,NO_ENGINE_SUBSTITUTION'; SET GLOBAL time_zone = '+00:00';"
+      - run: npm test
 
   deploy:
     name: deploy ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
@@ -72,27 +96,10 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@v4
-
-      - name: Fetch ocr-service (submodule)
-        if: inputs.image_tag == ''
-        env:
-          SUBMODULE_TOKEN: ${{ secrets.SUBMODULE_TOKEN }}
-        run: |
-          if [ ! -f .gitmodules ]; then
-            echo "No submodules: ocr-service is part of this repository."
-            exit 0
-          fi
-          if [ -z "$SUBMODULE_TOKEN" ]; then
-            echo "::warning::SUBMODULE_TOKEN is not set: the image is built without the ocr-service scripts (OCR will not run)."
-            exit 0
-          fi
-          git config --global url."https://x-access-token:${SUBMODULE_TOKEN}@github.com/".insteadOf "https://github.com/"
-          git submodule update --init --recursive
-          git config --global --unset url."https://x-access-token:${SUBMODULE_TOKEN}@github.com/".insteadOf
+      - uses: actions/checkout@v5
 
       - name: AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           role-session-name: gha-deploy-backend-${{ env.ENV_NAME }}-${{ github.run_id }}
@@ -136,6 +143,7 @@ jobs:
             --document-name AWS-RunShellScript \
             --comment "post-fg backend ${ENV_NAME} ${IMAGE_TAG:0:12}" \
             --parameters "$PARAMS" \
+            --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=/mcaffeine-erp-post-fg/${ENV_NAME}/deploy" \
             --query Command.CommandId --output text)"
           echo "SSM command $COMMAND_ID on $EC2_INSTANCE_ID"
 

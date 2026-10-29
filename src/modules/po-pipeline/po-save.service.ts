@@ -93,8 +93,9 @@ export const poRows = (
     locationId: v.location?.locationId ?? null,
     poNumber: v.poNumber,
     totalUnits: lines.reduce((s, l) => s + n(l.qty), 0),
-    // PEPIMS: a PO with several brands takes the FIRST line's brand; every line keeps its own.
-    brandName: lines.length ? brand(lines[0].brandName) : null,
+    // PEPIMS: a PO with several brands takes the FIRST line's brand; every line keeps its own. A first line with no
+    // brand anywhere is skipped: the first line that has one (user, 2026-10-26).
+    brandName: lines.map((l) => brand(l.brandName)).find((b) => b !== null) ?? null,
     statusActive: NEW_PO_STATUS.ACTIVE,
     statusPlanning: NEW_PO_STATUS.PLANNING,
     customerCode: v.location?.customerCode ?? null,

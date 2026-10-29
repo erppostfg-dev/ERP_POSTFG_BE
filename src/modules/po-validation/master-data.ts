@@ -1,5 +1,5 @@
 import { DataSource } from 'typeorm';
-import { CHANNEL_MASTER_IDS, ChannelName } from '../../constants';
+import { CHANNEL_MASTER_IDS, ChannelName, PO_VERIFY_ACTION, TABLES } from '../../constants';
 import { DetailsChannel, MasterChannel, MasterChannelSku, MasterFacility, MasterPurchaseOrder, MasterSku } from '../../entities';
 import { CodeIndex, codeIndex, EXACT_MATCH, matchKey } from '../masters/master-match';
 
@@ -11,7 +11,7 @@ export { matchKey };
  */
 export interface ChannelMasterData {
   channel: MasterChannel;
-  /** master_channel_skus rows of this channel, by channel_code. Several rows for one code = ambiguous. */
+  /** ACTIVE master_channel_skus rows of this channel, by channel_code. Several rows for one code = ambiguous. */
   skusByCode: Map<string, MasterChannelSku[]>;
   /** The same rows by pep_code: what a reviewer can map a line to. */
   skusByPep: Map<string, MasterChannelSku[]>;
@@ -50,10 +50,10 @@ export class MasterDataReader {
     const channel = id === undefined ? null : await this.db.getRepository(MasterChannel).findOneBy({ id });
     if (!channel) return null;
     this.skus ??= new Map((await this.db.getRepository(MasterSku).find()).map((s) => [matchKey(s.pepCode), s]));
-    const channelSkus = await this.db.getRepository(MasterChannelSku).findBy({ channelId: id });
+    // switched-off mappings are not used (2026-10-28): a PO line with that code goes to review
+    const channelSkus = await this.db.getRepository(MasterChannelSku).findBy({ channelId: id, isActive: true });
     const locations = await this.db.getRepository(DetailsChannel).findBy({ channelId: id, isActive: true });
     this.facilities ??= codeIndex(await this.db.getRepository(MasterFacility).find(), EXACT_MATCH);
-    const orders = this.db.getRepository(MasterPurchaseOrder);
     return {
       channel,
       skusByCode: groupBy(channelSkus, (s) => matchKey(s.channelCode)),
@@ -61,7 +61,28 @@ export class MasterDataReader {
       locations,
       facilities: this.facilities,
       skus: this.skus,
-      poExists: async (poNumber) => (await orders.countBy({ channel: channel.displayName, poNumber })) > 0,
+      // A PO sent back from verification (po-verify) is cancelled: it no longer counts as a duplicate of itself.
+      poExists: async (poNumber) => (await countLivePos(this.db, channel.displayName, poNumber)) > 0,
     };
   }
 }
+
+/**
+ * Saved POs with this channel + PO number, leaving out those cancelled by a verification send-back
+ * (po_verifications, 2026-10-22). Without that table (its migration not run yet) every saved PO counts, as before.
+ */
+const countLivePos = async (db: DataSource, channel: string, poNumber: string): Promise<number> => {
+  const orders = db.getRepository(MasterPurchaseOrder);
+  try {
+    return await orders
+      .createQueryBuilder('o')
+      .where('o.channel = :channel AND o.poNumber = :poNumber', { channel, poNumber })
+      .andWhere(`o.uid NOT IN (SELECT v.po_uid FROM ${TABLES.PO_VERIFICATIONS} v WHERE v.action = :sentBack AND v.po_uid IS NOT NULL)`, {
+        sentBack: PO_VERIFY_ACTION.SENT_BACK,
+      })
+      .getCount();
+  } catch (err) {
+    if ((err as { code?: string }).code !== 'ER_NO_SUCH_TABLE') throw err;
+    return orders.countBy({ channel, poNumber });
+  }
+};

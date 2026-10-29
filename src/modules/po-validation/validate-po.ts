@@ -6,6 +6,7 @@ import {
   ISSUE_FIELDS,
   ISSUE_TYPE,
   LOCATION_MATCH,
+  NO_BRAND,
   round2,
   VALIDATION_STATUS,
   VALIDATION_TEXT,
@@ -141,6 +142,8 @@ const findLocation = (po: ProcessedPo, master: ChannelMasterData, issues: Valida
     !row.channelCode?.trim() && 'channel_code',
   ].filter(Boolean);
   if (missing.length) issue(VALIDATION_TEXT.LOCATION_INCOMPLETE(row.channelLocationCode ?? row.id, missing.join(', ')));
+  // a warehouse switched off on the Masters page (2026-10-28) ships nothing: the PO goes to review
+  if (facility && !facility.isActive) issue(VALIDATION_TEXT.FACILITY_INACTIVE(row.channelLocationCode ?? row.id, facility.code));
   return {
     locationId: String(row.id),
     locationCode: row.channelLocationCode?.trim() ?? '',
@@ -192,10 +195,16 @@ const validateLine = (
     add(validationIssue(ISSUE_TYPE.SKU_NOT_MAPPED, { field: ISSUE_FIELDS.CHANNEL_SKU_CODE, lineNo, actual: line.channel_sku_code }, where, detail));
   if (pickedPep && !candidates.length) skuIssue(VALIDATION_TEXT.SKU_NONE(pickedPep));
   else if (!pickedPep && !line.channel_sku_code.trim()) skuIssue(VALIDATION_TEXT.SKU_CODE_EMPTY);
-  else if (!candidates.length) skuIssue(VALIDATION_TEXT.SKU_NONE(line.channel_sku_code));
+  else if (!candidates.length) {
+    // The PO may name our own SKU too (Nykaa's Vendor SKU Code -> pep_sku_code): only a hint for the reviewer.
+    const given = line.pep_sku_code.trim() ? master.skus.get(matchKey(line.pep_sku_code)) : undefined;
+    skuIssue(given ? VALIDATION_TEXT.SKU_NONE_PO_GIVES_PEP(line.channel_sku_code, given.pepCode) : VALIDATION_TEXT.SKU_NONE(line.channel_sku_code));
+  }
   else if (candidates.length > 1) skuIssue(VALIDATION_TEXT.SKU_MANY(line.channel_sku_code, candidates.map((c) => c.pepCode).join(', ')));
   const mapped = candidates.length === 1 ? candidates[0] : null;
   const sku = mapped ? master.skus.get(matchKey(mapped.pepCode)) : undefined;
+  // a PEP SKU switched off on the Masters page (2026-10-28): the line goes to review (values still filled below)
+  if (sku && sku.isActive === false) skuIssue(VALIDATION_TEXT.SKU_INACTIVE(sku.pepCode));
 
   // The PO's unit price and line value, with tax.
   const landing = num(line.landing_rate);
@@ -222,7 +231,8 @@ const validateLine = (
   if (!mapped) return out;
   out.pepCode = mapped.pepCode;
   out.skuName = sku?.productName ?? mapped.productName ?? '';
-  out.brandName = sku?.brandName ?? mapped.brandName ?? '';
+  // master_skus keeps "0" for "no brand" (all combos): then the channel SKU row's brand (user, 2026-10-26).
+  out.brandName = [sku?.brandName, mapped.brandName].map((b) => b?.trim() ?? '').find((b) => !NO_BRAND.includes(b)) ?? '';
 
   // MRP: the PO's vs ours (the channel's row, else master_skus).
   const ourMrp = mapped.mrp ?? sku?.mrp ?? null;

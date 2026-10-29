@@ -3,24 +3,25 @@ Run PO extraction for a channel and print the extracted PO as JSON.
 
 Picks the pipeline from the files passed in:
     pdf + sheet  extract_text_first_excel_v2   (blinkit, myntra)
-    pdf only     extract_hybrid_text_first_v2  (purple, avenue)
+    pdf only     extract_hybrid_text_first_v2  (purplle, avenue)
     sheet only   extract_excel_only_v2         (flipkart, bigbasket, firstcry, scootsy)
     flat csv     extract_flat_csv              (zepto, tat; set by "pipeline": "flat_csv")
 
 Channel settings come from channels.json. If a channel's "expects" doesn't match the
-files given, the run is refused. Nothing is written to disk: the JSON goes to stdout and
-the progress log to stderr, so `> po.json` captures just the JSON. From Python, call
-route(channel, files) to get the same data as a dict.
+files given, the run is refused. Nothing is written to disk and nothing is printed while
+it runs: the only output is the extracted PO as one JSON on stdout, which the backend
+reads in memory (`> po.json` captures it by hand). From Python, call route(channel, files)
+to get the same data as a dict.
 
 Usage:
     python run_po.py <channel> <file> [<file>]
 
     python run_po.py blinkit blinkit_1.pdf blinkit_2.xlsx
-    python run_po.py purple s3://my-bucket/purple/purple_po.PDF
+    python run_po.py purplle s3://my-bucket/purplle/purplle_po.PDF
     python run_po.py zepto zepto_po.csv > zepto.json
 
 Files can be local or s3:// paths, in any order.
-Exit codes: 0 ok, 1 pipeline error, 2 bad arguments. On an error the JSON is
+Exit codes: 0 ok, 1 pipeline or other error, 2 bad arguments. On an error the JSON is
 {"channel": ..., "error": ...}.
 """
 
@@ -90,7 +91,7 @@ def check_channel_name(channel: str):
     looks_like_file = ("://" in channel or "/" in channel or "\\" in channel
                        or os.path.splitext(channel)[1].lower() in (".pdf", ".xls", ".xlsx", ".xlsm", ".csv", ".tsv", ".txt"))
     if looks_like_file or not CHANNEL_NAME_RE.match(channel):
-        raise UsageError(f"first argument should be a channel name (blinkit, purple, ...), got '{channel}'. "
+        raise UsageError(f"first argument should be a channel name (blinkit, purplle, ...), got '{channel}'. "
                          f"Usage: python run_po.py <channel> <file> [<file>]")
 
 
@@ -111,11 +112,19 @@ def route(channel: str, files: list) -> dict:
     if cfg.get("pipeline") == "flat_csv":
         if received != "sheet":
             raise UsageError(f"channel '{channel}' uses the flat csv pipeline, pass just the csv")
-        result = flat_csv_pipeline.process(sheet, header_columns=cfg.get("header_columns"))
+        result = flat_csv_pipeline.process(sheet, header_columns=cfg.get("header_columns"),
+                                           filename_fields=cfg.get("filename_fields"))
     elif received == "pdf+sheet":
-        result = pdf_plus_sheet_pipeline.process(pdf, sheet)
+        # every per-channel setting of channels.json goes to its pipeline (2026-10-28: before, only
+        # header_notes did, so e.g. Reliance's stacked_table was never used and its stacked cells were glued)
+        result = pdf_plus_sheet_pipeline.process(pdf, sheet, header_notes=cfg.get("header_notes"),
+                                                 pdf_totals=cfg.get("pdf_totals"),
+                                                 read_last_page=bool(cfg.get("read_last_page")))
     elif received == "pdf":
-        result = pdf_only_pipeline.process(pdf, header_notes=cfg.get("header_notes"))
+        result = pdf_only_pipeline.process(pdf, header_notes=cfg.get("header_notes"),
+                                           split_value_rate_cells_enabled=bool(cfg.get("split_value_rate_cells")),
+                                           unlabeled_total_row=bool(cfg.get("unlabeled_total_row")),
+                                           stacked_table=cfg.get("stacked_table"))
     else:
         result = sheet_only_pipeline.process(sheet)
     return {"channel": channel, "input": received, "pdf": pdf, "sheet": sheet, **result}
@@ -123,19 +132,22 @@ def route(channel: str, files: list) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description="Extract a PO for any channel (see channels.json).")
-    parser.add_argument("channel", help="channel name, e.g. blinkit, purple, flipkart")
+    parser.add_argument("channel", help="channel name, e.g. blinkit, purplle, flipkart")
     parser.add_argument("files", nargs="+", help="the PO file(s): a PDF, a spreadsheet, or both (local or s3://)")
     args = parser.parse_args()
 
     try:
-        with contextlib.redirect_stdout(sys.stderr):      # log to stderr, JSON alone on stdout
+        # Quiet run: the pipelines' progress lines and warnings are dropped, the JSON below is the only output
+        with open(os.devnull, "w") as quiet, contextlib.redirect_stdout(quiet), contextlib.redirect_stderr(quiet):
             output, code = route(args.channel, args.files), 0
     except UsageError as e:
         output, code = {"channel": args.channel, "error": str(e)}, 2
     except PIPELINE_ERRORS as e:
         output, code = {"channel": args.channel, "error": str(e)}, 1
+    except Exception as e:                         # S3 / Bedrock / Textract / an unreadable file: same JSON, no traceback
+        output, code = {"channel": args.channel, "error": f"{type(e).__name__}: {e}"}, 1
     sys.stdout.reconfigure(encoding="utf-8")       # Windows defaults to cp1252 when redirected
-    print(json.dumps(output, indent=2, ensure_ascii=False))
+    print(json.dumps(output, ensure_ascii=False))
     sys.exit(code)
 
 

@@ -1,8 +1,14 @@
 node_modules/
 dist/
 .env
+# local test database login (2026-10-28), never committed
+.env.test
 secrets/
 storage/
 *.log
 .DS_Store
 .venv-ocr/
+__pycache__/
+.pytest_cache/
+# test runs: throwaway storage (2026-10-28)
+test/.tmp/

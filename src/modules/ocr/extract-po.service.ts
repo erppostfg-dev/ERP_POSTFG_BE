@@ -5,9 +5,15 @@ import { detectChannel, emailInfo, StoredMetadata } from './channel-detector';
 import { ChannelConfig } from './channels.config';
 import { DownloadedLink, downloadLinkedFiles } from './link-downloader';
 import { runOcr } from './ocr-runner';
+import { readSheets } from './sheet-reader';
+import { submitJob, usesSqs } from '../po-jobs/po-jobs.queue';
 import { syncEmailToS3 } from '../email-intake/s3-mirror.service';
 import { ocrFinished, ocrStarted } from '../po-pipeline/pipeline.service';
-import { ErrorArgs, ErrorCode, ERROR_CODES, errorMessage, FILES, RESULT_STATUS, ResultStatus } from '../../constants';
+import { ErrorArgs, ErrorCode, ERROR_CODES, errorMessage, FILES, PO_JOB_TYPE, RESULT_STATUS, ResultStatus } from '../../constants';
+import { LOG_SOURCE } from '../../constants/logging';
+import { log } from '../../utils/logger';
+import { logError } from '../../utils/classify-error';
+import { runJob, step } from '../../utils/log-call';
 
 export type ExtractStatus = ResultStatus;
 
@@ -46,6 +52,7 @@ const pickFiles = (config: ChannelConfig, filenames: string[]): { files: string[
     const pattern = config.files[kind];
     if (!pattern) continue;
     const file = filenames.find((f) => pattern.test(f));
+    if (!file && config.optional?.includes(kind)) continue; // not needed (e.g. 1mg's PDF): read without it
     if (!file) return why(ERROR_CODES.OCR_FILES_MISSING, config.channel, kind, String(pattern), filenames.join(', '));
     picked.push(file);
   }
@@ -68,7 +75,7 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
     const full: ExtractResult = { ...r, folder: dir, startedAt, finishedAt: new Date().toISOString() };
     await fs.writeFile(path.join(dir, FILES.OCR_RESULT), JSON.stringify(full, null, 2), 'utf8');
     // The OCR result, its CSV and any downloaded files go to S3 too (awaited, so `npm run ocr:run` uploads before exiting).
-    await syncEmailToS3(dir).catch((err) => console.error(`[s3] upload ${dir} failed (retried by the next sync):`, (err as Error).message));
+    await syncEmailToS3(dir).catch((err) => logError(LOG_SOURCE.S3, `upload ${dir} failed (retried by the next sync)`, err));
     // The chain goes on (processed.json -> validation -> DB -> CSV) when the database is connected.
     await ocrFinished(dir, full);
     return full;
@@ -86,7 +93,7 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
   // 2. Channels that send links instead of attachments: download them into the folder first.
   let links: DownloadedLink[] | undefined;
   if (config.links) {
-    const dl = await downloadLinkedFiles(config, dir, await fs.readdir(dir));
+    const dl = await step('download linked files', async () => downloadLinkedFiles(config, dir, await fs.readdir(dir)));
     links = dl.downloaded;
     for (const d of dl.downloaded) if (d.filename && !filenames.includes(d.filename)) filenames.push(d.filename);
     if (dl.missingRequired.length) {
@@ -101,6 +108,30 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
     return save({ status: RESULT_STATUS.SKIPPED, code: picked.code, reason: picked.reason, channel: config.channel, links });
   }
 
+  // 3b. Sheet channels (reader 'sheet', 2026-10-26): no OCR, our own reader turns every CSV into the raw JSON.
+  if (config.reader === 'sheet') {
+    const sheets = filenames.filter((f) => config.files.sheet?.test(f));
+    await ocrStarted(dir);
+    const t0 = Date.now();
+    try {
+      const read = await step('read sheet (no OCR)', () => readSheets(dir, sheets, config.channel), { files: sheets.length });
+      log.info(LOG_SOURCE.OCR, `[extractPo] ${config.channel}: sheet reader, no OCR: ${read.lines} line(s) from ${sheets.length} file(s) (${path.basename(dir)})`);
+      return await save({
+        status: RESULT_STATUS.OK,
+        channel: config.channel,
+        ocrChannel: config.ocrChannel,
+        files: picked.files,
+        inputs: sheets,
+        links,
+        durationMs: Date.now() - t0,
+        ocr: { status: RESULT_STATUS.OK, reader: 'sheet', lines: read.lines, files: sheets },
+      });
+    } catch (err) {
+      const failed = why(ERROR_CODES.OCR_FAILED, `sheet reader: ${(err as Error).message}`);
+      return save({ status: RESULT_STATUS.FAILED, ...failed, channel: config.channel, files: sheets, links, durationMs: Date.now() - t0 });
+    }
+  }
+
   // 4. The OCR's inputs: the local files, or their S3 copies (uploaded first if missing).
   let inputs = picked.files.map((f) => path.join(dir, f));
   if (env.ocr.inputFromS3) {
@@ -109,7 +140,7 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
     }
     let s3Folder: string;
     try {
-      s3Folder = (await syncEmailToS3(dir)).s3Folder;
+      s3Folder = (await step('upload OCR inputs to S3', () => syncEmailToS3(dir))).s3Folder;
     } catch (err) {
       const failed = why(ERROR_CODES.OCR_S3_UPLOAD_FAILED, (err as Error).message);
       return save({ status: RESULT_STATUS.FAILED, ...failed, channel: config.channel, links });
@@ -117,12 +148,12 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
     inputs = picked.files.map((f) => `s3://${env.s3.bucket}/${s3Folder}/${f}`);
   }
 
-  // 5. Run the OCR in the email folder (its CSV and result are written there).
-  console.log(`[extractPo] ${config.channel}: ${inputs.join(', ')} (${path.basename(dir)})`);
+  // 5. Run the OCR (channel + files only). Its JSON (the extracted PO) is saved as the raw JSON, like the sheet reader's.
+  log.info(LOG_SOURCE.OCR, `[extractPo] ${config.channel}: ${inputs.join(', ')} (${path.basename(dir)})`);
   await ocrStarted(dir);
-  const run = await runOcr(config.ocrChannel, inputs, dir, FILES.OCR_OUTPUT_CSV);
+  const run = await step('run OCR', () => runOcr(config.ocrChannel, inputs), { channel: config.channel, files: inputs.length });
 
-  const ok = run.exitCode === 0 && run.result?.status === RESULT_STATUS.OK;
+  const ok = run.exitCode === 0 && !!run.result && !run.result.error;
   const ocrError = run.result?.error as string | undefined;
   const failure = ok
     ? undefined
@@ -132,6 +163,7 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
         ? why(ERROR_CODES.OCR_FAILED, ocrError)
         : why(ERROR_CODES.OCR_EXITED, run.exitCode);
   const reason = failure?.reason;
+  if (ok) await fs.writeFile(path.join(dir, FILES.OCR_RAW_JSON), JSON.stringify(run.result, null, 2), 'utf8');
 
   const result = await save({
     status: ok ? RESULT_STATUS.OK : RESULT_STATUS.FAILED,
@@ -148,7 +180,7 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
     ocr: run.result,
     logTail: ok ? undefined : run.logTail,
   });
-  console.log(`[extractPo] ${config.channel} ${result.status}${reason ? `: ${reason}` : ''} (${run.durationMs} ms)`);
+  log.info(LOG_SOURCE.OCR, `[extractPo] ${config.channel} ${result.status}${reason ? `: ${reason}` : ''} (${run.durationMs} ms)`);
   return result;
 };
 
@@ -166,8 +198,9 @@ const next = (): void => {
     const folder = waiting.shift() as string;
     started++;
     running++;
-    extractPo(folder)
-      .catch((err) => console.error(`[extractPo] ${folder} crashed`, err))
+    // One job per OCR run: its OCR, S3, DB and pipeline lines share one jobId.
+    runJob('ocr', () => extractPo(folder), { folder: path.basename(folder) })
+      .catch((err) => logError(LOG_SOURCE.OCR, `${folder} crashed (it stays queued for the next start)`, err))
       .finally(() => {
         running--;
         next();
@@ -181,6 +214,16 @@ const next = (): void => {
  */
 export const queueExtractPo = (folder: string): boolean => {
   const dir = path.resolve(folder);
+  // PO jobs queue (2026-10-26): with QUEUE_MODE=sqs the job goes to SQS and the worker runs it, one at a time.
+  if (usesSqs()) {
+    void submitJob({ type: PO_JOB_TYPE.EXTRACT, folder: dir }, () => queueLocal(dir));
+    return true;
+  }
+  return queueLocal(dir);
+};
+
+/** The in-process queue (QUEUE_MODE=local, or an SQS send that failed). */
+const queueLocal = (dir: string): boolean => {
   if (queued.has(dir)) return true;
   if (limitReached()) return false;
   queued.add(dir);
@@ -202,12 +245,17 @@ export const foldersWithoutOcr = async (groupDir: string): Promise<string[]> => 
 };
 
 /** Queues every stored email of the label folders that was never run through OCR (OCR_BACKLOG). */
-export const queueOcrBacklog = async (groupDirs: string[]): Promise<{ found: number; queued: number }> => {
+export const queueOcrBacklog = async (
+  groupDirs: string[],
+  admit: (folder: string) => Promise<boolean> = async () => true,
+): Promise<{ found: number; queued: number }> => {
   let found = 0;
   let queuedNow = 0;
   for (const groupDir of groupDirs) {
     for (const dir of await foldersWithoutOcr(groupDir)) {
       found++;
+      // PO intake (2026-10-23): the admin switch / limit / process-from decide, not the .env flag alone.
+      if (!(await admit(dir))) continue;
       if (queueExtractPo(dir)) queuedNow++;
     }
   }

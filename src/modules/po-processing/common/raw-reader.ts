@@ -73,8 +73,8 @@ export interface RawOcr {
   sourceFile: string;
 }
 
-/** RFC 4180 CSV: quoted fields may hold commas, quotes ("") and line breaks. */
-const parseCsv = (content: string): string[][] => {
+/** RFC 4180 CSV: quoted fields may hold commas, quotes ("") and line breaks. Also used by the sheet reader. */
+export const parseCsv = (content: string): string[][] => {
   const rows: string[][] = [];
   let row: string[] = [];
   let cell = '';

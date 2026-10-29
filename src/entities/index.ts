@@ -2,8 +2,18 @@
  * TypeORM entities for the tables in mcaff_postfg_dev (Final_Schema/final_schema.sql), one per table.
  * They only MAP the existing tables: the schema is created and migrated by others, the app never changes it.
  */
+export * from './channel-api-sync.entity';
+export * from './channel-intake-setting.entity';
+export * from './intake-email.entity';
+export * from './app-state.entity';
 export * from './details-channel.entity';
 export * from './details-purchase-order.entity';
+export * from './inbound.entities';
+export * from './intransit-channel-sku-map.entity';
+export * from './intransit-master-change.entity';
+export * from './intransit-run.entity';
+export * from './manual-upload.entity';
+export * from './master-change-log.entity';
 export * from './master-channel-sku.entity';
 export * from './master-appointment-remark.entity';
 export * from './master-channel.entity';
@@ -13,11 +23,14 @@ export * from './master-facility.entity';
 export * from './master-final-status-map.entity';
 export * from './master-purchase-order.entity';
 export * from './master-shipment-status.entity';
+export * from './master-sku-component.entity';
 export * from './master-sku.entity';
 export * from './po-issue-action.entity';
 export * from './po-issue.entity';
 export * from './po-review-submission.entity';
 export * from './po-upload.entity';
+export * from './po-verification.entity';
+export * from './po-verify-channel-setting.entity';
 export * from './sale-order-code-counter.entity';
 export * from './shipment-log.entity';
 export * from './team-access.entities';

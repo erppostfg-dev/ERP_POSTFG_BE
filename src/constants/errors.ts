@@ -34,6 +34,13 @@ export const ERRORS = {
   FIELD_NOT_NUMBER: define(400, (field: string) => `${field} must be a number of 0 or more`),
   FIELD_NOT_LIST: define(400, (field: string) => `${field} must be a list`),
   FIELD_NOT_OBJECT: define(400, (field: string) => `${field} must be an object`),
+  FIELD_BAD_FORMAT: define(400, (field: string, rule: string) => `${field} must be ${rule}`),
+  FIELD_NOT_POSITIVE: define(400, (field: string) => `${field} must be a number above 0`),
+  FIELD_OUT_OF_RANGE: define(400, (field: string, min: number, max: number) => `${field} must be from ${min} to ${max}`),
+  FIELD_ALREADY_EXISTS: define(400, (field: string, value: string) => `${value} already exists (${field})`),
+  FIELD_NOT_FOUND: define(400, (field: string, value: string) => `${value} was not found (${field})`),
+  FIELD_LOCKED: define(400, (field: string) => `${field} is a key and cannot be edited: switch the row off and add a new one`),
+  FIELD_NOT_EDITABLE: define(400, (field: string) => `${field} cannot be edited here`),
 
   // --- Configuration (.env) ---------------------------------------------------------------------------------------
   ENV_MISSING: define(500, (key: string) => `Missing required environment variable: ${key}`),
@@ -75,6 +82,55 @@ export const ERRORS = {
   GOOGLE_TOKEN_INVALID: define(401, () => 'Google sign-in could not be verified'),
   NOT_ALLOWED_DOMAIN: define(403, (domain: string) => `Only ${domain} accounts can sign in`),
   USER_NOT_FOUND: define(403, (email: string) => `${email} has no access to POST_FG yet; ask an admin`),
+  // --- Uniware hand-off (2026-10-19) ---
+  UNIWARE_CSV_NOT_READY: define(409, (ids: string) => `No Uniware CSV yet for upload(s) ${ids}: only completed POs have one`),
+  UNIWARE_NOT_DOWNLOADED: define(409, (ids: string) => `Download the sale order CSV first: upload(s) ${ids} not downloaded yet`),
+  UPLOAD_IDS_REQUIRED: define(400, () => 'Pick at least one PO (uploadIds)'),
+  // --- Line items download (2026-10-26) ---
+  LINE_ITEMS_TOO_MANY: define(400, (max: number) => `Pick at most ${max} POs for one line items download`),
+  LINE_ITEMS_NOT_PROCESSED: define(409, (ids: string) => `Only processed POs have saved line items: upload(s) ${ids} are not processed`),
+  // --- Manual upload (2026-10-22, constants/manual-upload.ts) ---
+  MANUAL_CHANNEL_NOT_READABLE: define(400, (channel: string) => `Channel "${channel}" has no PO reader yet: only channels the app can read can be uploaded`),
+  MANUAL_FILE_TYPE: define(400, (name: string) => `${name}: only PDF, Excel (.xlsx / .xls) or CSV files can be uploaded`),
+  MANUAL_FILES_MISSING: define(400, (channel: string, need: string, got: string) => `${channel} needs ${need} for one PO; got ${got}`),
+  MANUAL_AMAZON_FILE: define(400, (name: string) => `${name} is not an Amazon shipment file: it needs "Shipment ID FBA…" at the top and the "Merchant SKU … Shipped" lines`),
+  MANUAL_DUPLICATE: define(409, (id: string, where: string) => `${id} is already ${where}: it is not processed twice`),
+  MANUAL_AMAZON_STATUS: define(409, (id: string, status: string) => `${id} is ${status} at Amazon: cancelled / deleted / closed shipments are not made into POs`),
+  MANUAL_UPLOAD_NOT_FOUND: define(404, (id: string) => `No manual upload ${id}`),
+  MANUAL_UPLOAD_WRONG_STATE: define(409, (id: string, status: string, action: string) => `Manual upload ${id} is ${status}: it cannot be ${action}`),
+  // --- PO verification before Uniware (2026-10-22, constants/po-verify.ts) ---
+  PO_NOT_VERIFIED: define(409, (ids: string) => `Verify the PO against the original first: upload(s) ${ids} not verified yet`),
+  VERIFY_NOT_READY: define(409, (id: string, status: string) => `Upload ${id} cannot be verified: it is ${status}, only processed (completed) POs are checked`),
+  ALREADY_VERIFIED: define(409, (id: string) => `Upload ${id} is already verified`),
+  INTAKE_CHANNEL_NOT_FOUND: define(404, (channel: string) => `No channel "${channel}" that comes by email or API`),
+  VERIFY_CHANNEL_NOT_FOUND: define(404, (channel: string) => `No channel "${channel}" in master_channels`),
+  ALREADY_IN_UNIWARE: define(409, (id: string) => `Upload ${id} is already marked uploaded into Uniware: undo that first, then send it back`),
+  // --- Channel API connectors (2026-10-16) ---
+  SPAPI_LOGIN_FAILED: define(502, (reason: string) => `Amazon SP-API login refused: ${reason} (check SPAPI_* in .env; the client secret expires 180 days after issue)`),
+  SPAPI_CALL_FAILED: define(502, (status: number, path: string, reason: string) => `Amazon SP-API ${path} -> ${status}: ${reason}`),
+  INBOUND_PLAN_NOT_FOUND: define(404, (id: string) => `No inbound plan ${id}`),
+  INBOUND_SHIPMENT_NOT_FOUND: define(404, (id: string) => `No inbound shipment ${id}`),
+  INBOUND_LIMIT_NOT_FOUND: define(404, (id: string) => `No stuck limit ${id}`),
+  SPAPI_NOT_CONFIGURED: define(503, () => 'Amazon SP-API keys are not set on the server (SPAPI_* in .env)'),
+  CONNECTOR_UNKNOWN: define(400, (key: string, known: string) => `No channel API connector "${key}" (known: ${known})`),
+  // --- Users & Roles admin (2026-10-15) ---
+  NOT_A_USER_ADMIN: define(403, (roles: string) => `Only ${roles} can add or change users and roles`),
+  MASTER_ADD_NOT_ALLOWED: define(403, (roles: string) => `Only ${roles} can add to the masters`),
+  MASTER_HISTORY_BAD_REQUEST: define(400, (what: string) => `Masters history: ${what}`),
+  MASTER_ROW_NOT_FOUND: define(404, (type: string, id: string) => `No ${type} row ${id}`),
+  MASTER_EDIT_CONFLICT: define(409, () => 'Someone else changed this row while you were editing: reload it and save again'),
+  USER_ID_NOT_FOUND: define(404, (id: string) => `No user ${id}`),
+  USER_EXISTS: define(409, (email: string) => `${email} is already a user`),
+  EMAIL_DOMAIN_NOT_ALLOWED: define(400, (domain: string) => `Only ${domain} email addresses can be added (they sign in with Google)`),
+  ROLE_NOT_FOUND: define(400, (role: string) => `No role "${role}"`),
+  ROLE_EXISTS: define(409, (role: string) => `A role "${role}" already exists`),
+  ROLE_IS_SYSTEM: define(403, (role: string) => `"${role}" is a built-in role with full access; it cannot be changed here`),
+  REVIEW_FIELD_LOCKED: define(403, (fields: string) => `Only the values with an error can be changed: ${fields} has no error (ask an admin for "PO Review: edit all fields")`),
+  ROLE_PAGE_NOT_ALLOWED: define(400, (page: string) => `A role cannot be given ${page} here`),
+  FACILITY_NOT_FOUND: define(400, (codes: string) => `Unknown facility code(s): ${codes} (codes are case-sensitive)`),
+  CANNOT_CHANGE_OWN_ACCESS: define(400, () => 'You cannot switch yourself off or remove your own admin / developer role'),
+  MAIL_SEND_NOT_ALLOWED: define(500, (mailbox: string) => `The Gmail login of ${mailbox} has no send permission yet: run npm run gmail:token again and allow sending`),
+  MAIL_SEND_FAILED: define(500, (reason: string) => `Email not sent: ${reason}`),
   USER_INACTIVE: define(403, (email: string) => `${email} is switched off; ask an admin`),
   FORBIDDEN_PAGE: define(
     403,
@@ -120,6 +176,11 @@ export const ERRORS = {
     422,
     (from: string, channels: string) => `sender ${from} is ${channels}, but the subject is not a PO subject`,
   ),
+  /** 2026-10-26: a channel's sender + PO subject but without the PO file(s) (1mg's follow-ups, replies with no files). */
+  NOT_PO_NO_FILES: define(
+    422,
+    (channel: string, need: string, got: string) => `${channel} email without its PO file (needs ${need}; got ${got || 'no attachments'})`,
+  ),
 
   // --- Linked files (channels that send download links: FirstCry) -------------------------------------------------
   LINK_NOT_FOUND: define(502, (text: string) => `no link with text ${text}`),
@@ -148,6 +209,41 @@ export const ERRORS = {
   NO_RAW_OUTPUT: define(422, () => 'no raw OCR output yet'),
   RAW_OUTPUT_INVALID: define(500, (file: string) => `${file}: no "Field,Value" header block`),
 
+  // --- In-transit stock (2026-10-15) ------------------------------------------------------------------------------
+  INTRANSIT_INPUT_UNKNOWN: define(404, (name: string) => `${name} is not an in-transit input; see GET /intransit/inputs`),
+  INTRANSIT_INPUT_INVALID: define(422, (name: string, problems: string) => `${name} was not saved: ${problems}`),
+  INTRANSIT_INPUTS_MISSING: define(422, (missing: string) => `Upload these first: ${missing}`),
+  INTRANSIT_RUN_NOT_FOUND: define(404, (id: string) => `No in-transit run ${id}`),
+  INTRANSIT_FILE_NOT_FOUND: define(404, (name: string) => `${name} is not on the server (not uploaded or fetched yet)`),
+  INTRANSIT_FILE_NOT_CSV: define(422, (name: string) => `${name} is not a CSV; download it to open it`),
+  INTRANSIT_RUN_FILE_UNKNOWN: define(404, (id: string, name: string) => `Run ${id} did not write ${name}`),
+  INTRANSIT_SHEET_UNKNOWN: define(404, (sheet: string) => `${sheet} is not a sheet of the in-transit report`),
+  SPLIT1_ROWS_INVALID: define(400, (problems: string) => `Split1 rows not added: ${problems}`),
+  SPLIT1_COMPONENT_UNKNOWN: define(422, (skus: string) => `Not added: Uniware does not know these component SKUs: ${skus}`),
+  INTRANSIT_RUN_NOT_DONE: define(409, (id: string, status: string) => `Run ${id} is ${status}; the report is ready only when it succeeded`),
+  INTRANSIT_RUN_BUSY: define(409, (id: string, status: string) => `Run ${id} is ${status}; wait for it to finish`),
+  INTRANSIT_SOURCE_UNKNOWN: define(404, (source: string, sources: string) => `No connector ${source}; use one of: ${sources}`),
+  INTRANSIT_CONNECTOR_RUNNING: define(409, (source: string, id: string) => `The ${source} fetch is already running (run ${id})`),
+  INTRANSIT_CONNECTOR_NOT_CONFIGURED: define(500, (source: string, keys: string) => `The ${source} connector needs ${keys} in .env`),
+  INTRANSIT_CONNECTOR_FAILED: define(502, (source: string, reason: string) => `${source}: ${reason}`),
+  INTRANSIT_FETCH_TODAY_ONLY: define(400, (source: string, date: string) => `${source} only gives the current state: it can be fetched for today, not ${date}`),
+  INTRANSIT_DATE_INVALID: define(400, (date: string) => `${date} is not a day to work on (YYYY-MM-DD, not in the future)`),
+  INTRANSIT_NOT_DAILY: define(400, (name: string) => `${name} is a master: it is replaced by uploading a new version, not deleted`),
+  INTRANSIT_NOT_MASTER: define(400, (name: string) => `${name} is a daily file: it has no versions to restore`),
+  INTRANSIT_VERSION_NOT_FOUND: define(404, (name: string, version: string) => `${name} has no saved version ${version}`),
+  INTRANSIT_RUN_TIMED_OUT: define(504, (ms: number) => `stopped after ${ms} ms`),
+  // --- In-transit S3 storage (2026-10-26) ---------------------------------------------------------------------------
+  INTRANSIT_STORAGE_NOT_SET_UP: define(503, (missing: string) => `S3 storage is not set up on this computer (${missing})`),
+  INTRANSIT_SPOOL_FULL: define(503, (mb: number) => `S3 has been unreachable and ${mb} MB already wait to be sent: try again when S3 is back`),
+  INTRANSIT_SHEETS_UNAVAILABLE: define(404, (sheet: string) => `${sheet} was not saved separately for this run: download the workbook`),
+  INTRANSIT_REPORT_EXPIRED: define(410, (what: string) => `${what}: no longer kept (Full Reports are kept 90 days); the week's and month's copies hold each period's final build`),
+  INTRANSIT_BUSY: define(409, (what: string) => `Another machine is working on the same thing (${what}); try again in a moment`),
+  INTRANSIT_SCOPE_READ_ONLY: define(403, (what: string, own: string) => `This computer writes only ${own}, not ${what}`),
+  INTRANSIT_RUN_NOT_HERE: define(403, (id: string, host: string) => `Run ${id} belongs to ${host}: delete it there`),
+  INTRANSIT_MASTERS_PROD_ONLY: define(403, () => 'The in-transit masters are shared with production: change them on the live server (a test machine cannot)'),
+  INTRANSIT_SKU_UNKNOWN: define(422, (skus: string) => `Not saved: these SKUs are neither in the product master nor in Uniware: ${skus}`),
+  INTRANSIT_UNIWARE_NEEDED: define(422, (skus: string, reason: string) => `Not saved: ${skus} must be looked up in Uniware first (${reason})`),
+
   // --- Command-line scripts ---------------------------------------------------------------------------------------
   CLI_USAGE: define(400, (usage: string) => usage),
   CLI_LABEL_ROUTE_NOT_FOUND: define(400, (label: string, routes: string) => `No route for label "${label}". Routes: ${routes}`),
@@ -160,7 +256,11 @@ export type ErrorArgs<C extends ErrorCode> = Parameters<(typeof ERRORS)[C]['mess
 export const ERROR_CODES = keysOf(ERRORS);
 
 /** Why an email is not a PO: no sender, a sender that is no channel's, or a channel's sender with a non-PO subject. */
-export type NotPoCode = typeof ERROR_CODES.NO_SENDER | typeof ERROR_CODES.UNKNOWN_SENDER | typeof ERROR_CODES.NOT_PO_SUBJECT;
+export type NotPoCode =
+  | typeof ERROR_CODES.NO_SENDER
+  | typeof ERROR_CODES.UNKNOWN_SENDER
+  | typeof ERROR_CODES.NOT_PO_SUBJECT
+  | typeof ERROR_CODES.NOT_PO_NO_FILES;
 
 /** The message of an error, e.g. errorMessage(ERROR_CODES.UNKNOWN_SENDER, 'a@b.com'). */
 export const errorMessage = <C extends ErrorCode>(code: C, ...args: ErrorArgs<C>): string =>

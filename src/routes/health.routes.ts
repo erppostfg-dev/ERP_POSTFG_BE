@@ -11,7 +11,12 @@ router.get('/', async (_req, res) => {
     database = HEALTH_STATUS.DOWN;
     if (AppDataSource.isInitialized) {
       try {
-        await AppDataSource.query('SELECT 1');
+        // a DB that does not answer in DB_HEALTH_TIMEOUT_MS counts as down, so /health never hangs
+        let timer: NodeJS.Timeout | undefined;
+        const timeout = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('health check timed out')), env.db.healthTimeoutMs);
+        });
+        await Promise.race([AppDataSource.query('SELECT 1'), timeout]).finally(() => clearTimeout(timer));
         database = HEALTH_STATUS.UP;
       } catch {
         database = HEALTH_STATUS.DOWN;

@@ -1,0 +1,8 @@
+{
+  // ESLint only (2026-10-29): ONE TypeScript program for src + test. With a tsconfig per folder, typed linting built
+  // two programs (test/tsconfig.json includes src again), each loading the big type packages: out of memory in CI.
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "rootDir": ".", "noEmit": true },
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

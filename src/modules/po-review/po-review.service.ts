@@ -14,7 +14,7 @@ import {
   UPLOAD_STATUS,
   UploadStatus,
 } from '../../constants';
-import { DetailsChannel, DetailsPurchaseOrder, PoIssue, PoUpload } from '../../entities';
+import { DetailsChannel, DetailsPurchaseOrder, PoIssue, PoUpload, User } from '../../entities';
 import { appError } from '../../utils/AppError';
 import { openS3File, readS3Json, s3DownloadLink } from '../email-intake/s3-mirror.service';
 import { Num, ProcessedPo } from '../po-processing/common/processed-po';
@@ -44,10 +44,18 @@ export interface PoReviewListItem {
   status: UploadStatus;
   ocrStatus: string;
   source: string;
+  /** The email's subject; for an API PO the channel's own name for it (Amazon: the shipment name). Copied on the screen. */
+  subject: string | null;
   fileName: string;
+  /** The PO's own date: the saved PO's, else as read from the PO (po_uploads.po_date, for POs in review). */
   poDate: string | null;
   receivedAt: string | null;
   completedAt: string | null;
+  /**
+   * When the system processed it (2026-10-29): completed = completedAt; otherwise when the PO was read (OCR finished),
+   * or, for POs read without OCR (sheets, API), when the row was made.
+   */
+  processedAt: string | null;
   brand: string | null;
   saleOrderCode: string | null;
   lines: number | null;
@@ -55,6 +63,11 @@ export interface PoReviewListItem {
   poValue: number | null;
   openIssues: number;
   issueTypes: string[];
+  /** Uniware hand-off (completed POs): first CSV download and the "uploaded into Uniware" mark, with who. */
+  csvDownloadedAt: string | null;
+  csvDownloadedBy: string | null;
+  uniwareUploadedAt: string | null;
+  uniwareUploadedBy: string | null;
 }
 
 /** Start of an Indian-time calendar day, as the UTC instant the DB stores (timezone 'Z'). */
@@ -76,8 +89,15 @@ export const listPoReview = async (query: PoReviewListQuery): Promise<{ items: P
     .where('u.status = :status', { status: query.status });
   if (query.channel) qb.andWhere('u.channel = :channel', { channel: query.channel });
   if (query.q) qb.andWhere('(u.poNumber LIKE :q OR u.fileName LIKE :q)', { q: `%${query.q}%` });
-  if (query.from) qb.andWhere(`${dateColumn} >= :from`, { from: istDayStart(query.from) });
-  if (query.to) qb.andWhere(`${dateColumn} < :toEnd`, { toEnd: new Date(istDayStart(query.to).getTime() + DAY_MS) });
+  // Completed POs not yet uploaded into Uniware always show, whatever the date range (user, 2026-10-19).
+  const range: string[] = [];
+  const params: Record<string, unknown> = {};
+  if (query.from) { range.push(`${dateColumn} >= :from`); params.from = istDayStart(query.from); }
+  if (query.to) { range.push(`${dateColumn} < :toEnd`); params.toEnd = new Date(istDayStart(query.to).getTime() + DAY_MS); }
+  if (range.length) {
+    const inRange = range.join(' AND ');
+    qb.andWhere(query.status === UPLOAD_STATUS.COMPLETED ? `((${inRange}) OR u.uniwareUploadedAt IS NULL)` : inRange, params);
+  }
 
   const [uploads, total] = await qb
     .orderBy(dateColumn, order)
@@ -111,6 +131,12 @@ export const listPoReview = async (query: PoReviewListQuery): Promise<{ items: P
     .addGroupBy('i.issueType')
     .getRawMany<{ uploadId: string; issueType: string; count: string }>();
 
+  const userIds = [...new Set(uploads.flatMap((u) => [u.csvDownloadedBy, u.uniwareUploadedBy]).filter((v): v is number => v !== null))];
+  const names = new Map(
+    userIds.length ? (await AppDataSource.getRepository(User).findBy({ id: In(userIds) })).map((x) => [x.id, x.name] as const) : [],
+  );
+  const who = (id: number | null) => (id === null ? null : names.get(id) ?? null);
+
   const items = uploads.map((u): PoReviewListItem => {
     const po = u.purchaseOrder;
     const totals = u.poUid ? linesByPo.get(String(u.poUid)) : undefined;
@@ -122,10 +148,12 @@ export const listPoReview = async (query: PoReviewListQuery): Promise<{ items: P
       status: u.status,
       ocrStatus: u.ocrStatus,
       source: u.source,
+      subject: u.emailSubject,
       fileName: u.fileName,
-      poDate: po?.poDate ? String(po.poDate) : null,
+      poDate: po?.poDate ? String(po.poDate) : u.poDate ? String(u.poDate) : null,
       receivedAt: iso(u.emailReceivedAt ?? u.createdAt),
       completedAt: iso(u.completedAt),
+      processedAt: iso(u.completedAt ?? u.ocrFinishedAt ?? u.createdAt),
       brand: po?.brandName ?? null,
       saleOrderCode: po?.orderNo1 ?? null,
       // Before the PO is saved, the line count comes from the OCR summary.
@@ -134,6 +162,10 @@ export const listPoReview = async (query: PoReviewListQuery): Promise<{ items: P
       poValue: totals ? num(totals.poValue) : null,
       openIssues: issues.reduce((s, i) => s + Number(i.count), 0),
       issueTypes: issues.map((i) => i.issueType),
+      csvDownloadedAt: iso(u.csvDownloadedAt),
+      csvDownloadedBy: who(u.csvDownloadedBy),
+      uniwareUploadedAt: iso(u.uniwareUploadedAt),
+      uniwareUploadedBy: who(u.uniwareUploadedBy),
     };
   });
   return { items, total };

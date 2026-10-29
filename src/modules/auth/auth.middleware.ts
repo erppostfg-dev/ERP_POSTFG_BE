@@ -1,10 +1,13 @@
 import crypto from 'crypto';
+import { LOG_SOURCE } from '../../constants/logging';
+import { logError } from '../../utils/classify-error';
+import { setLogFields } from '../../utils/log-context';
 import { NextFunction, Request, Response } from 'express';
 import { AppDataSource } from '../../config/data-source';
 import { AccessLevel, AUTH, ERROR_CODES, IST_OFFSET_MS } from '../../constants';
 import { ActivityLog } from '../../entities';
 import { appError } from '../../utils/AppError';
-import { allows, resolveAccess } from './access.service';
+import { accessFrom, allows, loadAccess, resolveAccess } from './access.service';
 import { authFromToken, AuthContext, ClientInfo } from './session.service';
 
 /*
@@ -16,7 +19,7 @@ declare module 'express-serve-static-core' {
   interface Request {
     /** Set by requireAuth. */
     auth?: AuthContext;
-    /** Set by activityLog; ties the activity_log row to the log lines. */
+    /** Set by middlewares/request-log.ts; ties the activity_log row to the log lines. */
     requestId?: string;
   }
 }
@@ -31,6 +34,7 @@ export const clientInfo = (req: Request): ClientInfo => ({
 export const requireAuth = async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
   try {
     req.auth = await authFromToken(req.cookies?.[AUTH.SESSION_COOKIE]);
+    setLogFields({ userId: req.auth.user.id }); // every later log line of this request names the user
     next();
   } catch (err) {
     next(err);
@@ -50,12 +54,29 @@ export const requirePage = (pageSlug: string, level: AccessLevel) =>
     }
   };
 
+/** Like requirePage, for data shown on several pages: access at `level` on any one of them is enough. */
+export const requireAnyPage = (pageSlugs: string[], level: AccessLevel) =>
+  async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!req.auth) throw appError(ERROR_CODES.UNAUTHENTICATED);
+      let have: AccessLevel | undefined;
+      const rows = await loadAccess(req.auth.user.id, req.auth.roles); // one load for every page listed
+      for (const slug of pageSlugs) {
+        have = accessFrom(rows, slug);
+        if (allows(have, level)) return next();
+      }
+      throw appError(ERROR_CODES.FORBIDDEN_PAGE, pageSlugs.join(' or '), level, have ?? 'none').withDetails({ page: pageSlugs, needed: level, have });
+    } catch (err) {
+      next(err);
+    }
+  };
+
 /**
  * One activity_log row for every request that changes something (not GET / HEAD / OPTIONS), written after the
  * response is sent. A failed log write never fails the request (as prefg).
  */
 export const activityLog = (req: Request, res: Response, next: NextFunction): void => {
-  req.requestId = crypto.randomUUID();
+  req.requestId ??= crypto.randomUUID(); // set by middlewares/request-log.ts
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
   const started = Date.now();
   res.on('finish', () => {
@@ -73,7 +94,7 @@ export const activityLog = (req: Request, res: Response, next: NextFunction): vo
           requestId: req.requestId ?? null,
           createdOn: new Date(Date.now() + IST_OFFSET_MS), // IST wall time, as prefg's created_on
         })
-        .catch((err) => console.error('[activity_log] write failed:', err instanceof Error ? err.message : err));
+        .catch((err) => logError(LOG_SOURCE.DB, 'activity_log write failed (the request itself is fine)', err));
   });
   next();
 };
