@@ -1,27 +1,25 @@
-import { NextFunction, Request, Response, Router } from 'express';
+import { Request, Router } from 'express';
 import { ACCESS_LEVEL, ERROR_CODES, PAGE, PO_ISSUES } from '../constants';
-import { USER_ADMIN_ROLES } from '../constants/users';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
 import { poIssuePos, poIssuesByChannel } from '../modules/po-issues/po-issues.service';
 import { appError } from '../utils/AppError';
 
 /*
- * PO issues per channel (user, 2026-10-22; Users & Roles -> PO issues). Admin / developer only, like the rest of
- * Users & Roles (editor on /admin AND the role):
- *   GET /admin/po-issues?days=30                                   per channel: POs by status, POs with issues, and
- *                                                                   each kind of problem with its items (once per PO)
- *   GET /admin/po-issues/pos?channel=&kind=&item=&days=30           the POs behind one count
+ * PO issues per channel (user, 2026-10-22). Since 2026-10-29 (user: "show it to everyone"): a tab of PO Processing &
+ * Review, for everyone who can open that page (viewer on /operations/po-review; read-only); was Users & Roles, admin /
+ * developer only, under /admin/po-issues.
+ *   GET /po-review/issues?days=30[&fresh=1]                        per channel: POs by status, POs with issues, and
+ *                                                                   each kind of problem with its items (once per PO);
+ *                                                                   shared for 60 s unless fresh=1 (downloads), with
+ *                                                                   computedAt + cached
+ *   GET /po-review/issues/pos?channel=&kind=&item=&days=30          the POs behind one count
+ * Mounted BEFORE the PO review routes (routes/index.ts), so "issues" is never read as an upload id.
  */
 
 const router = Router();
 
-const requireUserAdmin = (req: Request, _res: Response, next: NextFunction) => {
-  if (!req.auth?.roles.some((r) => (USER_ADMIN_ROLES as readonly string[]).includes(r))) {
-    return next(appError(ERROR_CODES.NOT_A_USER_ADMIN, USER_ADMIN_ROLES.join(' / ')));
-  }
-  next();
-};
-const admin = [requireAuth, requirePage(PAGE.ADMIN, ACCESS_LEVEL.EDITOR), requireUserAdmin];
+/** Everyone who can open PO Processing & Review (read-only). */
+const viewer = [requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.VIEWER)];
 
 const daysOf = (req: Request): number => {
   const d = Number(req.query[PO_ISSUES.QUERY.DAYS]);
@@ -29,15 +27,16 @@ const daysOf = (req: Request): number => {
 };
 const text = (req: Request, name: string): string => (typeof req.query[name] === 'string' ? (req.query[name] as string) : '');
 
-router.get(PO_ISSUES.ROUTES.LIST, ...admin, async (req, res, next) => {
+router.get(PO_ISSUES.ROUTES.LIST, ...viewer, async (req, res, next) => {
   try {
-    res.json({ data: await poIssuesByChannel(daysOf(req)) });
+    // fresh=1 (downloads): computed now, never the shared answer (user 2026-10-29: nobody downloads stale data)
+    res.json({ data: await poIssuesByChannel(daysOf(req), { fresh: req.query[PO_ISSUES.QUERY.FRESH] === '1' }) });
   } catch (err) {
     next(err);
   }
 });
 
-router.get(PO_ISSUES.ROUTES.POS, ...admin, async (req, res, next) => {
+router.get(PO_ISSUES.ROUTES.POS, ...viewer, async (req, res, next) => {
   try {
     const channel = text(req, PO_ISSUES.QUERY.CHANNEL);
     const kind = text(req, PO_ISSUES.QUERY.KIND);

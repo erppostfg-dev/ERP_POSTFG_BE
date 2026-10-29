@@ -9,6 +9,7 @@ import { recheckInReview } from '../po-review/recheck.service';
 import { Actor, checker } from './master-add.service';
 import { isMasterLogType } from './master-history.service';
 import { logMasterChanges } from './master-log';
+import { forgetPoIssues } from '../po-issues/po-issues.cache';
 
 /*
  * Edit and switch on / off on the Masters pages (user, 2026-10-28; step 3 of the masters change log):
@@ -235,7 +236,10 @@ export const editRow = async (rawType: unknown, rawId: unknown, body: unknown, b
     log.info(LOG_SOURCE.APP, `[masters] ${by.email} edited ${type} ${spec.rowKey(row)}: ${changed.join(', ')}`);
     return { changed, channels: await channelsToRecheck(m, type, row) };
   });
-  if (result.changed.length) recheck(result.channels);
+  if (result.changed.length) {
+    forgetPoIssues(); // "still a problem?" may change at once (2026-10-29)
+    recheck(result.channels);
+  }
   return { changed: result.changed };
 };
 
@@ -263,6 +267,7 @@ export const setActive = async (rawType: unknown, rawId: unknown, body: unknown,
     log.info(LOG_SOURCE.APP, `[masters] ${by.email} switched ${type} ${spec.rowKey(row)} ${active ? 'ON' : 'OFF'}`);
     return { changed: true, channels: await channelsToRecheck(m, type, row) };
   });
+  if (result.changed) forgetPoIssues();
   // switched on: POs waiting on this row may pass now (switching off only affects new POs)
   if (result.changed && active) recheck(result.channels);
   return { active, changed: result.changed };

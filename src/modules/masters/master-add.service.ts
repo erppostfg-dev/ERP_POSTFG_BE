@@ -8,6 +8,7 @@ import { runJob } from '../../utils/log-call';
 import { log } from '../../utils/logger';
 import { recheckInReview } from '../po-review/recheck.service';
 import { addedWith, logMasterChanges } from './master-log';
+import { forgetPoIssues } from '../po-issues/po-issues.cache';
 
 /*
  * The Add forms of the Masters pages (user, 2026-10-27): PEP SKU, channel SKU, channel, channel location.
@@ -101,8 +102,11 @@ const logCreated = (m: EntityManager, by: Actor, type: MasterLogType, recordId: 
     by, MASTER_LOG_SOURCE.SCREEN, remark);
 
 /** Re-check the channel's POs in review after a mapping was added (background; failures only logged). */
-const recheckChannel = (channel: string) =>
+const recheckChannel = (channel: string) => {
+  // after the commit: a new channel SKU / location may make "still a problem?" fixed at once (2026-10-29)
+  forgetPoIssues();
   void runJob('recheck', () => recheckInReview({ channels: [channel], trigger: REVIEW_RECHECK.TRIGGER.MASTER_ADD }), { channel }).catch(() => undefined);
+};
 
 const one = async <T>(m: EntityManager, sql: string, p: unknown[]): Promise<T | undefined> => ((await m.query(sql, p)) as T[])[0];
 
