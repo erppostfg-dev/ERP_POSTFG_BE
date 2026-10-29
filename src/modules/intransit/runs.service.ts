@@ -47,7 +47,9 @@ import { exportMastersFromDb } from './masters-export';
 import { PipelineResult } from './pipeline';
 import type { WorkerJob, WorkerMessage } from './run-worker';
 import { AMAZON_KEYS } from './sources/amazon';
-import { FLIPKART_KEYS } from './sources/flipkart';
+import { FLIPKART_KEYS, usesSellerHub } from './sources/flipkart';
+import { SELLER_HUB_KEYS } from './sources/flipkart-seller-hub';
+import { MYNTRA_KEYS } from './sources/myntra-partner-portal';
 import { fetchPepimsTracker } from './sources/pepims';
 import { UNIWARE_KEYS } from './sources/uniware';
 import { uniwareConfig } from './uniware-facilities';
@@ -320,15 +322,20 @@ export const startReport = async (who: Requester, opts: { asOf?: unknown; fromDa
 const connectorConfig = async (): Promise<ConnectorConfig> => ({
   amazon: env.intransit.amazon,
   flipkart: env.intransit.flipkart,
+  myntra: env.intransit.myntra,
   uniware: await uniwareConfig(),
 });
 
 /** The .env keys a source still needs (empty = configured). */
 export const missingConnectorKeys = (source: IntransitSource): string[] => {
-  const { amazon, flipkart, uniware } = env.intransit;
+  const { amazon, flipkart, myntra, uniware } = env.intransit;
   const keys: Record<IntransitSource, [string[], unknown[]]> = {
     amazon: [AMAZON_KEYS, [amazon.clientId, amazon.clientSecret, amazon.refreshToken]],
-    flipkart: [FLIPKART_KEYS, [flipkart.appId, flipkart.appSecret]],
+    // the Seller Hub robot once its user is set, else the Seller API
+    flipkart: usesSellerHub(flipkart)
+      ? [SELLER_HUB_KEYS, [flipkart.sellerHub.user, flipkart.sellerHub.password]]
+      : [FLIPKART_KEYS, [flipkart.appId, flipkart.appSecret]],
+    myntra: [MYNTRA_KEYS, [myntra.user, myntra.password]],
     uniware: [UNIWARE_KEYS, [uniware.tenant, uniware.username, uniware.password]],
   };
   const [names, values] = keys[source];

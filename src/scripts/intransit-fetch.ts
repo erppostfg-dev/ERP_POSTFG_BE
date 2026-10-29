@@ -1,14 +1,17 @@
 /*
  * Run an in-transit connector by hand (the page's "Fetch from APIs" without the server).
  *
- *   npm run intransit:fetch -- --source amazon|uniware|flipkart [--date YYYY-MM-DD] [--only soh|grn|b2b|po|inventory] [--refresh-cache]
+ *   npm run intransit:fetch -- --source amazon|uniware|flipkart|myntra [--date YYYY-MM-DD] [--only soh|grn|b2b|po|inventory] [--refresh-cache]
+ *   npm run intransit:fetch -- --source myntra [--only soh|grn] [--headed]     (Partner Portal robot; --headed shows its browser)
  *   npm run intransit:fetch -- --source amazon --check          (login + API permissions only)
  *   npm run intransit:fetch -- --source flipkart --probe        (save Flipkart's raw reports and show their columns)
+ *   npm run intransit:fetch -- --source flipkart [--only soh|grn] [--headed]   (Seller Hub robot when FLIPKART_SELLER_USER
+ *                                                                is set; --headed shows its browser)
  *   npm run intransit:fetch -- --source uniware --out-dir x     (only download into x; the inputs are not touched)
  *
  * Without --out-dir the files are checked and, when they pass, become the inputs of the day (default today) in
  * INTRANSIT_DIR/inputs/daily/<day>/. Amazon_GRN reads Shipment_Status.csv from inputs/masters/.
- * Credentials come from .env (SPAPI_*, FLIPKART_*, UNIWARE_*); Uniware's facilities from master_facilities.uniware_export
+ * Credentials come from .env (SPAPI_*, FLIPKART_*, MYNTRA_PARTNER_*, UNIWARE_*); Uniware's facilities from master_facilities.uniware_export
  * (the database is connected for that; without one, the old .env UNIWARE_FACILITY list).
  */
 import 'reflect-metadata';
@@ -20,6 +23,7 @@ import { ConnectorConfig, fetchSource, runConnector } from '../modules/intransit
 import { checkDate, dailyDir, mastersDir } from '../modules/intransit/input-store';
 import { checkAmazon } from '../modules/intransit/sources/amazon';
 import { checkFlipkart, probeFlipkart } from '../modules/intransit/sources/flipkart';
+import { checkMyntra } from '../modules/intransit/sources/myntra-partner-portal';
 import { checkUniware } from '../modules/intransit/sources/uniware';
 import { uniwareFacilities } from '../modules/intransit/uniware-facilities';
 
@@ -41,7 +45,10 @@ const main = async (): Promise<void> => {
     facilities = f.codes;
     log(`Uniware facilities: ${f.codes.length} from ${f.from === 'database' ? 'master_facilities.uniware_export' : '.env UNIWARE_FACILITY'}`);
   }
-  const cfg: ConnectorConfig = { amazon: env.intransit.amazon, flipkart: env.intransit.flipkart, uniware: { ...env.intransit.uniware, facilities } };
+  // --headed: show the Seller Hub / Partner Portal robot's browser (debugging)
+  const flipkart = { ...env.intransit.flipkart, sellerHub: { ...env.intransit.flipkart.sellerHub, headless: flag('headed') ? false : env.intransit.flipkart.sellerHub.headless } };
+  const myntra = { ...env.intransit.myntra, headless: flag('headed') ? false : env.intransit.myntra.headless };
+  const cfg: ConnectorConfig = { amazon: env.intransit.amazon, flipkart, myntra, uniware: { ...env.intransit.uniware, facilities } };
   const dir = path.resolve(env.intransit.dir);
   const date = checkDate(arg('date'));
   const dirs = { targetDir: dailyDir(date), mastersDir: mastersDir() };
@@ -50,7 +57,8 @@ const main = async (): Promise<void> => {
 
   if (flag('check')) {
     if (source === 'amazon') await checkAmazon(cfg.amazon, log);
-    else if (source === 'flipkart') await checkFlipkart(cfg.flipkart, log);
+    else if (source === 'flipkart') await checkFlipkart(cfg.flipkart, log, cacheDir);
+    else if (source === 'myntra') await checkMyntra(cfg.myntra, cacheDir, log);
     else await checkUniware(cfg.uniware, log);
     return;
   }
