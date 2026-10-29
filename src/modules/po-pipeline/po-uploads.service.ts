@@ -2,7 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { DataSource, EntityManager } from 'typeorm';
 import {
-  CHANNEL_TOLERANCES,
+  CHANNEL_TOLERANCES, poTotalAllowed,
   ChannelName,
   FILES,
   FOLDERS,
@@ -214,7 +214,7 @@ export const originalValues = (issue: ValidationIssue, r: ValidationResult): Rec
   const tolerance =
     issue.type === ISSUE_TYPE.MRP_MISMATCH ? tolerances?.mrpPerSku
     : issue.type === ISSUE_TYPE.PRICE_MISMATCH ? tolerances?.pricePerSku
-    : issue.type === ISSUE_TYPE.TOTAL_MISMATCH ? tolerances?.poTotal
+    : issue.type === ISSUE_TYPE.TOTAL_MISMATCH && tolerances && typeof issue.expected === 'number' ? poTotalAllowed(tolerances, issue.expected)
     : undefined;
   const num = (v: unknown) => (typeof v === 'number' ? v : undefined);
   const po = issue.actual;

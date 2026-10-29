@@ -38,6 +38,6 @@ export const PO_VERIFY = {
   MAX_IDS: 500,
   REMARK_MAX: 500,
   /** A line's saved rate may differ from the PO's by this much (₹) before it is flagged (as validation's tolerance). */
-  RATE_TOLERANCE: 2,
+  RATE_TOLERANCE: 1,
   ISSUE_TEXT: (remark: string, by: string) => `Verification: ${remark} (sent back by ${by})`,
 } as const;

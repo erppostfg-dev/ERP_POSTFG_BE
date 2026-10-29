@@ -1,6 +1,6 @@
 import {
   CHANNEL_LOCATION_MATCH,
-  CHANNEL_TOLERANCES,
+  CHANNEL_TOLERANCES, poTotalAllowed,
   ChannelName,
   IST_OFFSET_MS,
   ISSUE_FIELDS,
@@ -307,8 +307,9 @@ export const validatePo = async (
   const poValue = round2(priced.reduce((s, l) => s + (l.poLineValue as number), 0));
   const ourValue = round2(priced.reduce((s, l) => s + (l.chargedQty as number) * (l.ourRate as number), 0));
   const difference = round2(poValue - ourValue);
-  if (Math.abs(difference) > tolerance.poTotal) {
-    issues.push(validationIssue(ISSUE_TYPE.TOTAL_MISMATCH, { field: ISSUE_FIELDS.PO_VALUE, expected: ourValue, actual: poValue }, poValue, ourValue, tolerance.poTotal));
+  const allowed = poTotalAllowed(tolerance, ourValue);
+  if (Math.abs(difference) > allowed) {
+    issues.push(validationIssue(ISSUE_TYPE.TOTAL_MISMATCH, { field: ISSUE_FIELDS.PO_VALUE, expected: ourValue, actual: poValue }, poValue, ourValue, allowed));
   }
   return result(location, lines, { poValue, ourValue, difference });
 };

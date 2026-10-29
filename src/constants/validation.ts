@@ -13,12 +13,21 @@ export interface Tolerance {
   mrpPerSku: number;
   /** PO unit price (with tax) vs our rate_after_margin, per SKU (per unit). */
   pricePerSku: number;
-  /** PO value (with tax) vs the sum of qty x rate_after_margin, for the whole PO. */
+  /** PO value (with tax) vs the sum of qty x rate_after_margin, for the whole PO: at least this many rupees... */
   poTotal: number;
+  /** ...or this percent of our value when that is more (paisa rounding grows with the quantities). */
+  poTotalPercent: number;
 }
 
-/** For now the same for every channel (user, 2026-10-08): Rs 2 per SKU, Rs 10 on the PO total. */
-const DEFAULT_TOLERANCE: Tolerance = { mrpPerSku: 2, pricePerSku: 2, poTotal: 10 };
+/**
+ * The same for every channel. 2026-10-29 (user): Rs 1 per SKU on MRP and on the unit price (was Rs 2); PO total
+ * 0.02% of the value, at least Rs 10 (was a flat Rs 10: Reliance 5000501376 = -19.52 on 15 lakh, only paisa rounding).
+ */
+const DEFAULT_TOLERANCE: Tolerance = { mrpPerSku: 1, pricePerSku: 1, poTotal: 10, poTotalPercent: 0.02 };
+
+/** The rupees a PO's total may differ by: poTotal, or poTotalPercent of our value when that is more. */
+export const poTotalAllowed = (t: Tolerance, ourValue: number): number =>
+  Math.max(t.poTotal, Math.round(Math.abs(ourValue) * t.poTotalPercent) / 100);
 
 /** Change a channel's limits here. */
 export const CHANNEL_TOLERANCES: Record<ChannelName, Tolerance> = {
