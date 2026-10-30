@@ -203,6 +203,16 @@ describe('the email webhook', () => {
     expect((await uploadsOf('IRA91000400')).map((u) => u.status)).toEqual(['queued']);
   });
 
+  it('...also when both emails arrive at the same moment (catch-up + live): one at a time through the check', async () => {
+    await setChannel('bigbasket', { enabled: true, processFrom: '2026-10-25T00:00:00.000Z' }).expect(200);
+    await Promise.all([
+      sendEmail({ po: 'IRA91000420', messageId: '<live-420@bigbasket.com>' }).expect(202),
+      sendEmail({ po: 'IRA91000420', messageId: '<catchup-420@bigbasket.com>' }).expect(202),
+      sendEmail({ po: 'IRA91000420', messageId: '<resend-420@bigbasket.com>' }).expect(202),
+    ]);
+    expect((await uploadsOf('IRA91000420')).map((u) => u.status)).toEqual(['queued']);
+  });
+
   it('...also when the first one is held (channel over its limit), not for another PO, and a revised PO still comes in', async () => {
     await setChannel('bigbasket', { enabled: true, dailyLimit: 1, processFrom: '2026-10-25T00:00:00.000Z' }).expect(200);
     await sendEmail({ po: 'IRA91000410' }).expect(202); // queued (today's 1)
