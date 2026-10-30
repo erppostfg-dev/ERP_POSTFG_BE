@@ -41,6 +41,10 @@ export const MANUAL_UPLOAD = {
   AMAZON_REFUSED_STATUSES: ['CANCELLED', 'DELETED', 'CLOSED'],
   /** Shown when the status could not be read from Amazon (no keys / Amazon down): the upload is still allowed. */
   AMAZON_STATUS_UNKNOWN: 'UNKNOWN',
+  /** Flipkart (2026-10-30): a consignment's CSV from Seller Hub, one file = one consignment = one PO (no OCR). */
+  FLIPKART_NEEDS: 'Flipkart consignment CSV (Consignment_Details_<id>_<date>.csv)',
+  /** Its note when the robot's last Bulk Consignment File did not list it: the reviewer picks the location. */
+  FLIPKART_NO_HEADER: 'not in the last Bulk Consignment File: warehouse to pick in review',
   /** The queue list: newest first, at most this many. */
   LIST_LIMIT: 200,
   /** messageId of a manual upload's folder (links it to its po_uploads rows). */

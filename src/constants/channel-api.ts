@@ -142,6 +142,14 @@ export const FLIPKART = {
   /** The In-transit worker's job kind for the robot (run-worker.ts). */
   ROBOT_JOB: 'flipkart-consignments',
   PO_TYPE: 'Flipkart consignment',
+  /**
+   * Manual Upload (2026-10-30): Seller Hub's "Download CSV" name Consignment_Details_<id>_<DD-MM-YYYY>.csv (id + date), or
+   * <id>.csv as POST_FG keeps it (the original file downloaded from Processed / In Review; no date: the bulk file's).
+   */
+  MANUAL_FILE: /^(?:Consignment_Details_(\d+)_(\d{2})-(\d{2})-(\d{4})|(\d{6,}))(?:\s*\(\d+\))?\.csv$/i,
+  MANUAL_INPUT_TYPE: 'flipkart_csv',
+  /** The Bulk Consignment File's rows kept for Manual Upload: consignments created in the last this many days. */
+  BULK_KEEP_DAYS: 120,
 } as const;
 /*
  * Channel Pulls page (2026-10-30, user: replaces Amazon Inbound in the sidebar; one place for every channel pulled by API

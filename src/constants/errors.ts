@@ -101,6 +101,8 @@ export const ERRORS = {
   CHANNEL_PULL_NO_ROBOT: define(400, (key: string) => `${key} has no robot to run (it is pulled by its API)`),
   CHANNEL_PULL_RUNNING: define(409, (what: string) => `${what} is already running: wait for it to finish`),
   MANUAL_AMAZON_STATUS: define(409, (id: string, status: string) => `${id} is ${status} at Amazon: cancelled / deleted / closed shipments are not made into POs`),
+  MANUAL_FLIPKART_FILE: define(400, (name: string, why: string) => `${name} is not a Flipkart consignment file (${why}): upload the CSV from Seller Hub > Consignments > Download CSV, named Consignment_Details_<id>_<date>.csv`),
+  MANUAL_FLIPKART_STATUS: define(409, (id: string, status: string) => `${id} is ${status} at Flipkart: cancelled consignments are not made into POs`),
   MANUAL_UPLOAD_NOT_FOUND: define(404, (id: string) => `No manual upload ${id}`),
   MANUAL_UPLOAD_WRONG_STATE: define(409, (id: string, status: string, action: string) => `Manual upload ${id} is ${status}: it cannot be ${action}`),
   // --- PO verification before Uniware (2026-10-22, constants/po-verify.ts) ---

@@ -53,9 +53,32 @@ const saveRun = (run: RobotRun) =>
 const labelOf = (id: string, h: ConsignmentHeader | null): string =>
   `${id}${h ? ` · ${h.warehouse} · ${h.status}` : ' · not in the Bulk Consignment File yet'}`.slice(0, 300);
 
+// ---- the last Bulk Consignment File (Manual Upload, 2026-10-30) ------------------------------------------------------
+
+interface SavedBulk {
+  savedAt: string;
+  headers: Record<string, ConsignmentHeader>;
+}
+
+/** Keeps the bulk file's rows of the last FLIPKART.BULK_KEEP_DAYS (one small app_state value, replaced each run). */
+const saveBulk = async (bulk: Map<string, ConsignmentHeader>, now: Date): Promise<void> => {
+  const from = new Date(now.getTime() - FLIPKART.BULK_KEEP_DAYS * 86_400_000).toISOString().slice(0, 10);
+  const headers: Record<string, ConsignmentHeader> = {};
+  for (const [id, h] of bulk) if (!h.createdOn || h.createdOn >= from) headers[id] = h;
+  const value: SavedBulk = { savedAt: now.toISOString(), headers };
+  await stateRepo().save({ key: APP_STATE_KEY.FLIPKART_BULK, value: { ...value }, updatedAt: now });
+};
+
+/** A consignment's row in the robot's last Bulk Consignment File; null when it was not there (or no run yet). */
+export const lastBulkHeader = async (id: string): Promise<ConsignmentHeader | null> => {
+  const saved = (await stateRepo().findOneBy({ key: APP_STATE_KEY.FLIPKART_BULK }))?.value as SavedBulk | undefined;
+  return saved?.headers[id] ?? null;
+};
+
 /** What the robot returned -> new rows + earlier rows completed; returns the counts. */
 export const storeRobotResult = async (res: ConsignmentsRobotResult, now = new Date()): Promise<{ stored: number; completed: number; failed: { id: string; error: string }[] }> => {
   const bulk = res.bulkCsv ? parseBulkConsignments(res.bulkCsv) : new Map<string, ConsignmentHeader>();
+  if (bulk.size) await saveBulk(bulk, now);
   const failed = res.fetched.filter((f) => f.csv === null).map((f) => ({ id: f.id, error: f.error ?? 'no CSV' }));
   const fresh = res.fetched.filter((f): f is typeof f & { csv: string } => f.csv !== null);
   let stored = 0;

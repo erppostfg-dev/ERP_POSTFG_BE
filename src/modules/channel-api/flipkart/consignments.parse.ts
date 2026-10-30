@@ -102,6 +102,8 @@ export interface ConsignmentData {
   header: ConsignmentHeader | null;
   /** The consignment CSV as downloaded. */
   csv: string;
+  /** Set when it came by Manual Upload (that upload's id), not by the robot. */
+  manualUploadId?: string;
 }
 
 /** One consignment -> processed.json. Lines are matched later by FSN (= our Flipkart channel SKU code). */

@@ -26,4 +26,6 @@ export const APP_STATE_KEY = {
   FLIPKART_ROBOT: 'channel-pull:flipkart',
   /** Its schedule: { everyHours, updatedBy, updatedAt } (Channel Pulls). */
   FLIPKART_ROBOT_SCHEDULE: 'channel-pull:flipkart:schedule',
+  /** The last Bulk Consignment File the robot read: { savedAt, headers by consignment id } (Manual Upload's warehouse). */
+  FLIPKART_BULK: 'channel-pull:flipkart:bulk',
 } as const;
