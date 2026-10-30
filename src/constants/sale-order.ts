@@ -35,6 +35,21 @@ export const BRAND_NAMES: Record<string, string> = {
 };
 export const NO_BRAND = ['', '0'];
 
+/**
+ * Combos, gift kits and M_Tools are punched in Uniware with their code ending in _S (PM, 2026-10-29). Only when OUR
+ * master has that _S code and it is switched on (user, 2026-10-30); else the mapped code as before, and the masters
+ * team adds the missing _S codes. The _S code goes to the Uniware CSV and the saved PO line, spelled as our master has it.
+ */
+export const PUNCH_S = {
+  SUFFIX: '_S',
+  /** master_skus.product_type values (lower case) of the codes the rule covers. */
+  TYPES: ['combo', 'gift kit'],
+  /** M_Tools: MTOOL1_JD -> MTOOL1_JD_S (most have no product type). */
+  CODE_RE: /^MTOOL/i,
+  /** Already a punch code or a code of its own: ends in _S / _s / _S1, or _S in the middle (Fien kits MGKIT64_SWM_S_N1). */
+  SKIP_RE: /_s\d*(?:_|$)/i,
+} as const;
+
 /** The Uniware sale order upload: one CSV per PO, columns as in the user's sample P5654534_final_2026-09-24.csv. */
 export const UNIWARE_CSV = {
   HEADERS: [

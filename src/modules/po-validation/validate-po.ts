@@ -3,6 +3,7 @@ import {
   CHANNEL_TOLERANCES, poTotalAllowed,
   PRICE_CHOICE,
   PriceChoice,
+  PUNCH_S,
   ChannelName,
   IST_OFFSET_MS,
   ISSUE_FIELDS,
@@ -16,7 +17,7 @@ import {
   ValidationIssue,
   ValidationStatus,
 } from '../../constants';
-import { DetailsChannel } from '../../entities';
+import { DetailsChannel, MasterSku } from '../../entities';
 import { Num, ProcessedLine, ProcessedPo } from '../po-processing/common/processed-po';
 import { ChannelMasterData, matchKey } from './master-data';
 
@@ -64,6 +65,9 @@ export interface ValidatedLine {
   channelSkuCode: string;
   /** "" when the SKU is not mapped. */
   pepCode: string;
+  /** The code the sale order is punched with (Uniware CSV + saved PO line): pepCode, or its _S code for a combo /
+   *  gift kit / M_Tool when our master has it switched on (PUNCH_S). "" when the SKU is not mapped. */
+  punchCode: string;
   /** Our product name (master), for details_purchase_orders.skuName. */
   skuName: string;
   brandName: string;
@@ -113,7 +117,19 @@ const orEmpty = (v: number | null): Num => (v === null ? '' : round2(v));
 /** Today in IST as YYYY-MM-DD (PO dates are Indian dates). */
 export const todayIst = (now = new Date()): string => new Date(now.getTime() + IST_OFFSET_MS).toISOString().slice(0, 10);
 
-const findLocation = (po: ProcessedPo, master: ChannelMasterData, issues: ValidationIssue[], picked?: string): ValidatedLocation | null => {
+/**
+ * The code a combo / gift kit / M_Tool is punched with: its _S code when our master has it switched on (PUNCH_S),
+ * spelled as the master has it (CMB340_s); any other code, or one with no active _S code, as it is.
+ */
+export const punchCodeOf = (pepCode: string, sku: MasterSku | undefined, skus: Map<string, MasterSku>): string => {
+  if (PUNCH_S.SKIP_RE.test(pepCode)) return pepCode;
+  const covered = PUNCH_S.TYPES.some((t) => t === matchKey(sku?.productType)) || PUNCH_S.CODE_RE.test(pepCode);
+  if (!covered) return pepCode;
+  const s = skus.get(matchKey(pepCode + PUNCH_S.SUFFIX));
+  return s && s.isActive !== false ? s.pepCode : pepCode;
+};
+
+const findLocation =(po: ProcessedPo, master: ChannelMasterData, issues: ValidationIssue[], picked?: string): ValidatedLocation | null => {
   const code = matchKey(po.delivery_facility_code);
   const pin = matchKey(po.delivery_pincode);
   const byCode = CHANNEL_LOCATION_MATCH[po.channel_name as ChannelName] === LOCATION_MATCH.CODE_THEN_PINCODE;
@@ -190,6 +206,7 @@ const validateLine = (
     lineNo,
     channelSkuCode: line.channel_sku_code,
     pepCode: '',
+    punchCode: '',
     skuName: '',
     brandName: '',
     qty: orEmpty(qty),
@@ -250,6 +267,7 @@ const validateLine = (
 
   if (!mapped) return out;
   out.pepCode = mapped.pepCode;
+  out.punchCode = punchCodeOf(mapped.pepCode, sku, master.skus);
   out.channelSkuId = String(mapped.id);
   out.skuName = sku?.productName ?? mapped.productName ?? '';
   // master_skus keeps "0" for "no brand" (all combos): then the channel SKU row's brand (user, 2026-10-26).
