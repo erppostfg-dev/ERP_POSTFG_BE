@@ -1,6 +1,8 @@
 import {
   CHANNEL_LOCATION_MATCH,
   CHANNEL_TOLERANCES, poTotalAllowed,
+  PRICE_CHOICE,
+  PriceChoice,
   ChannelName,
   IST_OFFSET_MS,
   ISSUE_FIELDS,
@@ -52,6 +54,9 @@ export interface ReviewOverrides {
   locationId?: string;
   /** pep_code the reviewer mapped a line to, by String(line_no). */
   pepCodeByLine?: Map<string, string>;
+  /** Price check (2026-10-30): a price / MRP mismatch decided per line, by String(line_no): ours or the channel's. */
+  priceFromByLine?: Map<string, PriceChoice>;
+  mrpFromByLine?: Map<string, PriceChoice>;
 }
 
 export interface ValidatedLine {
@@ -67,8 +72,17 @@ export interface ValidatedLine {
   chargedQty: Num;
   ourMrp: Num;
   poMrp: Num;
-  /** Our rate_after_margin (with tax) = Uniware Selling Price. */
+  /** The rate the sale order uses (with tax) = Uniware Selling Price: our rate_after_margin, or the PO's when the
+   *  reviewer chose the channel's price (priceFrom). */
   ourRate: Num;
+  /** Our master values, whatever the reviewer chose (ourRate / ourMrp may be the PO's). */
+  masterRate: Num;
+  masterMrp: Num;
+  /** The reviewer's choice on a mismatch beyond the tolerance; '' = no mismatch or none decided. */
+  priceFrom: PriceChoice | '';
+  mrpFrom: PriceChoice | '';
+  /** master_channel_skus.id of the mapped row (price check "update master"); '' when not mapped. */
+  channelSkuId: string;
   /** PO unit price with tax. */
   poUnitPrice: Num;
   /** PO line value with tax. */
@@ -161,6 +175,7 @@ const validateLine = (
   channel: ChannelName,
   issues: ValidationIssue[],
   pickedPep?: string,
+  choice: { price?: PriceChoice; mrp?: PriceChoice } = {},
 ): ValidatedLine => {
   const tolerance = CHANNEL_TOLERANCES[channel];
   const where = `line ${line.line_no} (${line.channel_sku_code || '-'})`;
@@ -182,6 +197,11 @@ const validateLine = (
     ourMrp: '',
     poMrp: orEmpty(num(line.channel_mrp)),
     ourRate: '',
+    masterRate: '',
+    masterMrp: '',
+    priceFrom: '',
+    mrpFrom: '',
+    channelSkuId: '',
     poUnitPrice: '',
     poLineValue: '',
   };
@@ -230,6 +250,7 @@ const validateLine = (
 
   if (!mapped) return out;
   out.pepCode = mapped.pepCode;
+  out.channelSkuId = String(mapped.id);
   out.skuName = sku?.productName ?? mapped.productName ?? '';
   // master_skus keeps "0" for "no brand" (all combos): then the channel SKU row's brand (user, 2026-10-26).
   out.brandName = [sku?.brandName, mapped.brandName].map((b) => b?.trim() ?? '').find((b) => !NO_BRAND.includes(b)) ?? '';
@@ -238,16 +259,25 @@ const validateLine = (
   const ourMrp = mapped.mrp ?? sku?.mrp ?? null;
   const poMrp = num(line.channel_mrp);
   out.ourMrp = orEmpty(ourMrp);
+  out.masterMrp = orEmpty(ourMrp);
   if (ourMrp !== null && poMrp !== null && Math.abs(round2(poMrp - ourMrp)) > tolerance.mrpPerSku) {
-    add(validationIssue(ISSUE_TYPE.MRP_MISMATCH, { field: ISSUE_FIELDS.MRP, lineNo, expected: ourMrp, actual: poMrp }, where, poMrp, ourMrp, tolerance.mrpPerSku));
+    // decided by the reviewer (price check): no issue; the channel's MRP goes on this PO when chosen
+    if (choice.mrp) {
+      out.mrpFrom = choice.mrp;
+      if (choice.mrp === PRICE_CHOICE.CHANNEL) out.ourMrp = round2(poMrp);
+    } else add(validationIssue(ISSUE_TYPE.MRP_MISMATCH, { field: ISSUE_FIELDS.MRP, lineNo, expected: ourMrp, actual: poMrp }, where, poMrp, ourMrp, tolerance.mrpPerSku));
   }
 
   // Price: the PO's unit price vs our rate_after_margin.
   const rate = mapped.rateAfterMargin;
   out.ourRate = orEmpty(rate);
+  out.masterRate = orEmpty(rate);
   if (rate === null) add(validationIssue(ISSUE_TYPE.OTHER, { field: ISSUE_FIELDS.RATE, lineNo }, `${where}: ${VALIDATION_TEXT.SKU_NO_RATE(mapped.pepCode)}`));
   else if (poUnit !== null && Math.abs(round2(poUnit - rate)) > tolerance.pricePerSku) {
-    add(validationIssue(ISSUE_TYPE.PRICE_MISMATCH, { field: ISSUE_FIELDS.UNIT_PRICE, lineNo, expected: rate, actual: round2(poUnit) }, where, round2(poUnit), rate, tolerance.pricePerSku));
+    if (choice.price) {
+      out.priceFrom = choice.price;
+      if (choice.price === PRICE_CHOICE.CHANNEL) out.ourRate = round2(poUnit);
+    } else add(validationIssue(ISSUE_TYPE.PRICE_MISMATCH, { field: ISSUE_FIELDS.UNIT_PRICE, lineNo, expected: rate, actual: round2(poUnit) }, where, round2(poUnit), rate, tolerance.pricePerSku));
   }
   return out;
 };
@@ -296,7 +326,10 @@ export const validatePo = async (
   const location = findLocation(po, master, issues, overrides.locationId);
 
   // Line checks.
-  const lines = po.line_items.map((l) => validateLine(l, master, channel, issues, overrides.pepCodeByLine?.get(String(l.line_no))));
+  const lines = po.line_items.map((l) => {
+    const key = String(l.line_no);
+    return validateLine(l, master, channel, issues, overrides.pepCodeByLine?.get(key), { price: overrides.priceFromByLine?.get(key), mrp: overrides.mrpFromByLine?.get(key) });
+  });
 
   // PO total: only when every line is mapped and priced; otherwise the line issues already explain why.
   const tolerance = CHANNEL_TOLERANCES[channel];
@@ -308,7 +341,9 @@ export const validatePo = async (
   const ourValue = round2(priced.reduce((s, l) => s + (l.chargedQty as number) * (l.ourRate as number), 0));
   const difference = round2(poValue - ourValue);
   const allowed = poTotalAllowed(tolerance, ourValue);
-  if (Math.abs(difference) > allowed) {
+  // Lines the reviewer kept at OUR price (price check) explain their part of the difference: only the rest counts.
+  const explained = round2(priced.reduce((s, l) => s + (l.priceFrom === PRICE_CHOICE.OURS ? (l.chargedQty as number) * ((l.poUnitPrice as number) - (l.ourRate as number)) : 0), 0));
+  if (Math.abs(round2(difference - explained)) > allowed) {
     issues.push(validationIssue(ISSUE_TYPE.TOTAL_MISMATCH, { field: ISSUE_FIELDS.PO_VALUE, expected: ourValue, actual: poValue }, poValue, ourValue, allowed));
   }
   return result(location, lines, { poValue, ourValue, difference });

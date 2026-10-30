@@ -76,6 +76,9 @@
   "GET /po-verify",
   "GET /po-verify/:uploadId",
   "GET /po-verify/settings",
+  "GET /price-differences",
+  "GET /price-differences/draft",
+  "GET /price-differences/lines",
   "PATCH /admin/po-intake/:channel",
   "PATCH /admin/po-intake/universal",
   "PATCH /admin/roles/:key",
@@ -123,5 +126,6 @@
   "POST /po-review/uniware-csv",
   "POST /po-review/uniware-uploaded",
   "POST /po-verify/:uploadId/send-back",
-  "POST /po-verify/:uploadId/verify"
+  "POST /po-verify/:uploadId/verify",
+  "POST /price-differences/sent"
 ]

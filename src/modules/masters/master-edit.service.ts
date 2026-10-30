@@ -1,6 +1,6 @@
 import { EntityManager } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
-import { ERROR_CODES, MASTER_ADD, MASTER_LOG_ACTION, MASTER_LOG_SOURCE, MASTER_LOG_TYPE, MasterLogType, REVIEW_RECHECK, TABLES } from '../../constants';
+import { ERROR_CODES, MASTER_ADD, MASTER_LOG_ACTION, MASTER_LOG_SOURCE, MASTER_LOG_TYPE, MasterLogSource, MasterLogType, REVIEW_RECHECK, TABLES } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
 import { appError } from '../../utils/AppError';
 import { runJob } from '../../utils/log-call';
@@ -191,6 +191,25 @@ const crossChecks = async (m: EntityManager, type: MasterLogType, row: Row, next
  * -> { changed: string[] } (form keys actually changed; [] = nothing was different).
  */
 export const editRow = async (rawType: unknown, rawId: unknown, body: unknown, by: Actor) => {
+  const result = await AppDataSource.transaction((m) => editRowIn(m, rawType, rawId, body, by));
+  afterEdit(result);
+  return { changed: result.changed };
+};
+
+/** After a committed edit: the PO issues answer is fresh again and the POs in review are re-checked (background). */
+export const afterEdit = (result: { changed: string[]; channels: string[] | null }): void => {
+  if (!result.changed.length) return;
+  forgetPoIssues(); // "still a problem?" may change at once (2026-10-29)
+  recheck(result.channels);
+};
+
+/**
+ * The edit inside the caller's transaction (price check approval, 2026-10-30: the master update and the PO commit or
+ * fail together). The caller runs afterEdit once committed. source = where it came from (History).
+ */
+export const editRowIn = async (
+  m: EntityManager, rawType: unknown, rawId: unknown, body: unknown, by: Actor, source: MasterLogSource = MASTER_LOG_SOURCE.SCREEN,
+): Promise<{ changed: string[]; channels: string[] | null }> => {
   const type = typeOf(rawType);
   const id = idOf(rawId);
   const spec = SPECS[type];
@@ -210,37 +229,30 @@ export const editRow = async (rawType: unknown, rawId: unknown, body: unknown, b
   const next: Record<string, unknown> = {};
   for (const k of keys.filter((k) => spec.fields[k])) next[k] = spec.fields[k].check(c, k);
 
-  const result = await AppDataSource.transaction(async (m) => {
-    const row = await lockRow(m, spec, type, id);
-    const set: Record<string, unknown> = {};
-    await crossChecks(m, type, row, next, c, set);
-    c.done();
+  const row = await lockRow(m, spec, type, id);
+  const set: Record<string, unknown> = {};
+  await crossChecks(m, type, row, next, c, set);
+  c.done();
 
-    const shown = (k: string) => (spec.fields[k].read ?? ((v: unknown) => v as Value))(row[spec.fields[k].col]);
-    // someone else changed a field this person is changing -> refuse, tell what it is now
-    const conflicts = keys.filter((k) => k in original && !same(original[k], shown(k))).map((k) => ({ field: k, now: shown(k) }));
-    if (conflicts.length) throw appError(ERROR_CODES.MASTER_EDIT_CONFLICT).withDetails(conflicts);
+  const shown = (k: string) => (spec.fields[k].read ?? ((v: unknown) => v as Value))(row[spec.fields[k].col]);
+  // someone else changed a field this person is changing -> refuse, tell what it is now
+  const conflicts = keys.filter((k) => k in original && !same(original[k], shown(k))).map((k) => ({ field: k, now: shown(k) }));
+  if (conflicts.length) throw appError(ERROR_CODES.MASTER_EDIT_CONFLICT).withDetails(conflicts);
 
-    const changed = keys.filter((k) => !same(next[k], shown(k)));
-    if (!changed.length) return { changed: [] as string[], channels: null as string[] | null };
-    for (const k of changed) {
-      const f = spec.fields[k];
-      if (!(f.col in set)) set[f.col] = (f.write ?? ((v: unknown) => v))(next[k]);
-    }
-    if (spec.hasUpdatedAt) set.updated_at = new Date();
-    const cols = Object.keys(set);
-    await m.query(`UPDATE \`${spec.table}\` SET ${cols.map((x) => `\`${x}\` = ?`).join(', ')} WHERE id = ?`, [...cols.map((x) => set[x]), id]);
-    await logMasterChanges(m, changed.map((k) => ({
-      type, recordId: id, rowKey: spec.rowKey(row), action: MASTER_LOG_ACTION.FIELD_CHANGED, field: k, oldValue: shown(k), newValue: next[k],
-    })), by, MASTER_LOG_SOURCE.SCREEN, remark);
-    log.info(LOG_SOURCE.APP, `[masters] ${by.email} edited ${type} ${spec.rowKey(row)}: ${changed.join(', ')}`);
-    return { changed, channels: await channelsToRecheck(m, type, row) };
-  });
-  if (result.changed.length) {
-    forgetPoIssues(); // "still a problem?" may change at once (2026-10-29)
-    recheck(result.channels);
+  const changed = keys.filter((k) => !same(next[k], shown(k)));
+  if (!changed.length) return { changed: [], channels: null };
+  for (const k of changed) {
+    const f = spec.fields[k];
+    if (!(f.col in set)) set[f.col] = (f.write ?? ((v: unknown) => v))(next[k]);
   }
-  return { changed: result.changed };
+  if (spec.hasUpdatedAt) set.updated_at = new Date();
+  const cols = Object.keys(set);
+  await m.query(`UPDATE \`${spec.table}\` SET ${cols.map((x) => `\`${x}\` = ?`).join(', ')} WHERE id = ?`, [...cols.map((x) => set[x]), id]);
+  await logMasterChanges(m, changed.map((k) => ({
+    type, recordId: id, rowKey: spec.rowKey(row), action: MASTER_LOG_ACTION.FIELD_CHANGED, field: k, oldValue: shown(k), newValue: next[k],
+  })), by, source, remark);
+  log.info(LOG_SOURCE.APP, `[masters] ${by.email} edited ${type} ${spec.rowKey(row)}: ${changed.join(', ')}`);
+  return { changed, channels: await channelsToRecheck(m, type, row) };
 };
 
 /** POST /masters/active/:type/:id { active: boolean, remark? } -> { active, changed } (false = it already was). */

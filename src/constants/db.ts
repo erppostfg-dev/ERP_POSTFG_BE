@@ -45,6 +45,7 @@ export const TABLES = {
   PO_ISSUES: 'po_issues',
   PO_ISSUE_ACTIONS: 'po_issue_actions',
   PO_REVIEW_SUBMISSIONS: 'po_review_submissions',
+  PO_PRICE_DIFFERENCES: 'po_price_differences',
   // Login and page access (2026-10-09, prefg's shape; created by our migration).
   USERS: 'users',
   USER_ROLES: 'user_roles',

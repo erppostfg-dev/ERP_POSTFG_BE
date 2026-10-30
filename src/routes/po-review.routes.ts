@@ -11,6 +11,8 @@ import {
   PO_REVIEW_LIST,
   PO_REVIEW_REMARK_MAX,
   PO_REVIEW_QUERY,
+  PRICE_CHOICE,
+  PriceChoice,
   REVIEW_LIVE,
   REVIEW_RECHECK,
   UNIWARE_HANDOFF,
@@ -52,6 +54,7 @@ const router = Router();
 export type Problem = { field: string; code: string; message: string };
 
 const STATUSES = Object.values(UPLOAD_STATUS) as string[];
+const CHOICES = Object.values(PRICE_CHOICE);
 
 const text = (req: Request, name: string): string | undefined => {
   const v = req.query[name];
@@ -216,12 +219,24 @@ const parseResubmit = (body: unknown): ResubmitBody => {
     if (lineNo === undefined || lineNo === null || lineNo === '') return r.bad(f(B.LINE_NO), 'FIELD_REQUIRED', f(B.LINE_NO)), undefined;
     const pep = l[B.PEP_CODE];
     if (pep !== undefined && (typeof pep !== 'string' || !pep.trim())) r.bad(f(B.PEP_CODE), 'FIELD_NOT_TEXT', f(B.PEP_CODE));
+    // price check (2026-10-30): ours | channel per mismatch, update master = true / false
+    const choice = (key: string): PriceChoice | undefined => {
+      const v = l[key];
+      if (v === undefined || v === null || v === '') return undefined;
+      if (!(CHOICES as unknown[]).includes(v)) return r.bad(f(key), 'FIELD_NOT_ONE_OF', f(key), CHOICES.join(', ')), undefined;
+      return v as PriceChoice;
+    };
+    const update = l[B.UPDATE_MASTER];
+    if (update !== undefined && typeof update !== 'boolean') r.bad(f(B.UPDATE_MASTER), 'FIELD_NOT_BOOLEAN', f(B.UPDATE_MASTER));
     return {
       lineNo: String(lineNo),
       pepCode: typeof pep === 'string' && pep.trim() ? pep.trim() : undefined,
       qty: r.amount(l[B.QTY], f(B.QTY)),
       mrp: r.amount(l[B.MRP], f(B.MRP)),
       rate: r.amount(l[B.RATE], f(B.RATE)),
+      priceFrom: choice(B.PRICE_FROM),
+      mrpFrom: choice(B.MRP_FROM),
+      updateMaster: update === true || undefined,
     };
   });
 

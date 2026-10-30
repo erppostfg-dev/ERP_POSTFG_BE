@@ -15,7 +15,8 @@ import {
   SUBMISSION_ID_PATTERN,
 } from '../constants';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
-import { approveSubmission, rejectSubmission } from '../modules/po-review/po-review-actions.service';
+import { rejectSubmission } from '../modules/po-review/po-review-actions.service';
+import { approveWithPrices } from '../modules/po-review/price-check.service';
 import { getApproval, listApprovals } from '../modules/po-review/po-review-approvals.service';
 import { reviewEvents, reviewVersion } from '../modules/po-review/po-review.live';
 import { appError } from '../utils/AppError';
@@ -104,7 +105,7 @@ router.post('/po-reviews/:id/approve', requireAuth, requirePage(PAGE.APPROVALS, 
     const problems: Problem[] = [];
     const remark = bodyReader(problems).remark((req.body as Record<string, unknown> | undefined)?.[PO_REVIEW_BODY.REMARK], PO_REVIEW_BODY.REMARK, false);
     if (problems.length) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails(problems);
-    res.json({ data: await approveSubmission(id, actor(req), remark) });
+    res.json({ data: await approveWithPrices(id, actor(req), remark) });
   } catch (err) {
     next(err);
   }

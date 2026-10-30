@@ -125,7 +125,9 @@ export type IssueField = (typeof ISSUE_FIELDS)[keyof typeof ISSUE_FIELDS];
  * (FOC / revised = OTHER, expired). Data issues (SKU, MRP, price, total, location, qty, OCR) must be corrected or the PO
  * rejected; DUPLICATE_PO can only be rejected.
  */
-export const ACCEPTABLE_ISSUE_TYPES: readonly IssueType[] = [ISSUE_TYPE.OTHER, ISSUE_TYPE.PO_EXPIRED];
+export const ACCEPTABLE_ISSUE_TYPES: readonly IssueType[] = [ISSUE_TYPE.OTHER, ISSUE_TYPE.PO_EXPIRED, ISSUE_TYPE.TOTAL_MISMATCH];
+/** Price check (2026-10-30): a total still off after the line choices is accepted ("go with the line total") only with a remark. */
+export const REMARK_REQUIRED_ISSUE_TYPES: readonly IssueType[] = [ISSUE_TYPE.TOTAL_MISMATCH];
 
 /** Rupee amounts are compared after rounding to paise, so 0.004 of float noise is never an issue. */
 export const round2 = (n: number): number => Math.round(n * 100) / 100;

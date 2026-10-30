@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { CHANNEL_PULLS, FEEDBACK, INBOUND_ROUTES, MANUAL_UPLOAD, PO_INTAKE, PO_ISSUES, PO_VERIFY } from '../constants';
+import { CHANNEL_PULLS, FEEDBACK, INBOUND_ROUTES, MANUAL_UPLOAD, PO_INTAKE, PO_ISSUES, PO_VERIFY, PRICE_DIFFS } from '../constants';
 import poVerifyGate from '../modules/po-verify/po-verify.gate';
 import adminRoutes from './admin.routes';
 import amazonInboundRoutes from './amazon-inbound.routes';
@@ -14,6 +14,7 @@ import mastersRoutes from './masters.routes';
 import poIntakeRoutes from './po-intake.routes';
 import poIntakeControlRoutes from './po-intake-control.routes';
 import poIssuesRoutes from './po-issues.routes';
+import priceDifferencesRoutes from './price-differences.routes';
 import poOverviewRoutes from './po-overview.routes';
 import poReviewRoutes from './po-review.routes';
 import poVerifyRoutes from './po-verify.routes';
@@ -33,6 +34,7 @@ router.use('/po-intake', poIntakeRoutes);
 router.use('/po-overview', poOverviewRoutes);
 // PO issues (a PO review tab, 2026-10-29): before the review routes, so /po-review/issues is not an upload id.
 router.use(PO_ISSUES.BASE, poIssuesRoutes);
+router.use(PRICE_DIFFS.BASE, priceDifferencesRoutes);
 // The verification gate runs first and only for the Uniware hand-off calls; the review routes are unchanged.
 router.use('/po-review', poVerifyGate);
 router.use('/po-review', poReviewRoutes);

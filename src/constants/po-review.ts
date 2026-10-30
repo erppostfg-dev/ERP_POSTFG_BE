@@ -45,6 +45,10 @@ export const PO_REVIEW_BODY = {
   QTY: 'qty',
   MRP: 'mrp',
   RATE: 'rate',
+  /** Price check (2026-10-30): 'ours' | 'channel' per line, and update the master with the PO's value. */
+  PRICE_FROM: 'priceFrom',
+  MRP_FROM: 'mrpFrom',
+  UPDATE_MASTER: 'updateMaster',
   ACCEPT: 'accept',
   ISSUE_ID: 'issueId',
   REMARK: 'remark',
