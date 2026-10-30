@@ -6,6 +6,7 @@ import { Readable } from 'stream';
 import {
   CopyObjectCommand, DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client,
 } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { s3Bucket, s3Client } from '../../../config/s3';
 import { assertStorageSetUp, assertWritable } from './scope';
 
@@ -207,6 +208,29 @@ export interface Opened {
   contentType: string | null;
   meta: ObjMeta;
 }
+
+/** How long a download link stays valid: enough to start the download, short enough not to be worth passing on. */
+export const DOWNLOAD_LINK_SECONDS = 300;
+const DOWNLOAD_TYPES: Record<string, string> = {
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.csv': 'text/csv; charset=utf-8',
+  '.json': 'application/json',
+};
+
+/**
+ * A short-lived https link that downloads `key` straight from S3 as `fileName` (user, 2026-10-29): the browser fetches
+ * the bytes from S3 itself instead of through this server. Only made after the route checked the person's access.
+ */
+export const downloadLink = (key: string, fileName: string): Promise<string> => {
+  const safe = fileName.replace(/["\\\r\n]/g, '_');
+  return getSignedUrl(s3(), new GetObjectCommand({
+    Bucket: Bucket(),
+    Key: key,
+    ResponseContentType: DOWNLOAD_TYPES[path.extname(fileName).toLowerCase()] ?? 'application/octet-stream',
+    ResponseContentDisposition: `attachment; filename="${safe}"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+    ResponseCacheControl: 'private, no-store',
+  }), { expiresIn: DOWNLOAD_LINK_SECONDS });
+};
 
 /** An object to read (null when it is not there; 'not-modified' when its ETag is `ifNoneMatch`). */
 export const open = async (key: string, opts: { ifNoneMatch?: string } = {}): Promise<Opened | 'not-modified' | null> => {

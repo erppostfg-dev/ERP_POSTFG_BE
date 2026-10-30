@@ -1,5 +1,5 @@
 import path from 'path';
-import { FACILITY_GROUPS, IST_OFFSET_MS, UNIWARE_EXPORTS, UniwareExport } from '../../../constants';
+import { FACILITY_GROUPS, INPUT_BY_NAME, IST_OFFSET_MS, UNIWARE_EXPORTS, UniwareExport } from '../../../constants';
 import { parseDeliveryDate } from '../stages/shipments';
 import { readRows, toCsv, unpack, writeAtomic } from './files';
 import { bytesOf, HttpError, Log, send, sendRetry, sleep, throttled } from './http';
@@ -37,6 +37,8 @@ const REQUIRED_COLUMNS: Record<string, string[]> = {
   po: ['PO Code', 'Created', 'Delivery Date', 'Item Type Name', 'Item SkuCode', 'Order Quantity', 'Recieved Quantity', 'Facility', 'Total',
     'Purchase Order Status', 'Reference No', 'ReferenceOrder'],
   inventory: ['Facility', 'Item Type Name', 'Item SkuCode', 'Open Sale', 'Inventory', 'Putaway Pending', 'Stock In Transfer', 'Open Purchase'],
+  // shown as exported on the Shelfwise_Inventory sheet (2026-10-29): only these must be there
+  shelfwise: ['Facility', 'Item Type SKU Code', 'Shelf', 'Quantity'],
 };
 export const UNIWARE_EXPORT_KEYS = Object.keys(REQUIRED_COLUMNS);
 
@@ -46,7 +48,11 @@ export interface UniwareConfig {
   password?: string;
   facilities: string[];
   parallel: number;
+  /** The facilities counted as stock (master_facilities.intransit_group, 2026-10-30); absent = FACILITY_GROUPS. */
+  stockFacilities?: string[];
 }
+
+const stockFacilitiesOf = (cfg: UniwareConfig): string[] => cfg.stockFacilities ?? FACILITY_GROUPS.flatMap(([, , facs]) => facs);
 
 /** The .env keys the Uniware connector needs (the facilities come from master_facilities.uniware_export). */
 export const UNIWARE_KEYS = ['UNIWARE_TENANT', 'UNIWARE_USERNAME', 'UNIWARE_PASSWORD'];
@@ -66,7 +72,7 @@ export class UniwareApi {
   private expires = 0;
   private loggingIn: Promise<string> | null = null;
 
-  constructor(private readonly cfg: Required<Omit<UniwareConfig, 'facilities' | 'parallel'>>) {
+  constructor(private readonly cfg: Required<Omit<UniwareConfig, 'facilities' | 'parallel' | 'stockFacilities'>>) {
     this.base = tenantBase(cfg.tenant);
   }
 
@@ -120,25 +126,38 @@ export class UniwareApi {
 
 // ---- facilities ------------------------------------------------------------------------------------------------
 
-/** Codes of the enabled facilities this user can access. */
-const searchFacilities = async (api: UniwareApi): Promise<string[]> => {
-  const body = await api.post<{ parties?: { facilityCode?: string }[] }>(FACILITY_SEARCH_PATH, {
-    facilityStatus: 'ENABLED',
+export interface UniwareFacility {
+  code: string;
+  /** Its display name in Uniware, when the answer carries one. */
+  name: string | null;
+}
+
+/** The facilities of a status (ENABLED / DISABLED) this user can access. */
+export const searchFacilityParties = async (api: UniwareApi, status: 'ENABLED' | 'DISABLED'): Promise<UniwareFacility[]> => {
+  type Party = { facilityCode?: string; code?: string; name?: string; displayName?: string; facilityName?: string };
+  const body = await api.post<{ parties?: Party[] }>(FACILITY_SEARCH_PATH, {
+    facilityStatus: status,
     dateType: 'CREATED',
     fromDate: '2010-01-01T00:00:00.000Z',
     toDate: '2100-01-01T00:00:00.000Z',
   });
-  return (body.parties ?? []).map((p) => p.facilityCode).filter((c): c is string => !!c);
+  return (body.parties ?? []).flatMap((p) => {
+    const code = p.facilityCode ?? p.code;
+    return code ? [{ code, name: p.displayName ?? p.name ?? p.facilityName ?? null }] : [];
+  });
 };
 
+/** Codes of the enabled facilities this user can access. */
+const searchFacilities = async (api: UniwareApi): Promise<string[]> => (await searchFacilityParties(api, 'ENABLED')).map((f) => f.code);
+
 /** The listed facilities Uniware knows (in its spelling); warns about the rest and about stock facilities not listed. */
-const resolveFacilities = (listed: string[], known: string[], log: Log): string[] => {
+const resolveFacilities = (listed: string[], known: string[], stockFacilities: string[], log: Log): string[] => {
   const byLower = new Map(known.map((k) => [k.toLowerCase(), k]));
   const usable = listed.filter((f) => byLower.has(f.toLowerCase())).map((f) => byLower.get(f.toLowerCase()) as string);
   const unknown = listed.filter((f) => !byLower.has(f.toLowerCase()));
   if (unknown.length) log(`  WARNING skipping facilities Uniware does not return for this user: ${unknown.join(', ')}`);
   const listedLower = new Set(listed.map((f) => f.toLowerCase()));
-  const notListed = FACILITY_GROUPS.flatMap(([, , facs]) => facs).filter((f) => !listedLower.has(f.toLowerCase()));
+  const notListed = stockFacilities.filter((f) => !listedLower.has(f.toLowerCase()));
   if (notListed.length) {
     log(`  NOTE: ${notListed.length} facilities the pipeline counts stock for are not marked for the Uniware export (master_facilities.uniware_export), so their rows will not be exported: ${notListed.join(', ')}`);
   }
@@ -182,7 +201,7 @@ const waitForJob = async (api: UniwareApi, jobCode: string, facility: string): P
 /** `expected` = the column names the file should have; a missing pipeline column is an error, other differences warn. */
 const checkHeader = (key: string, rawHeader: string[], expectedRaw: string[], where: string, log: Log): void => {
   const header = rawHeader.map((c) => c.trim());
-  const missingRequired = REQUIRED_COLUMNS[key].filter((c) => !header.includes(c));
+  const missingRequired = (REQUIRED_COLUMNS[key] ?? []).filter((c) => !header.includes(c));
   if (missingRequired.length) throw new Error(`${key}${where}: export is missing columns the pipeline needs: ${missingRequired.join(', ')}`);
   const expected = expectedRaw.map((c) => c.trim());
   const missing = expected.filter((c) => !header.includes(c));
@@ -331,7 +350,7 @@ const connect = async (cfg: UniwareConfig, log: Log): Promise<[UniwareApi, strin
   if (!cfg.tenant || !cfg.username || !cfg.password) throw new Error(`fill in ${UNIWARE_KEYS.slice(0, 3).join(', ')} in .env`);
   if (!cfg.facilities.length) throw new Error('no facility is marked for the Uniware export: switch uniware_export on in master_facilities');
   const api = new UniwareApi({ tenant: cfg.tenant, username: cfg.username, password: cfg.password });
-  return [api, resolveFacilities(cfg.facilities, await searchFacilities(api), log)];
+  return [api, resolveFacilities(cfg.facilities, await searchFacilities(api), stockFacilitiesOf(cfg), log)];
 };
 
 /** Login + facility list check. */
@@ -355,12 +374,17 @@ export const fetchUniware = async (cfg: UniwareConfig, outDir: string, log: Log,
   if (nowMs !== todayMs) log(`  date windows end on ${asOf}`);
   const payloads = Object.fromEntries(keys.map((k) => [k, withRollingWindow(UNIWARE_EXPORTS[k].payload, UNIWARE_EXPORTS[k].rolling_days, nowMs)]));
   // An export limited to the report's stock facilities (Inventory Snapshot) skips the others: their rows are never used.
-  const stock = new Set(FACILITY_GROUPS.flatMap(([, , facs]) => facs.map((f) => f.toLowerCase())));
+  const stock = new Set(stockFacilitiesOf(cfg).map((f) => f.toLowerCase()));
   const facilitiesFor = (k: string): string[] => (UNIWARE_EXPORTS[k].onlyFacilities === 'stock' ? facilities.filter((f) => stock.has(f.toLowerCase())) : facilities);
   const tasks = keys.flatMap((k) => facilitiesFor(k).map((f) => [k, f] as [string, string]));
   const results: (string[][] | undefined)[] = new Array(tasks.length);
   const parallel = Math.max(1, cfg.parallel || 1);
   log(`  ${tasks.length} export jobs (${keys.map((k) => `${k} x ${facilitiesFor(k).length}`).join(', ')}), ${parallel} at a time`);
+
+  // An optional export (its input is optional, e.g. Shelfwise Inventory) that fails is left out and the others are kept;
+  // before 29-Oct its first failure threw away every export already downloaded.
+  const optional = (k: string): boolean => !!INPUT_BY_NAME.get(UNIWARE_EXPORTS[k].file)?.optional;
+  const skipped = new Set<string>();
 
   // A rolling queue: a new job starts as soon as one finishes (no waiting for the slowest job of a batch).
   let next = 0;
@@ -368,16 +392,23 @@ export const fetchUniware = async (cfg: UniwareConfig, outDir: string, log: Log,
     while (next < tasks.length) {
       const i = next++;
       const [k, f] = tasks[i];
-      const t0 = Date.now();
-      const job = await createJob(api, payloads[k], f);
-      const filePath = await waitForJob(api, job, f);
-      const t1 = Date.now();
-      const table = readRows(unpack(await api.download(filePath)));
-      if (!table.length) throw new Error(`${k} / ${f}: export came back empty (not even a header)`);
-      checkHeader(k, table[0], UNIWARE_EXPORTS[k].header ?? [], ` / ${f}`, log);
-      results[i] = table;
-      // where the time goes: Uniware preparing the export vs downloading it
-      log(`  ${k} / ${f}: ${table.length - 1} rows (ready in ${Math.round((t1 - t0) / 1000)} s, downloaded in ${Math.round((Date.now() - t1) / 1000)} s)`);
+      if (skipped.has(k)) continue;
+      try {
+        const t0 = Date.now();
+        const job = await createJob(api, payloads[k], f);
+        const filePath = await waitForJob(api, job, f);
+        const t1 = Date.now();
+        const table = readRows(unpack(await api.download(filePath)));
+        if (!table.length) throw new Error(`${k} / ${f}: export came back empty (not even a header)`);
+        checkHeader(k, table[0], UNIWARE_EXPORTS[k].header ?? [], ` / ${f}`, log);
+        results[i] = table;
+        // where the time goes: Uniware preparing the export vs downloading it
+        log(`  ${k} / ${f}: ${table.length - 1} rows (ready in ${Math.round((t1 - t0) / 1000)} s, downloaded in ${Math.round((Date.now() - t1) / 1000)} s)`);
+      } catch (err) {
+        if (!optional(k)) throw err;
+        skipped.add(k);
+        log(`  WARNING ${k} / ${f}: ${err instanceof Error ? err.message : String(err)} - ${UNIWARE_EXPORTS[k].file} is optional, so it is left out of this fetch`);
+      }
     }
   }));
   // parts in facility order (as before), so the combined file is the same whichever job finished first
@@ -388,6 +419,7 @@ export const fetchUniware = async (cfg: UniwareConfig, outDir: string, log: Log,
 
   const written: string[] = [];
   for (const k of keys) {
+    if (skipped.has(k)) continue;
     const cfgK = UNIWARE_EXPORTS[k];
     const rows = combine(k, parts[k], log);
     if (cfgK.rolling_days && cfgK.date_column) checkWindow(k, rows, cfgK.date_column, cfgK.rolling_days, nowMs, log);

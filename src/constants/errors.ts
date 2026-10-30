@@ -145,6 +145,12 @@ export const ERRORS = {
   CANNOT_CHANGE_OWN_ACCESS: define(400, () => 'You cannot switch yourself off or remove your own admin / developer role'),
   MAIL_SEND_NOT_ALLOWED: define(500, (mailbox: string) => `The Gmail login of ${mailbox} has no send permission yet: run npm run gmail:token again and allow sending`),
   MAIL_SEND_FAILED: define(500, (reason: string) => `Email not sent: ${reason}`),
+  // --- Mailing lists (2026-10-30) ---
+  MAIL_LIST_UNKNOWN: define(404, (key: string) => `No mail "${key}"`),
+  MAIL_RECIPIENT_EXISTS: define(409, (email: string, list: string) => `${email} is already on "${list}"`),
+  MAIL_RECIPIENT_NOT_FOUND: define(404, (id: string) => `No recipient ${id} on this mail`),
+  MAIL_ADDRESS_INVALID: define(400, (email: string) => `"${email}" is not an email address`),
+  MAIL_LIST_EMPTY: define(422, (list: string) => `"${list}" has nobody to send to (add a recipient, or un-pause one, or switch the mail on)`),
   USER_INACTIVE: define(403, (email: string) => `${email} is switched off; ask an admin`),
   FORBIDDEN_PAGE: define(
     403,
@@ -257,6 +263,8 @@ export const ERRORS = {
   INTRANSIT_BUSY: define(409, (what: string) => `Another machine is working on the same thing (${what}); try again in a moment`),
   INTRANSIT_SCOPE_READ_ONLY: define(403, (what: string, own: string) => `This computer writes only ${own}, not ${what}`),
   INTRANSIT_RUN_NOT_HERE: define(403, (id: string, host: string) => `Run ${id} belongs to ${host}: delete it there`),
+  INTRANSIT_FACILITY_NOT_IN_CHECK: define(404, (code: string) => `${code} is not in the latest facility check: check again or refresh the page`),
+  INTRANSIT_BUCKET_UNKNOWN: define(400, (bucket: string) => `Unknown stock bucket "${bucket}"`),
   INTRANSIT_MASTERS_PROD_ONLY: define(403, () => 'The in-transit masters are shared with production: change them on the live server (a test machine cannot)'),
   INTRANSIT_SKU_UNKNOWN: define(422, (skus: string) => `Not saved: these SKUs are neither in the product master nor in Uniware: ${skus}`),
   INTRANSIT_UNIWARE_NEEDED: define(422, (skus: string, reason: string) => `Not saved: ${skus} must be looked up in Uniware first (${reason})`),

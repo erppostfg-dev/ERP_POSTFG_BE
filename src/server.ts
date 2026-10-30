@@ -5,6 +5,7 @@ import { env } from './config/env';
 import { startEmailListener } from './modules/email-intake/pubsub.listener';
 import { queueExtractPo } from './modules/ocr/extract-po.service';
 import { migrateFlatInputs } from './modules/intransit/input-store';
+import { startFacilityCheck, stopFacilityCheck } from './modules/intransit/facility-check.service';
 import { startPeriodKeeper, stopPeriodKeeper } from './modules/intransit/s3/periods';
 import { startQueue, stopQueue } from './modules/intransit/s3/queue';
 import { clearJobs } from './modules/intransit/s3/run-store';
@@ -65,6 +66,8 @@ const start = async (): Promise<void> => {
     await startQueue().catch((err) => logError(LOG_SOURCE.S3, '[intransit-s3] queue did not start', err));
     startPeriodKeeper();
   } else log.info(LOG_SOURCE.APP, `[intransit] disk store (S3 off: ${storageProblems().join(', ')})`);
+  // weekly Uniware facility check (Mondays; live scope only, not in laptop mode)
+  startFacilityCheck();
 
   const server = app.listen(env.port);
   // The email listener posts to our own endpoint, so wait until we are listening.
@@ -171,6 +174,7 @@ const start = async (): Promise<void> => {
     if (releaseTimer) clearInterval(releaseTimer);
     if (cleanupTimer) clearInterval(cleanupTimer);
     stopPeriodKeeper();
+    stopFacilityCheck();
     await stopQueue().catch(() => undefined); // in-transit files still waiting for S3 are sent at the next start
     server.close(async () => {
       if (AppDataSource.isInitialized) await AppDataSource.destroy();

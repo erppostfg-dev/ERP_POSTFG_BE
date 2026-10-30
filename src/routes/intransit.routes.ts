@@ -1,7 +1,7 @@
 import { NextFunction, Request, Response, Router } from 'express';
 import multer from 'multer';
 import { pipeline } from 'stream';
-import { ACCESS_LEVEL, ERROR_CODES, errorMessage, INTRANSIT_ROUTES, INTRANSIT_UPLOAD_MAX_BYTES, PAGE } from '../constants';
+import { ACCESS_LEVEL, ERROR_CODES, errorMessage, INTRANSIT_ROUTES, INTRANSIT_UPLOAD_MAX_BYTES, MAIL_LIST, PAGE } from '../constants';
 import { requireAnyPage, requireAuth, requirePage } from '../modules/auth/auth.middleware';
 import { ConnectorOptions } from '../modules/intransit/connectors';
 import { inputBlob, reportBlob, reportSheetBlob, runFileBlob, StoredBlob } from '../modules/intransit/file-preview.service';
@@ -12,8 +12,11 @@ import { deleteRun, getRun, getRunLog, latestInventory, listRuns, Requester, Run
 import { listPeriods } from '../modules/intransit/s3/periods';
 import { retryStorage, storageStatus } from '../modules/intransit/s3/status';
 import { storageOn } from '../modules/intransit/s3/scope';
-import { open } from '../modules/intransit/s3/store';
+import { downloadLink, head, open } from '../modules/intransit/s3/store';
 import { getSnapshot, snapshotFile } from '../modules/intransit/snapshot.service';
+import { runMail, runMailWithFiles } from '../modules/intransit/wh-summary-mail';
+import { sendNow } from '../modules/mail/mail-lists.service';
+import { addFacility, getFacilityCheck, ignoreFacility, stopFacility } from '../modules/intransit/facility-check.service';
 import { appError } from '../utils/AppError';
 import { createGunzip, createGzip } from 'zlib';
 
@@ -42,6 +45,10 @@ import { createGunzip, createGzip } from 'zlib';
  *   GET    /intransit/runs?kind=           newest first (kind: report | amazon | uniware | flipkart)
  *   GET    /intransit/runs/:id             the run with the last log lines (logTail); poll it while queued/running
  *   GET    /intransit/runs/:id/log         the full log, text/plain
+ *   GET    /intransit/runs/:id/mail        the build's in-transit mail (WH table) as HTML; ?format=text for plain text
+ *   POST   /intransit/runs/:id/mail/send   editor; that mail with the build's Stock / B2C workbooks attached, to the
+ *                                          "In-transit daily report" list: { data: { to, cc, bcc, attachments } }; 422 when
+ *                                          nobody on the list is active
  *   GET    /intransit/runs/:id/report      the workbook (xlsx); 409 unless the run succeeded
  *   DELETE /intransit/runs/:id             204; 409 while queued/running
  *   POST   /intransit/connectors/:source   amazon | uniware | flipkart, body { date?, only?: string | string[], refreshCache? }
@@ -81,6 +88,16 @@ import { createGunzip, createGzip } from 'zlib';
  *   GET    /intransit/snapshot/file?key=   one of those files as CSV (ETag; If-None-Match -> 304; gzip when accepted)
  *   GET    /intransit/periods              the weekly / monthly copies: [{ kind, fy, label, from, key, size, modified }]
  *   GET    /intransit/periods/download?key=  one of them (xlsx)
+ * Weekly Uniware facility check (2026-10-30; viewer / editor of In-transit Stock or Warehouses):
+ *   GET    /intransit/facility-check         { data: { checkedAt, attemptedAt, error, newFacilities [{ code, name, inMaster,
+ *                                          guess }], disabled [{ code, name, group, exported }], ignored, buckets } }
+ *   POST   /intransit/facility-check/add     { code, group }: exported and counted in that bucket (live server only)
+ *   POST   /intransit/facility-check/ignore  { code }: not stock, never prompted again
+ *   POST   /intransit/facility-check/stop    { code }: a disabled one no longer exported nor counted
+ * Downloads (inputs/:name/download, runs/:id/files/:name/download, runs/:id/report, periods/download) take ?link=1:
+ * when the file is in S3 the answer is { data: { url, name } }, a 5-minute S3 link the browser downloads from directly
+ * (2026-10-29); otherwise the file itself as before. Sheet CSVs (runs/:id/sheets/:sheet/download) always stream: the
+ * stored copy is gzip and the CSV needs a BOM for Excel.
  */
 
 /** Marks each flagged combo of a report run that is in Split1.csv by now (added from the page or uploaded since). */
@@ -168,6 +185,20 @@ router.get(INTRANSIT_ROUTES.INPUT_TABLE, ...viewer, async (req, res, next) => {
   }
 });
 
+/**
+ * A download: with ?link=1 and the file in S3, a short-lived link the browser downloads from S3 directly
+ * ({ data: { url } }, user 2026-10-29: the bytes no longer pass through this server); else the file itself (the disk
+ * store, a file still queued for S3, a master made from the database).
+ */
+const sendDownload = async (req: Request, res: Response, next: NextFunction, blob: StoredBlob): Promise<void> => {
+  if (req.query.link === '1' && blob.s3Key) {
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({ data: { url: await downloadLink(blob.s3Key, blob.name), name: blob.name } });
+    return;
+  }
+  await sendBlob(res, next, blob);
+};
+
 /** Send a stored file (disk or S3) as a download. */
 const sendBlob = async (res: Response, next: NextFunction, blob: StoredBlob): Promise<void> => {
   const stream = await blob.stream();
@@ -181,7 +212,7 @@ const sendBlob = async (res: Response, next: NextFunction, blob: StoredBlob): Pr
 
 router.get(INTRANSIT_ROUTES.INPUT_DOWNLOAD, ...viewer, async (req, res, next) => {
   try {
-    await sendBlob(res, next, await inputBlob(req.params.name, req.query.date));
+    await sendDownload(req, res, next, await inputBlob(req.params.name, req.query.date));
   } catch (err) {
     next(err);
   }
@@ -197,7 +228,7 @@ router.get(INTRANSIT_ROUTES.RUN_FILE_TABLE, ...viewer, async (req, res, next) =>
 
 router.get(INTRANSIT_ROUTES.RUN_FILE_DOWNLOAD, ...viewer, async (req, res, next) => {
   try {
-    await sendBlob(res, next, await runFileBlob(req.params.id, req.params.name));
+    await sendDownload(req, res, next, await runFileBlob(req.params.id, req.params.name));
   } catch (err) {
     next(err);
   }
@@ -281,6 +312,31 @@ router.get(INTRANSIT_ROUTES.RUN, ...viewer, async (req, res, next) => {
   }
 });
 
+// the in-transit mail of a build as it will be sent (its WH table)
+router.get(INTRANSIT_ROUTES.RUN_MAIL, ...viewer, async (req, res, next) => {
+  try {
+    const mail = await runMail(req.params.id);
+    res.setHeader('Cache-Control', 'private, no-store');
+    if (req.query.format === 'text') res.type('text/plain').send(`${mail.subject}
+
+${mail.text}`);
+    else res.type('html').send(mail.html);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// send that mail, with the build's Stock / B2C workbooks attached, to the "In-transit daily report" list (2026-10-30)
+router.post(INTRANSIT_ROUTES.RUN_MAIL_SEND, ...editor, async (req, res, next) => {
+  try {
+    const mail = await runMailWithFiles(req.params.id);
+    const sentTo = await sendNow(MAIL_LIST.INTRANSIT_DAILY, { id: req.auth!.user.id }, mail, `report #${req.params.id}`);
+    res.json({ data: { ...sentTo, attachments: mail.attachments.map((a) => a.filename) } });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get(INTRANSIT_ROUTES.RUN_LOG, ...viewer, async (req, res, next) => {
   try {
     res.type('text/plain').send(await getRunLog(req.params.id));
@@ -291,7 +347,7 @@ router.get(INTRANSIT_ROUTES.RUN_LOG, ...viewer, async (req, res, next) => {
 
 router.get(INTRANSIT_ROUTES.RUN_REPORT, ...viewer, async (req, res, next) => {
   try {
-    await sendBlob(res, next, await reportBlob(req.params.id));
+    await sendDownload(req, res, next, await reportBlob(req.params.id));
   } catch (err) {
     next(err);
   }
@@ -381,10 +437,17 @@ router.get(INTRANSIT_ROUTES.PERIOD_DOWNLOAD, ...viewer, async (req, res, next) =
     const key = typeof req.query.key === 'string' ? req.query.key : '';
     const m = /^inventory\/(Weekly|Monthly) Snapshot\/(FY\d{2}-\d{2})\/([A-Za-z0-9_]+)\.xlsx$/.exec(key);
     if (!storageOn() || !m) throw appError(ERROR_CODES.INTRANSIT_FILE_NOT_FOUND, key || 'key');
+    const fileName = `Intransit_Stock_Report_${m[2]}_${m[3]}.xlsx`;
+    if (req.query.link === '1') {
+      if (!(await head(key))) throw appError(ERROR_CODES.INTRANSIT_FILE_NOT_FOUND, key);
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.json({ data: { url: await downloadLink(key, fileName), name: fileName } });
+      return;
+    }
     const o = await open(key);
     if (!o || o === 'not-modified') throw appError(ERROR_CODES.INTRANSIT_FILE_NOT_FOUND, key);
     res.setHeader('Cache-Control', 'private, no-store');
-    res.attachment(`Intransit_Stock_Report_${m[2]}_${m[3]}.xlsx`);
+    res.attachment(fileName);
     res.setHeader('Content-Length', String(o.size));
     pipeline(o.body, res, (err) => err && !res.headersSent && next(err));
   } catch (err) {
@@ -395,6 +458,50 @@ router.get(INTRANSIT_ROUTES.PERIOD_DOWNLOAD, ...viewer, async (req, res, next) =
 router.get(INTRANSIT_ROUTES.INVENTORY, requireAuth, requirePage(PAGE.INVENTORY, ACCESS_LEVEL.VIEWER), async (_req, res, next) => {
   try {
     res.json({ data: await latestInventory() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Weekly Uniware facility check (2026-10-30): read by a viewer of In-transit Stock or Warehouses, acted on by an editor
+// of either. The clicks change master_facilities, so the live server only (assertMastersWritable).
+const facilityReader = [requireAuth, requireAnyPage([PAGE.INTRANSIT_STOCK, PAGE.WAREHOUSES], ACCESS_LEVEL.VIEWER)];
+const facilityEditor = [requireAuth, requireAnyPage([PAGE.INTRANSIT_STOCK, PAGE.WAREHOUSES], ACCESS_LEVEL.EDITOR)];
+const required = (field: string) => appError(ERROR_CODES.VALIDATION_FAILED).withDetails([{ field, code: ERROR_CODES.FIELD_REQUIRED, message: errorMessage(ERROR_CODES.FIELD_REQUIRED, field) }]);
+const textField = (req: Request, field: string): string => {
+  const v = (req.body as Record<string, unknown> | undefined)?.[field];
+  if (typeof v !== 'string' || !v.trim()) throw required(field);
+  return v.trim();
+};
+const codeOf = (req: Request): string => textField(req, 'code');
+
+router.get(INTRANSIT_ROUTES.FACILITY_CHECK, ...facilityReader, async (_req, res, next) => {
+  try {
+    res.json({ data: await getFacilityCheck() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post(INTRANSIT_ROUTES.FACILITY_ADD, ...facilityEditor, async (req, res, next) => {
+  try {
+    res.json({ data: await addFacility(codeOf(req), textField(req, 'group'), who(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post(INTRANSIT_ROUTES.FACILITY_IGNORE, ...facilityEditor, async (req, res, next) => {
+  try {
+    res.json({ data: await ignoreFacility(codeOf(req), who(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post(INTRANSIT_ROUTES.FACILITY_STOP, ...facilityEditor, async (req, res, next) => {
+  try {
+    res.json({ data: await stopFacility(codeOf(req), who(req)) });
   } catch (err) {
     next(err);
   }

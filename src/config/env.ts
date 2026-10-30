@@ -194,6 +194,8 @@ export const env = {
     maxWorkers: Math.max(1, Number(process.env.INTRANSIT_MAX_WORKERS ?? 1) || 1),
     // Priority of those child processes and what they start (the robots' Chromium, Xvfb): 0 = as the API, 19 = lowest.
     // 10 by default: a build or robot takes only spare CPU, so the ERP's pages stay quick on a small server (2026-10-29).
+    /** The weekly Uniware facility check (Mondays; live scope only). false = off on this server. */
+    facilityCheck: flag('INTRANSIT_FACILITY_CHECK', 'true'),
     workerNice: Math.min(19, Math.max(0, Number(process.env.INTRANSIT_WORKER_NICE ?? 10) || 0)),
     // Default start date of a report: shipments with an earlier Entry Date are left out. "2026-08-01" (fixed),
     // "79" (the last 79 days before as-of; the team's choice, 2026-10-21) or blank (all). A run can override it.

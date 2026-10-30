@@ -1,3 +1,5 @@
+import { FACILITY_GROUPS, type FacilityGroups } from '../../constants';
+import type { WhSummaryRow } from './stages/wh-summary';
 import path from 'path';
 import { Frame } from './frame';
 import { readCsv } from './io';
@@ -21,6 +23,11 @@ export interface IntransitSettings {
    * the stages run (user's fix plan W1, 2026-10-19: the reference report starts at 1 Aug). Null/absent = keep all.
    */
   fromDate?: string | null;
+  /**
+   * The stock the report counts, [group, Channel type, facilities] (master_facilities.intransit_group, read by the
+   * server before the build, 2026-10-30). Absent = FACILITY_GROUPS (the CLI build, no database).
+   */
+  facilityGroups?: FacilityGroups;
 }
 
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -55,6 +62,10 @@ export interface Lookups {
 export class Context {
   readonly frames = new Map<string, Frame>();
   readonly timings: Record<string, number> = {};
+  /** The mail's WH table (stages/wh-summary.ts), kept with the run. */
+  whSummary?: WhSummaryRow[];
+  /** Things a person should see about this build (shown with the run, e.g. an optional input with no copy). */
+  readonly warnings: string[] = [];
   lookups?: Lookups;
   private readonly inputs = new Map<string, Promise<Frame>>();
   private readonly t0 = Date.now();
@@ -63,6 +74,16 @@ export class Context {
     readonly settings: IntransitSettings,
     private readonly onLog?: (line: string) => void,
   ) {}
+
+  /** Log a warning and keep it for the run's result. */
+  warn(msg: string): void {
+    this.warnings.push(msg);
+    this.log(`  WARNING ${msg}`);
+  }
+
+  get facilityGroups(): FacilityGroups {
+    return this.settings.facilityGroups ?? FACILITY_GROUPS;
+  }
 
   log(msg: string): void {
     const line = `[${((Date.now() - this.t0) / 1000).toFixed(1).padStart(6)}s] ${msg}`;
