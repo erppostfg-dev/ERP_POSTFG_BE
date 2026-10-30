@@ -4,6 +4,7 @@ import { bigbasketHandler } from './bigbasket/bigbasket.handler';
 import { blinkitHandler } from './blinkit/blinkit.handler';
 import { ChannelHandler } from './channel-handler';
 import { firstcryHandler } from './firstcry/firstcry.handler';
+import { flipkartQcomHandler } from './flipkart-qcom/flipkart-qcom.handler';
 import { nykaaHandler } from './nykaa/nykaa.handler';
 import { purplleHandler } from './purplle/purplle.handler';
 import { relianceHandler } from './reliance/reliance.handler';
@@ -27,4 +28,6 @@ export const channelHandlers: Partial<Record<ChannelName, ChannelHandler>> = {
   [nykaaHandler.channel]: nykaaHandler,
   // Built from the PDF text of 4502349805 (2026-10-30), not yet from a real OCR output: check the first run.
   [avenueHandler.channel]: avenueHandler,
+  // Line and footer names = the sheet's own (FASWN08497679); header labels come from the OCR's model: check the first run.
+  [flipkartQcomHandler.channel]: flipkartQcomHandler,
 };

@@ -21,6 +21,8 @@ export const CHANNELS = {
   FLIPKART: 'flipkart',
   /** Avenue E-Commerce (DMart): its PO PDF, by Manual Upload only (no email; read by the OCR; 2026-10-30). */
   AVENUE: 'avenue',
+  /** Flipkart Quick Commerce: the whole PO in one .xls, by Manual Upload only (no email; OCR sheet pipeline; 2026-10-30). */
+  FLIPKART_QCOM: 'flipkart_qcom',
 } as const;
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS];
@@ -49,4 +51,6 @@ export const OCR_CHANNELS: Record<ChannelName, string> = {
   /** Not OCR'd: Flipkart consignments come from Seller Hub. */
   [CHANNELS.FLIPKART]: 'flipkart',
   [CHANNELS.AVENUE]: 'avenue',
+  /** The OCR reads lines and totals with Python; only the header block goes to its model. */
+  [CHANNELS.FLIPKART_QCOM]: 'flipkart_quickcomm',
 };

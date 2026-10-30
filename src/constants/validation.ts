@@ -43,6 +43,7 @@ export const CHANNEL_TOLERANCES: Record<ChannelName, Tolerance> = {
   [CHANNELS.NYKAA]: DEFAULT_TOLERANCE,
   [CHANNELS.FLIPKART]: DEFAULT_TOLERANCE,
   [CHANNELS.AVENUE]: DEFAULT_TOLERANCE,
+  [CHANNELS.FLIPKART_QCOM]: DEFAULT_TOLERANCE,
 };
 
 /**
@@ -63,6 +64,8 @@ export const CHANNEL_MASTER_IDS: Record<ChannelName, number> = {
   [CHANNELS.FLIPKART]: 8,
   /** "Avenue E-Commerce" (DMart). */
   [CHANNELS.AVENUE]: 15,
+  /** "Flipkart Qcom" (not "Flipkart", id 8: its rates differ). */
+  [CHANNELS.FLIPKART_QCOM]: 16,
 };
 
 /**
@@ -72,6 +75,9 @@ export const CHANNEL_MASTER_IDS: Record<ChannelName, number> = {
  *   pincode:           delivery_pincode = consignee_pin_code only (Purplle: its plant codes W502 ... are not in the master)
  * Exactly one row must match; none or several -> review.
  */
+/** Pep Technologies' PAN: inside every GSTIN of ours (27AAICP2804J1ZC ...), so a PO's other GSTIN is the buyer's. */
+export const OUR_PAN = 'AAICP2804J';
+
 export const LOCATION_MATCH = { CODE_THEN_PINCODE: 'code_then_pincode', PINCODE: 'pincode' } as const;
 export type LocationMatch = (typeof LOCATION_MATCH)[keyof typeof LOCATION_MATCH];
 
@@ -93,6 +99,8 @@ export const CHANNEL_LOCATION_MATCH: Record<ChannelName, LocationMatch> = {
   [CHANNELS.FLIPKART]: LOCATION_MATCH.CODE_THEN_PINCODE,
   /** No site code on the PO: the Ship To pincode (two locations share 421302 on 30 Oct: the reviewer picks). */
   [CHANNELS.AVENUE]: LOCATION_MATCH.PINCODE,
+  /** No location code on the PO: the SHIPPED TO ADDRESS pincode (Hillway 387570 -> "Ahmedabad"). */
+  [CHANNELS.FLIPKART_QCOM]: LOCATION_MATCH.PINCODE,
 };
 
 /** Result of validating one PO. */

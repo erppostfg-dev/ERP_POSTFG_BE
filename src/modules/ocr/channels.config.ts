@@ -197,4 +197,15 @@ export const channelConfigs: ChannelConfig[] = [
     domains: [],
     files: { pdf: /\.pdf$/i },
   },
+
+  {
+    // Flipkart Quick Commerce (2026-10-30): purchase_order_<PO>.xls (header block, line table, totals in one sheet) by
+    // Manual Upload only; read by the OCR sheet pipeline (channels.json "flipkart_quickcomm": lines and totals by Python,
+    // only the header block goes to its model). No senders / domains: no email matches.
+    channel: CHANNELS.FLIPKART_QCOM,
+    ocrChannel: OCR_CHANNELS[CHANNELS.FLIPKART_QCOM],
+    senders: [],
+    domains: [],
+    files: { sheet: /\.xlsx?$/i },
+  },
 ];

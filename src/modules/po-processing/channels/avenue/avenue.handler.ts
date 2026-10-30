@@ -2,6 +2,7 @@ import { CHANNELS, PoWarning, poWarning, WARNING_CODES } from '../../../../const
 import { noDiscountAmounts } from '../../common/amounts';
 import { applyMapping, emptyLine, leftover, markRawSources } from '../../common/apply-mapping';
 import { pincodeFrom, text, toDate, toNumber } from '../../common/parse';
+import { ourNames } from '../../common/our-names';
 import { Num, ProcessedPo } from '../../common/processed-po';
 import { unstack } from '../../common/stacked';
 import { basePo, ChannelHandler, finishSources, PoContext } from '../channel-handler';
@@ -82,20 +83,6 @@ export const avenueHandler: ChannelHandler = {
     finishSources(po);
     return po;
   },
-};
-
-const squash = (s: string): string => s.toLowerCase().replace(/[^a-z0-9%]/g, '');
-
-/** The raw fields with the OCR's names turned into ours (compared without case, spaces or punctuation); others kept. */
-const ourNames = (raw: Record<string, string>, names: Record<string, string[]>): Record<string, string> => {
-  const ours = new Map<string, string>();
-  for (const [name, aliases] of Object.entries(names)) for (const a of [name, ...aliases]) if (!ours.has(squash(a))) ours.set(squash(a), name);
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(raw)) {
-    const name = ours.get(squash(key)) ?? key;
-    if (!(name in out) || !text(out[name])) out[name] = value;
-  }
-  return out;
 };
 
 /** A dash ("-") is Avenue's empty cell. */
