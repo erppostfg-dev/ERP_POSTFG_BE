@@ -194,6 +194,8 @@ export interface PoReviewLine {
   poLineValue: Num;
   /** Ours, from the master ("" when the SKU is not mapped). */
   pepCode: string;
+  /** The code the sale order is punched with: the _S code of a combo when our master has it, else pepCode. */
+  punchCode: string;
   skuName: string;
   ourMrp: Num;
   ourRate: Num;
@@ -379,6 +381,7 @@ export const getPoReview = async (uploadId: string): Promise<PoReviewDetail> => 
         poUnitPrice: v?.poUnitPrice ?? l.landing_rate,
         poLineValue: v?.poLineValue ?? l.line_total,
         pepCode: v?.pepCode ?? '',
+        punchCode: v?.punchCode || v?.pepCode || '',
         skuName: v?.skuName ?? '',
         ourMrp: v?.ourMrp ?? '',
         ourRate: v?.ourRate ?? '',

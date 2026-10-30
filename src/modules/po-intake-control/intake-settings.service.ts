@@ -1,4 +1,4 @@
-import { Not } from 'typeorm';
+import { In, IsNull, Not } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
 import {
   CHANNEL_MASTER_IDS, CHANNELS, ChannelName, CatchupStatus, ERROR_CODES, IST_OFFSET_MS, PO_INTAKE, UPLOAD_SOURCE, UPLOAD_STATUS,
@@ -117,7 +117,8 @@ export const processFromOf = async (channel: string): Promise<Date | null> => {
 
 /**
  * Before OCR (2026-10-23, user: "check the PO is in our system before processing, to save OCR cost"): a PO number read
- * from the email subject that POST_FG already has for this channel (a PO upload not failed, or a saved PO).
+ * from the email subject that POST_FG already has for this channel (a PO upload not failed, one still waiting for OCR
+ * whose email subject names the same PO, or a saved PO).
  */
 export const alreadyHavePo = async (channel: string, poNumber: string): Promise<string | null> => {
   const name = (await displayNames()).get(channel) ?? channel;
@@ -125,6 +126,18 @@ export const alreadyHavePo = async (channel: string, poNumber: string): Promise<
     where: { channel: name, poNumber, status: Not(UPLOAD_STATUS.FAILED) }, order: { id: 'DESC' },
   });
   if (row) return `upload ${row.id} (${row.status})`;
+  // An upload still waiting for OCR has no po_number yet (OCR fills it): its email subject names the PO (backlog B2,
+  // 2026-10-30: a re-send or a catch-up overlapping a live email was OCR'd twice).
+  const subjectPo = channelConfigs.find((c) => c.channel === channel)?.poNumber;
+  if (subjectPo) {
+    const waiting = await AppDataSource.getRepository(PoUpload).find({
+      select: ['id', 'status', 'emailSubject'],
+      where: { channel: name, poNumber: IsNull(), status: In([UPLOAD_STATUS.QUEUED, UPLOAD_STATUS.HELD, UPLOAD_STATUS.EXTRACTING]) },
+      order: { id: 'DESC' },
+    });
+    const same = waiting.find((w) => w.emailSubject?.match(subjectPo)?.[1] === poNumber);
+    if (same) return `upload ${same.id} (${same.status}, waiting for OCR)`;
+  }
   const saved = await AppDataSource.getRepository(MasterPurchaseOrder).findOne({ select: ['uid'], where: { channel: name, poNumber } });
   return saved ? `saved PO ${saved.uid}` : null;
 };
