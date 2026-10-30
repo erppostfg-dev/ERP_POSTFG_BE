@@ -8,9 +8,11 @@ import { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity
 import { AppDataSource } from '../../config/data-source';
 import { env } from '../../config/env';
 import {
+  blockingMissing,
   COMBO_CHECK,
   ERROR_CODES,
   errorMessage,
+  type FacilityGroups,
   INPUT_BY_NAME,
   INTRANSIT_FOLDERS,
   INTRANSIT_INVENTORY_FILE,
@@ -22,6 +24,7 @@ import {
   INTRANSIT_SOURCE,
   INTRANSIT_TEMPLATE_NAME,
   IntransitRunKind,
+  MAIL_FILE_NAMES,
   IntransitSource,
   PEPIMS_CONNECTOR,
 } from '../../constants';
@@ -53,7 +56,7 @@ import { SELLER_HUB_KEYS } from './sources/flipkart-seller-hub';
 import { MYNTRA_KEYS } from './sources/myntra-partner-portal';
 import { fetchPepimsTracker, PEPIMS_FILES } from './sources/pepims';
 import { UNIWARE_KEYS } from './sources/uniware';
-import { uniwareConfig } from './uniware-facilities';
+import { facilityGroups, uniwareConfig } from './uniware-facilities';
 import { LOG_SOURCE } from '../../constants/logging';
 import { logError } from '../../utils/classify-error';
 import { logContext } from '../../utils/log-context';
@@ -208,7 +211,7 @@ export const runFilePath = async (id: string, name: string): Promise<string> => 
   const result = (run.result ?? {}) as { saved?: string[]; rejected?: Record<string, string[]> };
   const names = [...(result.saved ?? []), ...Object.keys(result.rejected ?? {})];
   // a report run: only the combo-check files written next to its workbook
-  if (run.kind === INTRANSIT_RUN_KIND.REPORT) names.splice(0, names.length, COMBO_CHECK.ALERT_FILE, COMBO_CHECK.SPLIT1_ROWS_FILE);
+  if (run.kind === INTRANSIT_RUN_KIND.REPORT) names.splice(0, names.length, COMBO_CHECK.ALERT_FILE, COMBO_CHECK.SPLIT1_ROWS_FILE, ...MAIL_FILE_NAMES);
   if (!names.includes(name)) throw appError(ERROR_CODES.INTRANSIT_RUN_FILE_UNKNOWN, id, name);
   const file = path.join(run.kind === INTRANSIT_RUN_KIND.REPORT ? runDir(id) : exportDir(run.kind, id), name);
   if (!fs.existsSync(file)) throw appError(ERROR_CODES.INTRANSIT_FILE_NOT_FOUND, name);
@@ -282,12 +285,13 @@ const enqueue = (lane: string, id: string): void => {
   chains.set(lane, next);
 };
 
-const reportSettings = (dir: string, asOf: string, fromDate: string | null): IntransitSettings => ({
+const reportSettings = (dir: string, asOf: string, fromDate: string | null, groups: FacilityGroups): IntransitSettings => ({
   inputDir: path.join(dir, 'input'),
   templateXlsx: path.join(dir, 'input', INTRANSIT_TEMPLATE_NAME),
   outputDir: dir,
   asOf,
   fromDate,
+  facilityGroups: groups,
 });
 
 export interface Requester {
@@ -500,7 +504,8 @@ const forwards = new Map<string, (line: string) => void>();
 const snapshotInputs = async (dir: string, asOf: string) => {
   const into = path.join(dir, 'input');
   await fsp.mkdir(into, { recursive: true });
-  const { files, missing } = await resolveInputs(asOf);
+  const { files, missing: allMissing } = await resolveInputs(asOf);
+  const missing = blockingMissing(allMissing);
   if (missing.length) throw new Error(`no copy of ${missing.join(', ')} for ${asOf}`);
   for (const f of files) await fsp.copyFile(f.path, path.join(into, f.name));
   // INTRANSIT_MASTERS_SOURCE=db: the masters come from the database instead of the files (same names and shape)
@@ -671,7 +676,7 @@ const execute = async (id: string): Promise<void> => {
       const combo = { uniware: missingConnectorKeys(INTRANSIT_SOURCE.UNIWARE).length ? null : env.intransit.uniware, cacheDir: caches };
       // every sheet as its own gzipped CSV too (previews read one sheet; the Daily Snapshot takes three of them)
       const result = (await runInWorker({
-        kind: 'report', settings: reportSettings(dir, run.asOf as string, (run.options?.fromDate as string | null | undefined) ?? null), combo, sheets: true,
+        kind: 'report', settings: reportSettings(dir, run.asOf as string, (run.options?.fromDate as string | null | undefined) ?? null, await facilityGroups()), combo, sheets: true,
       }, env.intransit.runTimeoutMs, onLog)) as PipelineResult & { comboCheck?: ComboCheckResult };
       let reportPath = relReportPath(result.reportPath);
       let files: Record<string, string> | null = null;
@@ -697,7 +702,7 @@ const execute = async (id: string): Promise<void> => {
         sheetRows: result.sheetRows,
         reportPath,
         result: {
-          comboCheck: result.comboCheck ?? null, inputsUsed, fetched, ...(snap ? { inputs: snap.inputsUsed, template: snap.template, files } : {}),
+          comboCheck: result.comboCheck ?? null, inputsUsed, fetched, warnings: result.warnings ?? [], whSummary: result.whSummary ?? [], ...(snap ? { inputs: snap.inputsUsed, template: snap.template, files } : {}),
         } as unknown as QueryDeepPartialEntity<IntransitRun>['result'],
       });
       // the week's and month's copies follow the newest build (live server)

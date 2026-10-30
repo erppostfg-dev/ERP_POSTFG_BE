@@ -8,6 +8,15 @@
 
 export const INTRANSIT_TEMPLATE_NAME = 'Intransit_Stock_Report.xlsx';
 export const INTRANSIT_REPORT_NAME = 'Intransit_Stock_Report_FINAL.xlsx';
+/**
+ * The in-transit mail's attachments (user, 2026-10-30), written next to each report: the stock per SKU and warehouse
+ * (Stock-01Oct'26.xlsx format) and the marketplace POs in transit (B2C-Format-Data-Planning-16Oct.xlsx format).
+ */
+export const MAIL_FILES = { STOCK: 'Stock.xlsx', B2C: 'B2C-Format-Data-Planning.xlsx' } as const;
+export const MAIL_FILE_NAMES: readonly string[] = Object.values(MAIL_FILES);
+/** Channels of the B2C attachment. */
+export const MARKETPLACE_CHANNELS = ['Amazon', 'Flipkart', 'Myntra'];
+
 /** SOH + in-transit per SKU x channel x location, written next to each report for Inventory Calculation. */
 export const INTRANSIT_INVENTORY_FILE = 'inventory.json';
 
@@ -61,6 +70,11 @@ export interface InputFile {
   fetchKey?: string;
   /** Fetched files: 'any-date' = can be fetched for a past date; 'today-only' = the API only gives the current state. */
   fetchable?: 'any-date' | 'today-only';
+  /**
+   * Not needed for the in-transit figures: a build without any copy goes on (the file's sheet then says so, and the
+   * build warns) instead of being blocked (Shelfwise Inventory, user 2026-10-29).
+   */
+  optional?: boolean;
 }
 
 /** Every input the pipeline needs: where it comes from and the columns it must have (input_catalog.py). */
@@ -134,12 +148,20 @@ export const INPUT_CATALOG: readonly InputFile[] = [
     name: 'Export-Inventory Snapshot.csv', group: 'daily-fetch', source: 'Uniware export: Inventory Snapshot', connector: 'uniware', fetchKey: 'inventory', fetchable: 'today-only',
     required: ['Facility', 'Item Type Name', 'Item SkuCode', 'Open Sale', 'Inventory', 'Putaway Pending', 'Stock In Transfer', 'Open Purchase'],
   },
+  // shown as exported on the Shelfwise_Inventory sheet (user, 2026-10-29); no stage reads its columns
+  {
+    name: 'Export-Shelfwise Inventory.csv', group: 'daily-fetch', source: 'Uniware export: Shelfwise Inventory', connector: 'uniware', fetchKey: 'shelfwise', fetchable: 'today-only',
+    optional: true, required: ['Facility', 'Item Type SKU Code', 'Shelf', 'Quantity'],
+  },
 ];
 
 export const INPUT_BY_NAME: ReadonlyMap<string, InputFile> = new Map(INPUT_CATALOG.map((f) => [f.name, f]));
 
 /** Every CSV the pipeline reads (the template is checked separately). */
-export const REQUIRED_INPUTS: readonly string[] = INPUT_CATALOG.filter((f) => f.name !== INTRANSIT_TEMPLATE_NAME).map((f) => f.name);
+export const REQUIRED_INPUTS: readonly string[] = INPUT_CATALOG.filter((f) => f.name !== INTRANSIT_TEMPLATE_NAME && !f.optional).map((f) => f.name);
+
+/** The inputs of `missing` a build cannot do without (optional ones left out). */
+export const blockingMissing = (missing: readonly string[]): string[] => missing.filter((n) => !INPUT_BY_NAME.get(n)?.optional);
 
 /** Kept once (masters) vs per date (daily). */
 export const isMasterInput = (name: string): boolean => INPUT_BY_NAME.get(name)?.group === INPUT_GROUP.MASTER;
@@ -156,6 +178,8 @@ const D2C_FACILITIES = [
   'HYP_SRGGN', 'HYP_SRKOL', 'mCaff_Mumbai2', 'mCaff_Gurgaon2', 'mCaff_Bangalore2', 'mCaff_Kolkata2', 'mCaff_Ahmedabad', 'mCaff_Hyderabad2',
   'mCaff_Guwahati', 'HYP_SRBGLR', 'HYP_AHMD', 'HYP_SRHYD', 'HYP_SRGWHT', 'HYP_SRLOK', 'mCaff_Gurgaon3', 'mCaff_Lucknow3', 'HYP_SRLOK2',
   'HYP_DLNAG', 'HYP_DLGWHT', 'mCaff_Lucknow2', 'Mcaff_Nagpur', 'mCaff_Guwahati2', 'HYP_SPCHN', 'Mcaff_Chennai',
+  // added in Uniware in Oct 2026; counted as stock from 30-Oct (their SOH was 0 before: not in this list)
+  'mCaff_Kolkata3', 'mCaff_Hyderabad3', 'HYP_BYHYD',
 ];
 const DARKSTORE_FACILITIES = [
   'DS_NCR_PD_MOTHERHUB', 'DS_NCR_PD_EASTDELHI_931', 'DS_NCR_PD_FARIDABAD', 'DS_NCR_PD_GHAZIABAD', 'DS_NCR_PD_HUMAYUNPUR_945',
@@ -164,19 +188,51 @@ const DARKSTORE_FACILITIES = [
 ];
 export const TEST_FACILITY = 'TEST_FACILITY';
 
-/** group -> [Channel type, facilities]. The order is the SOH row order. */
-export const FACILITY_GROUPS: readonly [string, string, readonly string[]][] = [
+/** [group, Channel type, facilities]: the stock a report counts. */
+export type FacilityGroups = readonly (readonly [string, string, readonly string[]])[];
+
+/**
+ * group -> [Channel type, facilities]. The order is the SOH row order. Since 30-Oct the server builds from
+ * master_facilities.intransit_group / intransit_type (Facility check); this list is the fallback where there is no
+ * database (the CLI build) and what the database was first filled from.
+ */
+export const FACILITY_GROUPS: FacilityGroups = [
   ['D2C', 'D2C', D2C_FACILITIES],
   ['DarkStore', 'DarkStore', DARKSTORE_FACILITIES],
   ['GGNMWH', 'MWH', ['GGN_WAREHOUSE', 'HYP_B2B_GGN']],
   ['MUMMWH', 'MWH', ['HYP_B2B_MUM2', 'MUM_WAREHOUSE2']],
+  // the Kolkata mother warehouse (Beyond-KOL), counted from 30-Oct; reported as KOLMWH (inventory FC_CHANNEL_OVERRIDE)
+  ['KOLMWH', 'MWH', ['KOL_WAREHOUSE']],
   ['Return', 'Return', ['Return_MUM2', 'Return_GGN']],
 ];
 
 /** lower-cased facility code -> group name */
-export const FACILITY_TO_GROUP: ReadonlyMap<string, string> = new Map(
-  FACILITY_GROUPS.flatMap(([group, , facs]) => facs.map((f) => [f.toLowerCase(), group] as [string, string])),
+export const facilityToGroup = (groups: FacilityGroups): ReadonlyMap<string, string> => new Map(
+  groups.flatMap(([group, , facs]) => facs.map((f) => [f.toLowerCase(), group] as [string, string])),
 );
+
+/**
+ * The stock buckets a facility can be put in from the Facility check (user, 2026-10-30): the groups the inventory
+ * stage has a units formula for, in FACILITY_GROUPS order. A facility in none of them is not counted as stock.
+ */
+export const STOCK_BUCKETS: readonly { group: string; type: string; label: string }[] = [
+  { group: 'D2C', type: 'D2C', label: 'D2C' },
+  { group: 'DarkStore', type: 'DarkStore', label: 'DarkStore' },
+  { group: 'GGNMWH', type: 'MWH', label: 'GGN MWH' },
+  { group: 'MUMMWH', type: 'MWH', label: 'MUM MWH' },
+  { group: 'KOLMWH', type: 'MWH', label: 'KOL MWH' },
+  { group: 'Return', type: 'Return', label: 'Return' },
+];
+
+/** The weekly check of Uniware's facilities against master_facilities (user, 2026-10-30). */
+export const FACILITY_CHECK = {
+  /** app_state key of the last check. */
+  STATE_KEY: 'intransit:facility-check',
+  /** Mondays (0 = Sunday), from this hour IST; the timer looks every hour. */
+  WEEKDAY: 1,
+  FROM_HOUR_IST: 9,
+  TICK_MS: 3_600_000,
+} as const;
 
 // ---- workbook (excel.py) ---------------------------------------------------------------------------------------
 
@@ -189,11 +245,13 @@ export const BASE_SHEETS: readonly [string, string, number, string, string][] = 
 
 /** Generated sheets appended after the template's, in this order: [sheet name, frame]. */
 export const EXTRA_SHEETS: readonly [string, string][] = [
+  ['WH_Summary', 'df_wh_summary'],
   ['Duplicate_PO_Report', 'df_dup_report'],
   ['Export_B2B_InTransit_Orders', 'df_b2b_intransit'],
   ['PO_Not_Found_in_Export_B2B', 'df_po_not_found'],
   ['Combined_InTransit_Units', 'df_combined_intransit'],
   ['Current_Inventory', 'df_current_inventory'],
+  ['Shelfwise_Inventory', 'df_shelfwise'],
   ['Combined_SOH_Intransit', 'df_combined_soh'],
   ['Channel_Location_Master', 'df_channel_location_master'],
   ['Missing_Items_Report', 'df_missing_items'],
@@ -259,6 +317,8 @@ export const INTRANSIT_ROUTES = {
   RUNS: '/runs',
   RUN: '/runs/:id',
   RUN_LOG: '/runs/:id/log',
+  RUN_MAIL: '/runs/:id/mail',
+  RUN_MAIL_SEND: '/runs/:id/mail/send',
   RUN_REPORT: '/runs/:id/report',
   CONNECTOR: '/connectors/:source',
   INVENTORY: '/inventory',
@@ -276,6 +336,10 @@ export const INTRANSIT_ROUTES = {
   SNAPSHOT_FILE: '/snapshot/file',
   PERIODS: '/periods',
   PERIOD_DOWNLOAD: '/periods/download',
+  FACILITY_CHECK: '/facility-check',
+  FACILITY_ADD: '/facility-check/add',
+  FACILITY_STOP: '/facility-check/stop',
+  FACILITY_IGNORE: '/facility-check/ignore',
 } as const;
 
 // ---- S3 storage (user, 2026-10-26; folders in modules/intransit/s3/layout.ts) ------------------------------------

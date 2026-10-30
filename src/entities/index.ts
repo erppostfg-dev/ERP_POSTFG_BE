@@ -16,6 +16,7 @@ export * from './intransit-channel-sku-map.entity';
 export * from './intransit-master-change.entity';
 export * from './intransit-run.entity';
 export * from './manual-upload.entity';
+export * from './mail-list.entities';
 export * from './master-change-log.entity';
 export * from './master-channel-sku.entity';
 export * from './master-appointment-remark.entity';

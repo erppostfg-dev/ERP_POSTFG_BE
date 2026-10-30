@@ -1,4 +1,3 @@
-import { FACILITY_GROUPS } from '../../../constants';
 import { Context, fmtInt } from '../context';
 import {
   canonValues, Col, fillna, Frame, keyOf, mapWith, pyStr, roundHalfEven, stripped, stripText as s, sum, toNumber, toNumeric, unquoted,
@@ -110,7 +109,7 @@ const marketplaceSoh = async (ctx: Context, skuMap: Map<string, string>): Promis
   return out;
 };
 
-const facilitySoh = (ex: Frame): Part[] => {
+const facilitySoh = (ctx: Context, ex: Frame): Part[] => {
   const inv = numCol(ex, 'Inventory');
   const putw = numCol(ex, 'Putaway Pending');
   const opur = numCol(ex, 'Open Purchase');
@@ -122,10 +121,15 @@ const facilitySoh = (ex: Frame): Part[] => {
     DarkStore: (i) => inv[i] + putw[i] + opur[i] + sit[i] - osal[i],
     GGNMWH: (i) => inv[i] + putw[i] + opur[i] + sit[i],
     MUMMWH: (i) => inv[i] + putw[i] + opur[i] + sit[i],
+    KOLMWH: (i) => inv[i] + putw[i] + opur[i] + sit[i],
     Return: (i) => inv[i], // returned stock physically held: bare Inventory only
   };
   const out: Part[] = [];
-  for (const [group, ctype, facs] of FACILITY_GROUPS) {
+  for (const [group, ctype, facs] of ctx.facilityGroups) {
+    if (!units[group]) {
+      ctx.warn(`stock bucket ${group} has no units formula: ${facs.join(', ')} not counted`);
+      continue;
+    }
     const lowerFacs = new Set(facs.map((f) => f.toLowerCase()));
     const idx = facl.flatMap((f, i) => (lowerFacs.has(f) ? [i] : []));
     if (!idx.length) continue;
@@ -196,7 +200,7 @@ export const run = async (ctx: Context): Promise<void> => {
   const exFac = s(ex.get('Facility'));
   ex = ex.assign({ _fac: exFac, _facl: lowerAll(exFac) });
 
-  const parts = [...(await marketplaceSoh(ctx, skuMap)), ...facilitySoh(ex)];
+  const parts = [...(await marketplaceSoh(ctx, skuMap)), ...facilitySoh(ctx, ex)];
   let soh = Frame.concat(parts.map((p) => p.frame));
   const skuMissing = parts.flatMap((p) => p.skuMissing);
   const facMissing = parts.flatMap((p) => p.facMissing);

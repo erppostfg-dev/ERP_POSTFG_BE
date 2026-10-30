@@ -104,6 +104,9 @@ export const TABLES = {
   INTAKE_EMAILS: 'intake_emails',
   /** Small server state kept across deploys, e.g. the Gmail sync point and the in-transit caches (2026-10-23). */
   APP_STATE: 'app_state',
+  /** Mailing lists (2026-10-30; constants/mail-lists.ts): a mail switched on / off, and who gets each mail. */
+  MAIL_LIST_SETTINGS: 'mail_list_settings',
+  MAIL_RECIPIENTS: 'mail_recipients',
 } as const;
 
 /** master_sku_components.stage: which split file a combo's parts come from (the report splits in two stages). */
