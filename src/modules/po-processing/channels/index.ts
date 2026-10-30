@@ -1,4 +1,5 @@
 import { ChannelName } from '../../../constants/channels';
+import { avenueHandler } from './avenue/avenue.handler';
 import { bigbasketHandler } from './bigbasket/bigbasket.handler';
 import { blinkitHandler } from './blinkit/blinkit.handler';
 import { ChannelHandler } from './channel-handler';
@@ -24,4 +25,6 @@ export const channelHandlers: Partial<Record<ChannelName, ChannelHandler>> = {
   [relianceHandler.channel]: relianceHandler,
   [tata1mgHandler.channel]: tata1mgHandler,
   [nykaaHandler.channel]: nykaaHandler,
+  // Built from the PDF text of 4502349805 (2026-10-30), not yet from a real OCR output: check the first run.
+  [avenueHandler.channel]: avenueHandler,
 };

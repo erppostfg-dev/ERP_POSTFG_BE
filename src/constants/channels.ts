@@ -19,6 +19,8 @@ export const CHANNELS = {
   NYKAA: 'nykaa',
   /** Flipkart scheduled consignments, read from Seller Hub by our robot (no email, no OCR; 2026-10-30). */
   FLIPKART: 'flipkart',
+  /** Avenue E-Commerce (DMart): its PO PDF, by Manual Upload only (no email; read by the OCR; 2026-10-30). */
+  AVENUE: 'avenue',
 } as const;
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS];
@@ -46,4 +48,5 @@ export const OCR_CHANNELS: Record<ChannelName, string> = {
   [CHANNELS.NYKAA]: 'nykaa',
   /** Not OCR'd: Flipkart consignments come from Seller Hub. */
   [CHANNELS.FLIPKART]: 'flipkart',
+  [CHANNELS.AVENUE]: 'avenue',
 };

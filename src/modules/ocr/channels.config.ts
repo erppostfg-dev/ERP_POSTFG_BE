@@ -187,4 +187,14 @@ export const channelConfigs: ChannelConfig[] = [
     reader: 'sheet',
     manyPosPerFile: true,
   },
+
+  {
+    // Avenue E-Commerce (DMart, 2026-10-30): the PO PDF ("Purchase Order 4502349805", lines printed on two rows) by
+    // Manual Upload only; read by the OCR (channels.json "avenue", expects pdf). No senders / domains: no email matches.
+    channel: CHANNELS.AVENUE,
+    ocrChannel: OCR_CHANNELS[CHANNELS.AVENUE],
+    senders: [],
+    domains: [],
+    files: { pdf: /\.pdf$/i },
+  },
 ];

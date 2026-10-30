@@ -42,6 +42,7 @@ export const CHANNEL_TOLERANCES: Record<ChannelName, Tolerance> = {
   [CHANNELS.TATA1MG]: DEFAULT_TOLERANCE,
   [CHANNELS.NYKAA]: DEFAULT_TOLERANCE,
   [CHANNELS.FLIPKART]: DEFAULT_TOLERANCE,
+  [CHANNELS.AVENUE]: DEFAULT_TOLERANCE,
 };
 
 /**
@@ -60,6 +61,8 @@ export const CHANNEL_MASTER_IDS: Record<ChannelName, number> = {
   [CHANNELS.TATA1MG]: 11,
   [CHANNELS.NYKAA]: 6,
   [CHANNELS.FLIPKART]: 8,
+  /** "Avenue E-Commerce" (DMart). */
+  [CHANNELS.AVENUE]: 15,
 };
 
 /**
@@ -88,6 +91,8 @@ export const CHANNEL_LOCATION_MATCH: Record<ChannelName, LocationMatch> = {
   [CHANNELS.NYKAA]: LOCATION_MATCH.CODE_THEN_PINCODE,
   /** The consignment's Warehouse Id (ahm_khe_wh_nl_01nl ...) = channel_location_code. */
   [CHANNELS.FLIPKART]: LOCATION_MATCH.CODE_THEN_PINCODE,
+  /** No site code on the PO: the Ship To pincode (two locations share 421302 on 30 Oct: the reviewer picks). */
+  [CHANNELS.AVENUE]: LOCATION_MATCH.PINCODE,
 };
 
 /** Result of validating one PO. */
