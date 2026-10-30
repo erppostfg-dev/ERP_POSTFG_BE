@@ -37,12 +37,12 @@ const channelRow = async (channel: string) =>
 
 /** A BigBasket PO email as the Gmail label router sends it. */
 let seq = 0;
-const sendEmail = (o: { po?: string; from?: string; receivedAt?: string; messageId?: string; files?: boolean; secret?: string; label?: string | null } = {}) => {
+const sendEmail = (o: { po?: string; from?: string; receivedAt?: string; messageId?: string; files?: boolean; secret?: string; label?: string | null; revised?: boolean } = {}) => {
   seq += 1;
   const po = o.po ?? `IRA9100000${seq}`;
   const req = api().post(`${V}/po-intake/email`).set('X-Webhook-Secret', o.secret ?? SECRET)
     .field('from', o.from ?? 'alerts@bigbasket.com')
-    .field('subject', `Big Basket WMS-Test-FC PO Details: PO No ${po} Pep Technologies Pvt Ltd`)
+    .field('subject', `Big Basket WMS-Test-FC PO Details: PO No ${po} Pep Technologies Pvt Ltd${o.revised ? ' (Revised)' : ''}`)
     .field('messageId', o.messageId ?? `<intake-${seq}-${po}@bigbasket.com>`)
     .field('provider', 'gmail-pubsub')
     .field('receivedAt', o.receivedAt ?? '2026-10-27T05:00:00.000Z');
@@ -193,15 +193,27 @@ describe('the email webhook', () => {
     expect((await uploadsOf('IRA91000450')).map((u) => u.status)).toEqual(['completed']);
   });
 
-  // KNOWN GAP (backlog 4ae, found by this test 2026-10-28): a PO waiting for OCR has no po_number yet, so the same PO
-  // in a second email (re-send, or a catch-up overlapping a live email) is queued and OCR'd twice (validation then
-  // flags DUPLICATE_PO: no second sale order, but double OCR cost). `it.fails` passes while the gap exists and FAILS
-  // once it is fixed: then turn it into a normal `it`.
-  it.fails('KNOWN GAP: the same PO in a second email while the first waits for OCR is queued again', async () => {
+  // Backlog B2 (found by this test 2026-10-28 as a KNOWN GAP, fixed 2026-10-30): a PO waiting for OCR has no po_number
+  // yet, so the same PO in a second email (re-send, or a catch-up overlapping a live email) was queued and OCR'd twice.
+  // Now the waiting upload's email subject names the PO: the second email is not taken.
+  it('the same PO in a second email while the first waits for OCR is not taken again', async () => {
     await setChannel('bigbasket', { enabled: true, processFrom: '2026-10-25T00:00:00.000Z' }).expect(200);
     await sendEmail({ po: 'IRA91000400' }).expect(202);
     await sendEmail({ po: 'IRA91000400', messageId: '<other-mail@bigbasket.com>' }).expect(202);
     expect((await uploadsOf('IRA91000400')).map((u) => u.status)).toEqual(['queued']);
+  });
+
+  it('...also when the first one is held (channel over its limit), not for another PO, and a revised PO still comes in', async () => {
+    await setChannel('bigbasket', { enabled: true, dailyLimit: 1, processFrom: '2026-10-25T00:00:00.000Z' }).expect(200);
+    await sendEmail({ po: 'IRA91000410' }).expect(202); // queued (today's 1)
+    await sendEmail({ po: 'IRA91000411' }).expect(202); // held
+    await sendEmail({ po: 'IRA91000411', messageId: '<resend-411@bigbasket.com>' }).expect(202); // same as the held one
+    expect((await uploadsOf('IRA91000411')).map((u) => u.status)).toEqual(['held']);
+    await setChannel('bigbasket', { dailyLimit: null }).expect(200);
+    await sendEmail({ po: 'IRA91000412' }).expect(202); // another PO: taken
+    expect((await uploadsOf('IRA91000412')).map((u) => u.status)).toEqual(['queued']);
+    await sendEmail({ po: 'IRA91000410', revised: true, messageId: '<revised-410@bigbasket.com>' }).expect(202); // revised: taken
+    expect((await uploadsOf('IRA91000410')).map((u) => u.status).sort()).toEqual(['queued', 'queued']);
   });
 
   it('daily limit: over today\'s limit the next PO is held', async () => {
