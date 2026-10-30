@@ -8,6 +8,7 @@ import {
   INTRANSIT_REPORT_NAME,
   INTRANSIT_RUN_KIND,
   INTRANSIT_RUN_STATUS,
+  MAIL_FILE_NAMES,
   SHEET_FRAMES,
 } from '../../constants';
 import { IntransitRun } from '../../entities';
@@ -44,6 +45,8 @@ export interface StoredBlob {
   key: string;
   /** stream() gives gzip bytes (a report sheet's stored .csv.gz). */
   gzip?: boolean;
+  /** The S3 object holding exactly these bytes, when there is one (a download can then be a direct S3 link). */
+  s3Key?: string;
   read(): Promise<Uint8Array>;
   stream(): Promise<NodeJS.ReadableStream>;
 }
@@ -65,7 +68,7 @@ const s3Blob = async (key: string, name: string, gone: () => Error = () => appEr
   const h = await head(key);
   if (!h) throw gone();
   return {
-    name, size: h.size, modified: h.modified, key: `s3:${key}`,
+    name, size: h.size, modified: h.modified, key: `s3:${key}`, s3Key: key,
     read: async () => {
       const bytes = await getBytes(key);
       if (!bytes) throw gone();
@@ -118,7 +121,7 @@ export const runFileBlob = async (id: string, name: string): Promise<StoredBlob>
   let key: string | null = null;
   if (run.kind === INTRANSIT_RUN_KIND.REPORT) {
     const base = reportDirOf(run);
-    if (base && (name === COMBO_CHECK.ALERT_FILE || name === COMBO_CHECK.SPLIT1_ROWS_FILE)) key = `${base}${name}`;
+    if (base && (name === COMBO_CHECK.ALERT_FILE || name === COMBO_CHECK.SPLIT1_ROWS_FILE || MAIL_FILE_NAMES.includes(name))) key = `${base}${name}`;
   } else {
     key = ((run.result ?? {}) as { files?: Record<string, string> }).files?.[name] ?? null;
   }

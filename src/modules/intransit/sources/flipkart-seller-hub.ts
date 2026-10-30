@@ -3,7 +3,7 @@ import path from 'path';
 import type { Browser, BrowserContext, Download, Page } from 'playwright';
 import { waitForOtp } from '../../email-intake/otp-mail';
 import { Log, sleep } from './http';
-import { downloadEach, LIGHT_ARGS, RobotFile, skipHeavyContent } from './robot-files';
+import { downloadEach, RobotFile } from './robot-files';
 
 /*
  * Flipkart Seller Hub robot (port of intransit-service/intransit/sources/flipkart_rpa.py; user, 2026-10-28): a
@@ -71,7 +71,8 @@ const openBrowser = async (cfg: SellerHubConfig, sessionFile: string): Promise<{
     ignoreDefaultArgs: ['--enable-automation'],
     // --disable-dev-shm-usage: Docker's 64 MB /dev/shm is too small for Chromium (it crashes on big pages)
     // --disable-gpu: headless has no GPU to use anyway, and Seller Hub has no bot check that looks at it
-    args: ['--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage', '--disable-gpu', ...LIGHT_ARGS],
+    // not LIGHT_ARGS (30-Oct): Current Inventory stopped being prepared with them (see withSellerHub)
+    args: ['--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage', '--disable-gpu'],
   });
   const platform = process.platform === 'win32' ? 'Windows NT 10.0; Win64; x64' : process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10_15_7' : 'X11; Linux x86_64';
   const major = browser.version().split('.')[0];
@@ -142,15 +143,24 @@ const downloadSoh = async (page: Page, log: Log): Promise<Uint8Array> => {
   // the button's name starts with icon-font characters, so match only its end
   await page.getByRole('button', { name: /Report\s*$/ }).first().click();
   await page.getByText('Current Inventory').first().click();
-  const link = page.getByTestId('custom-select-child-').getByText('download').first();
+  const items = page.getByTestId('custom-select-child-');
+  const link = items.getByText('download').first();
+  // what the Download Ready list shows (30-Oct: logged so a file that never gets ready can be told from a list that
+  // never opens or a request that never started)
+  const listed = async (): Promise<string> => {
+    const texts = (await items.allInnerTexts().catch(() => [] as string[])).map((t) => t.replace(/\s+/g, ' ').trim()).filter(Boolean);
+    return texts.length ? texts.slice(0, 6).join(' | ') : '(empty, or the list did not open)';
+  };
+  let last = '';
   for (let i = 1; i <= SOH_POLLS; i++) {
     await sleep(SOH_POLL_MS);
     await page.locator('[class*="CaretIcon"]').first().click(); // open the Download Ready list
     if (await link.waitFor({ state: 'visible', timeout: 10_000 }).then(() => true, () => false)) return downloadBy(page, () => link.click(), log);
-    log(`  Current Inventory still being prepared (${(i * SOH_POLL_MS) / 1000} s)`);
+    last = await listed();
+    log(`  Current Inventory still being prepared (${(i * SOH_POLL_MS) / 1000} s)${i === 1 || i % 5 === 0 ? ` - Download Ready list: ${last}` : ''}`);
     await page.keyboard.press('Escape');
   }
-  throw new Error(`Current Inventory not ready after ${(SOH_POLLS * SOH_POLL_MS) / 60_000} min - Seller Hub may be slow; fetch again`);
+  throw new Error(`Current Inventory not ready after ${(SOH_POLLS * SOH_POLL_MS) / 60_000} min (Download Ready list: ${last}) - Seller Hub may be slow; fetch again`);
 };
 
 /** Inventory > Consignment > Bulk Consignment File (also read by the Flipkart consignments robot, channel-api/flipkart). */
@@ -210,7 +220,8 @@ export const withSellerHub = async <T>(cfg: SellerHubConfig, cacheDir: string, l
   try {
     await ensureLogin(page, context, cfg, sessionFile, log);
     await closePopups(page, log); // after login: the OTP step must never be dismissed
-    await skipHeavyContent(context);
+    // No skipHeavyContent here (30-Oct): with pictures / fonts blocked and the lighter browser, Seller Hub never
+    // finished preparing Current Inventory (10 min x 2 on dev); it was ready in about a minute without them (28-Oct).
     return await work(page);
   } catch (err) {
     log(`  Seller Hub page when it failed: ${await pageState(page)}`);

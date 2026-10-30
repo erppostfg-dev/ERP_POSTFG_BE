@@ -1,4 +1,4 @@
-import { FACILITY_TO_GROUP, TEST_FACILITY } from '../../../constants';
+import { facilityToGroup, TEST_FACILITY } from '../../../constants';
 import { Context, fmtInt } from '../context';
 import { Cell, countTrue, fillna, Frame, keyOf, mapWith, not, pyStr, pyStrip, stripped, toNum } from '../frame';
 import { stripCols } from '../io';
@@ -99,7 +99,7 @@ const purchaseOrders = async (ctx: Context): Promise<Frame> => {
     'Entry Date': po.get('Created'),
     'PO Date': po.get('Created'),
     Facility: fac,
-    Channel: fillna(mapWith(fac.map((f) => f.toLowerCase()), FACILITY_TO_GROUP), fac),
+    Channel: fillna(mapWith(fac.map((f) => f.toLowerCase()), facilityToGroup(ctx.facilityGroups)), fac),
     Location: fac,
     'PO Number': stripped(po.get('PO Code')),
     'SKU Name': po.get('Item Type Name'),
