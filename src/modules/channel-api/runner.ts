@@ -87,10 +87,13 @@ const writeFolder = async (c: ChannelConnector, po: ExternalPo, master: Awaited<
     externalStatus: po.status,
     subject: po.label,
     receivedAt: `${po.createdAt}T00:00:00.000Z`,
+    // a robot's own download (Flipkart's consignment CSV): the PO's original file on the screens (2026-10-30)
+    ...(po.files?.length ? { sourceFile: path.basename(po.files[0].name) } : {}),
     storedAt: new Date().toISOString(),
   };
   await fs.writeFile(metaFile, `${JSON.stringify(meta, null, 2)}\n`);
   await fs.writeFile(path.join(folder, FILES.API_RAW), `${JSON.stringify(po.rawFull, null, 2)}\n`);
+  for (const f of po.files ?? []) await fs.writeFile(path.join(folder, path.basename(f.name)), f.text);
   await fs.writeFile(path.join(folder, FILES.PROCESSED), `${JSON.stringify(c.toProcessed(po, master), null, 2)}\n`);
   await syncEmailToS3(folder); // before the chain: the review screen reads processed.json from S3
   return folder;
@@ -167,6 +170,12 @@ export const runConnector = async (c: ChannelConnector, opts: RunOptions): Promi
       item.error = (err instanceof Error ? err.message : String(err)).slice(0, CHANNEL_API.ERROR_MAX);
       failed.push(ref.externalId);
     }
+  }
+
+  // the connector's own "taken" mark (Flipkart's fetched consignments): made a PO, held, or already one
+  if (opts.apply && c.markTaken) {
+    const taken = items.filter((i) => i.decision === 'exists' || (i.result && !i.error && i.result !== 'off' && i.result !== 'before start' && !i.result.startsWith('not taken')));
+    await c.markTaken(taken.map((i) => i.externalId));
   }
 
   if (opts.saveCheckpoint) {

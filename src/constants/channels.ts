@@ -17,6 +17,8 @@ export const CHANNELS = {
   TATA1MG: 'tata1mg',
   /** Nykaa: the vendor portal's "Purchase Orders" CSV, by Manual Upload only (no email, no OCR; 2026-10-27). */
   NYKAA: 'nykaa',
+  /** Flipkart scheduled consignments, read from Seller Hub by our robot (no email, no OCR; 2026-10-30). */
+  FLIPKART: 'flipkart',
 } as const;
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS];
@@ -42,4 +44,6 @@ export const OCR_CHANNELS: Record<ChannelName, string> = {
   [CHANNELS.TATA1MG]: 'tata1mg',
   /** Not OCR'd: its CSV is read by our sheet reader (channels.config reader: 'sheet'). */
   [CHANNELS.NYKAA]: 'nykaa',
+  /** Not OCR'd: Flipkart consignments come from Seller Hub. */
+  [CHANNELS.FLIPKART]: 'flipkart',
 };

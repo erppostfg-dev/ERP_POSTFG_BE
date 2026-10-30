@@ -12,6 +12,7 @@ import { storageOn, storageProblems, writeScope } from './modules/intransit/s3/s
 import { expireStaleRuns, recoverRuns } from './modules/intransit/runs.service';
 import { applyResume, planResume } from './modules/po-pipeline/resume.service';
 import { startChannelApis } from './modules/channel-api/scheduler';
+import { startRobotSchedule } from './modules/channel-api/flipkart/consignments.service';
 import { resumeManualQueue } from './modules/manual-upload/manual-upload.service';
 import { recheckInReview } from './modules/po-review/recheck.service';
 import { holdForIntake, kickRelease } from './modules/po-intake-control/intake-release.service';
@@ -97,6 +98,10 @@ const start = async (): Promise<void> => {
   if (env.channelApi.enabled && AppDataSource.isInitialized) channelApis = startChannelApis();
   else log.info(LOG_SOURCE.AMAZON, 'channel API connectors disabled (CHANNEL_API_ENABLED=false)');
 
+  // The Flipkart consignments robot's schedule (Channel Pulls, 2026-10-30): a due run starts by itself. Not on a laptop
+  // (laptop = code only; the dev EC2 owns the robots), not without a DB.
+  const robotSchedule = AppDataSource.isInitialized && !env.laptopMode ? startRobotSchedule() : undefined;
+
   // PO jobs worker (2026-10-26): with QUEUE_MODE=sqs + WORKER_IN_SERVER=true this process also takes the queued jobs;
   // otherwise the separate `npm run worker` does (EC2: its own pm2 process).
   const worker = usesSqs() && env.queue.workerInServer && AppDataSource.isInitialized ? startPoWorker() : undefined;
@@ -160,6 +165,7 @@ const start = async (): Promise<void> => {
     monitor.stop();
     await listener?.stop();
     channelApis?.stop();
+    robotSchedule?.stop();
     await worker?.stop();
     if (recheckTimer) clearInterval(recheckTimer);
     if (releaseTimer) clearInterval(releaseTimer);

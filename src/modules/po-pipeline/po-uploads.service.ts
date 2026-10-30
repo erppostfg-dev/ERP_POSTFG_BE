@@ -116,14 +116,16 @@ export const emailValues = async (folder: string, channelDisplayName: string | n
     path.join(folder, FILES.METADATA),
   )) ?? {};
   const run = await readJson<OcrRun>(path.join(folder, FILES.OCR_RESULT));
-  // A channel API PO (2026-10-16): no email and no OCR; the "file" is the API's own JSON.
+  // A channel API PO (2026-10-16): no email and no OCR; the "file" is the API's own JSON, or the file a robot downloaded
+  // (Flipkart's consignment CSV, metadata sourceFile; 2026-10-30: the JSON alone has no lines).
   if (meta.provider === PROVIDERS.CHANNEL_API) {
+    const file = meta.sourceFile ?? FILES.API_RAW;
     return {
       source: UPLOAD_SOURCE.API,
       channel: channelDisplayName,
-      fileName: FILES.API_RAW,
-      fileUrl: s3UrlFor(folder, meta, FILES.API_RAW),
-      fileType: extOf(FILES.API_RAW),
+      fileName: file,
+      fileUrl: s3UrlFor(folder, meta, file),
+      fileType: extOf(file),
       emailMessageId: meta.messageId ?? null,
       emailFrom: null,
       // The channel's name for the PO (Amazon: "FBA STA (28/09/2026 08:03)-DEL5"), shown / copied like an email subject.
@@ -182,7 +184,7 @@ const ocrSummary = async (folder: string, fp: FolderPo): Promise<Record<string, 
   const meta = (await readJson<EmailMetadata>(path.join(folder, FILES.METADATA))) ?? {};
   if (meta.provider === PROVIDERS.CHANNEL_API || (meta.structured && meta.sourceFile)) {
     return {
-      raw_output: s3UrlFor(folder, meta, meta.structured && meta.sourceFile ? meta.sourceFile : FILES.API_RAW),
+      raw_output: s3UrlFor(folder, meta, meta.sourceFile && (meta.structured || meta.provider === PROVIDERS.CHANNEL_API) ? meta.sourceFile : FILES.API_RAW),
       processed_json: s3UrlFor(folder, meta, fp.relPath),
       input_type: fp.po.input_type,
       source_system: meta.sourceSystem ?? null,

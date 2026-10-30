@@ -95,6 +95,11 @@ export const ERRORS = {
   MANUAL_FILES_MISSING: define(400, (channel: string, need: string, got: string) => `${channel} needs ${need} for one PO; got ${got}`),
   MANUAL_AMAZON_FILE: define(400, (name: string) => `${name} is not an Amazon shipment file: it needs "Shipment ID FBA…" at the top and the "Merchant SKU … Shipped" lines`),
   MANUAL_DUPLICATE: define(409, (id: string, where: string) => `${id} is already ${where}: it is not processed twice`),
+  // Channel Pulls (2026-10-30)
+  CHANNEL_PULL_NOT_CONFIGURED: define(409, (what: string) => `${what} is not set up on this server (its login is missing in the settings)`),
+  CHANNEL_PULL_NOT_FOUND: define(404, (key: string) => `No channel pull ${key}`),
+  CHANNEL_PULL_NO_ROBOT: define(400, (key: string) => `${key} has no robot to run (it is pulled by its API)`),
+  CHANNEL_PULL_RUNNING: define(409, (what: string) => `${what} is already running: wait for it to finish`),
   MANUAL_AMAZON_STATUS: define(409, (id: string, status: string) => `${id} is ${status} at Amazon: cancelled / deleted / closed shipments are not made into POs`),
   MANUAL_UPLOAD_NOT_FOUND: define(404, (id: string) => `No manual upload ${id}`),
   MANUAL_UPLOAD_WRONG_STATE: define(409, (id: string, status: string, action: string) => `Manual upload ${id} is ${status}: it cannot be ${action}`),

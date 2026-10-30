@@ -2,6 +2,8 @@ import { AppDataSource } from '../../config/data-source';
 import { CHANNEL_API } from '../../constants';
 import { recordRunFailure, runConnector } from './runner';
 import { CONNECTORS, TRACKERS } from './registry';
+import type { ChannelConnector } from './connector';
+import { pollMinutesOf } from './poll-schedule';
 import { LOG_SOURCE } from '../../constants/logging';
 import { log } from '../../utils/logger';
 import { logError } from '../../utils/classify-error';
@@ -20,6 +22,8 @@ const timers = new Map<string, NodeJS.Timeout>();
 const loops = new Map<string, () => Promise<void>>();
 const running = new Set<string>();
 const again = new Set<string>();
+/** When each connector's last run ended (the schedule counts from it). */
+const ended = new Map<string, number>();
 let stopped = false;
 
 /**
@@ -36,6 +40,45 @@ export const runChannelNow = (channel: string): void => {
   }
 };
 
+/**
+ * The page changed a connector's schedule: its waiting run is timed again from its last run's end (due now = at once).
+ * A run going on now picks the new schedule up when it ends.
+ */
+export const rescheduleConnector = async (c: ChannelConnector): Promise<void> => {
+  const loop = loops.get(c.key);
+  if (!loop || running.has(c.key) || stopped) return;
+  const wait = Math.max(0, (ended.get(c.key) ?? Date.now()) + (await pollMinutesOf(c)) * 60_000 - Date.now());
+  clearTimeout(timers.get(c.key));
+  timers.set(c.key, setTimeout(() => void loop(), wait));
+};
+
+/** A connector's run in progress (its timer's or a Process now). */
+export const isProcessing = (key: string): boolean => running.has(key);
+
+/**
+ * Process now (Channel Pulls, 2026-10-30): the connector's run at once. Started by the server (CHANNEL_API_ENABLED): its
+ * timer's run now (or right after the one going); not started (laptop, or polling off): one run here, never two at once.
+ * Returns at once; the run goes on in the background (its result: channel_api_sync, shown on the page).
+ */
+export const processNow = (c: ChannelConnector): 'started' | 'queued' => {
+  const loop = loops.get(c.key);
+  if (loop) {
+    if (running.has(c.key)) { again.add(c.key); return 'queued'; }
+    clearTimeout(timers.get(c.key));
+    void loop();
+    return 'started';
+  }
+  if (running.has(c.key)) return 'queued';
+  running.add(c.key);
+  void runJob(`channel-api-${c.key}`, () => runConnector(c, { apply: true, saveCheckpoint: true }))
+    .catch(async (err) => {
+      await recordRunFailure(c, err).catch(() => undefined);
+      logError(LOG_SOURCE.AMAZON, `[channel-api] ${c.key}: process now failed`, err);
+    })
+    .finally(() => running.delete(c.key));
+  return 'started';
+};
+
 export const startChannelApis = (): { stop: () => void } => {
   for (const c of CONNECTORS) {
     if (!c.configured()) {
@@ -45,7 +88,8 @@ export const startChannelApis = (): { stop: () => void } => {
     const loop = async (): Promise<void> => {
       if (stopped) return;
       running.add(c.key);
-      let wait = c.pollMinutes() * 60_000;
+      // the page's schedule (Channel Pulls), else the connector's default; read before each wait so a change applies
+      let wait = (await pollMinutesOf(c)) * 60_000;
       try {
         if (!AppDataSource.isInitialized) throw new Error('database not connected');
         const tracker = TRACKERS[c.key];
@@ -67,6 +111,7 @@ export const startChannelApis = (): { stop: () => void } => {
         logError(LOG_SOURCE.AMAZON, `[channel-api] ${c.key}: run failed (${failures} in a row), next try in ${Math.round(wait / 60_000)} min`, err);
       }
       running.delete(c.key);
+      ended.set(c.key, Date.now());
       if (again.delete(c.key)) wait = 0;
       if (!stopped) timers.set(c.key, setTimeout(() => void loop(), wait));
     };

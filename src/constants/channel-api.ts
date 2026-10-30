@@ -10,12 +10,15 @@ import { CHANNELS } from './channels';
 /** po_uploads.source_system and channel_api_sync.connector: which connector a PO came from. */
 export const SOURCE_SYSTEM = {
   AMAZON_SPAPI: 'amazon_spapi',
+  /** Flipkart Seller Hub, read by our robot (2026-10-30). */
+  FLIPKART_SELLER_HUB: 'flipkart_seller_hub',
 } as const;
 export type SourceSystem = (typeof SOURCE_SYSTEM)[keyof typeof SOURCE_SYSTEM];
 
 /** Shown next to "API" on the screens (e.g. "API · Amazon"). */
 export const SOURCE_SYSTEM_LABEL: Record<SourceSystem, string> = {
   [SOURCE_SYSTEM.AMAZON_SPAPI]: 'Amazon SP-API',
+  [SOURCE_SYSTEM.FLIPKART_SELLER_HUB]: 'Flipkart Seller Hub',
 };
 
 /** The scheduler: a connector that fails this many runs in a row waits longer (MAX_BACKOFF_MS at most) before retrying. */
@@ -79,4 +82,88 @@ export const AMAZON = {
   NAME_DATE: /\((\d{2})\/(\d{2})\/(\d{4})/,
   /** input_type in processed.json for an API PO. */
   INPUT_TYPE: 'api',
+} as const;
+
+/*
+ * Flipkart scheduled consignments (user, 2026-10-30; port of Kunal's rpa-channel-codes/flipkart_rpa): our stock sent to a
+ * Flipkart warehouse. One consignment = one PO, made a PO + sale order as soon as it is SCHEDULED (the robot reads the
+ * Scheduled tab only). The robot (modules/channel-api/flipkart, run as an In-transit job: one Seller Hub login, one
+ * browser job at a time) reads every row of the Scheduled table, downloads each NEW consignment's CSV (its lines) and
+ * the Bulk Consignment File (warehouse, creation date, status of every consignment). Each consignment is kept in
+ * channel_pull_items; the connector turns it into a PO like Amazon's (S3 channel-api/FY.../<month>/flipkart/<id>/).
+ * A consignment is taken once: a later change is not read again (user, 2026-10-30; backlog G6).
+ */
+export const FLIPKART = {
+  CHANNEL: CHANNELS.FLIPKART,
+  /** Seller Hub's Scheduled consignments list. */
+  SCHEDULED_URL: 'https://seller.flipkart.com/index.html#dashboard/fa/consignmentsView?stateView=scheduled',
+  /** One table row per consignment; its id shows as "ID: 205149496". */
+  ROWS: 'table tbody tr',
+  ROW_ID: /ID:\s*(\d+)/,
+  /** The 3-dots button in a row (its accessible name) and the menu option that downloads the consignment's CSV. */
+  MENU_BUTTON: 'icon',
+  MENU_ITEM: 'option-item-Download CSV-story',
+  MENU_OPTIONS: "[data-testid^='option-item-']",
+  /** Rows per page asked for (10 / 20 / 40 offered); every page is read anyway. */
+  PAGE_SIZE: '20',
+  /** The table footer: "1-16 of 16 items 1 of 1 pages". */
+  PAGER_ITEMS: /of\s+(\d+)\s+items/,
+  PAGER_PAGES: /of\s+(\d+)\s+pages/,
+  /** The consignment CSV's columns (by name; renamed / missing ones go to review, never guessed). */
+  CSV: {
+    NAME: 'Product Name',
+    FSN: 'FSN',
+    SKU_ID: 'SKU Id',
+    BRAND: 'Brand',
+    QTY_SENT: 'Quantity Sent',
+    QTY_RECEIVED: 'Quantity Received',
+    COST: 'Cost Price',
+  },
+  /** The Bulk Consignment File's columns (FK_GRN.csv, the same file the In-transit robot downloads). */
+  BULK: {
+    ID: 'Consignment Id',
+    CREATED: 'Creation Date',
+    WAREHOUSE: 'Warehouse Id',
+    STATUS: 'Consignment Status',
+    DISPATCH_TYPE: 'Dispatch Type',
+    PICKUP_DATE: 'Scheduled Pick Up Date',
+    DROP_DATE: 'Scheduled Drop In Date',
+    PROMISED_QTY: 'Promised Qty',
+  },
+  /** A consignment whose status matches this never becomes a PO. */
+  SKIP_STATUS: /CANCEL/i,
+  /** Minutes between the connector's looks at the fetched consignments (cheap: the DB only), FLIPKART_POLL_MINUTES overrides. */
+  POLL_MINUTES: 15,
+  /** A robot run at most this long (one browser job; then it is stopped and failed). */
+  ROBOT_TIMEOUT_MS: 30 * 60_000,
+  /** File names kept in the consignment's folder (and S3). */
+  CSV_FILE: (id: string) => `${id}.csv`,
+  INPUT_TYPE: 'rpa',
+  /** The In-transit worker's job kind for the robot (run-worker.ts). */
+  ROBOT_JOB: 'flipkart-consignments',
+  PO_TYPE: 'Flipkart consignment',
+} as const;
+/*
+ * Channel Pulls page (2026-10-30, user: replaces Amazon Inbound in the sidebar; one place for every channel pulled by API
+ * or robot, with buttons to pull and process). Same page key as Amazon Inbound (PAGE.AMAZON_INBOUND): nobody's access
+ * changes. Viewer reads; editor runs the robot, processes, sets the schedule.
+ */
+export const CHANNEL_PULLS = {
+  BASE: '/channel-pulls',
+  ROUTES: {
+    LIST: '/',
+    ITEMS: '/:key/items',
+    ROBOT: '/:key/robot',
+    PROCESS: '/:key/process',
+    SCHEDULE: '/:key/schedule',
+  },
+  BODY: { EVERY_HOURS: 'robotEveryHours' },
+  /** The schedule: every 1-24 hours, or null = only by Run now. */
+  MAX_EVERY_HOURS: 24,
+  /** How often the server looks whether a scheduled robot run is due. */
+  SCHEDULE_TICK_MS: 5 * 60_000,
+  /** app_state key of an API connector's poll schedule (null = its default). */
+  POLL_KEY: (key: string) => `channel-pull:${key}:poll`,
+  /** Recent consignments listed on the page. */
+  ITEMS_MAX: 200,
 } as const;

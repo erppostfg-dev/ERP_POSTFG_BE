@@ -153,8 +153,8 @@ const downloadSoh = async (page: Page, log: Log): Promise<Uint8Array> => {
   throw new Error(`Current Inventory not ready after ${(SOH_POLLS * SOH_POLL_MS) / 60_000} min - Seller Hub may be slow; fetch again`);
 };
 
-/** Inventory > Consignment > Bulk Consignment File. */
-const downloadGrn = async (page: Page, log: Log): Promise<Uint8Array> => {
+/** Inventory > Consignment > Bulk Consignment File (also read by the Flipkart consignments robot, channel-api/flipkart). */
+export const downloadGrn = async (page: Page, log: Log): Promise<Uint8Array> => {
   await openMenu(page, NAV_CONSIGNMENT);
   return downloadBy(page, () => page.getByRole('button', { name: /Bulk Consignment File/ }).click(), log);
 };
@@ -199,7 +199,11 @@ const closePopups = async (page: Page, log: Log): Promise<void> => {
   }, { noWaitAfter: true });
 };
 
-const withSellerHub = async <T>(cfg: SellerHubConfig, cacheDir: string, log: Log, work: (page: Page) => Promise<T>): Promise<T> => {
+/**
+ * Seller Hub with its saved login (renewed with the mailed OTP when expired) and popups handled; work gets the page.
+ * Also used by the Flipkart consignments robot (channel-api/flipkart, 2026-10-30): one login for both robots.
+ */
+export const withSellerHub = async <T>(cfg: SellerHubConfig, cacheDir: string, log: Log, work: (page: Page) => Promise<T>): Promise<T> => {
   const sessionFile = path.join(cacheDir, SESSION_FILE);
   const { browser, context } = await openBrowser(cfg, sessionFile);
   const page = await context.newPage();

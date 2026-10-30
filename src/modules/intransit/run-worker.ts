@@ -4,12 +4,14 @@ import path from 'path';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 import { createGzip } from 'zlib';
-import { IntransitSource, SHEET_FRAMES } from '../../constants';
+import { FLIPKART, IntransitSource, SHEET_FRAMES } from '../../constants';
+import { fetchScheduledConsignments } from '../channel-api/flipkart/consignments.robot';
 import { checkCombos } from './combo-check';
 import { ConnectorConfig, ConnectorDirs, ConnectorOptions, runConnector } from './connectors';
 import { IntransitSettings } from './context';
 import { runPipeline } from './pipeline';
 import { frameCsvChunks } from './sources/files';
+import { SellerHubConfig } from './sources/flipkart-seller-hub';
 import { UniwareConfig } from './sources/uniware';
 
 /*
@@ -23,7 +25,9 @@ export type WorkerJob =
   /** combo: the Uniware login for the combo check after the build (null = skipped), and where its cache lives. */
   /** sheets: also write each sheet as <outputDir>/sheets/<sheet>.csv.gz (sheet previews and the Daily Snapshot). */
   | { kind: 'report'; settings: IntransitSettings; combo: { uniware: UniwareConfig | null; cacheDir: string }; sheets?: boolean }
-  | { kind: IntransitSource; config: ConnectorConfig; dirs: ConnectorDirs; options: ConnectorOptions };
+  | { kind: IntransitSource; config: ConnectorConfig; dirs: ConnectorDirs; options: ConnectorOptions }
+  /** Flipkart scheduled consignments (channel-api/flipkart, 2026-10-30): the same Seller Hub login, one browser job at a time. */
+  | { kind: typeof FLIPKART.ROBOT_JOB; seller: SellerHubConfig; cacheDir: string; known: string[] };
 
 export type WorkerMessage = { type: 'log'; line: string } | { type: 'done'; result: unknown } | { type: 'error'; message: string };
 
@@ -56,6 +60,7 @@ const run = async (job: WorkerJob): Promise<unknown> => {
       .catch((err: unknown) => ({ status: 'failed' as const, reason: err instanceof Error ? err.message : String(err), checked: 0, combos: [], unknownInUniware: 0, lookedUp: 0 }));
     return { ...result, comboCheck };
   }
+  if (job.kind === FLIPKART.ROBOT_JOB) return fetchScheduledConsignments(job.seller, job.cacheDir, job.known, log);
   return runConnector(job.kind, job.config, job.dirs, job.options, log);
 };
 

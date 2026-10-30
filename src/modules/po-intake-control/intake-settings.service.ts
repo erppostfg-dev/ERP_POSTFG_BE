@@ -24,6 +24,8 @@ const intakeChannels = (): { channel: ChannelName; source: 'email' | 'api' }[] =
   // A channel with no senders (Nykaa) comes by Manual Upload only, which is never held: no switch for it here.
   ...channelConfigs.filter((c) => c.senders.length).map((c) => ({ channel: c.channel, source: 'email' as const })),
   { channel: CHANNELS.AMAZON, source: 'api' as const },
+  // Flipkart scheduled consignments, from the Seller Hub robot (2026-10-30): switched like Amazon
+  { channel: CHANNELS.FLIPKART, source: 'api' as const },
 ];
 
 /** po_uploads.channel holds master_channels.display_name. */

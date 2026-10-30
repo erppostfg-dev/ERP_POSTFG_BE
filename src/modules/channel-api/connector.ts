@@ -30,6 +30,8 @@ export interface ExternalPo extends ExternalRef {
   createdAt: string;
   /** Saved as api-raw.json, exactly as received. */
   rawFull: unknown;
+  /** Files kept next to it as they came (a robot's download, e.g. Flipkart's consignment CSV); also copied to S3. */
+  files?: { name: string; text: string }[];
 }
 
 export interface ChannelConnector {
@@ -52,4 +54,6 @@ export interface ChannelConnector {
   isReady(status: string): boolean;
   /** Never becomes a PO (cancelled, closed ...). */
   isSkipped(status: string): boolean;
+  /** Optional: told after an applied run which ids were taken (made a PO, held, or already one), not to list them as new again. */
+  markTaken?(externalIds: string[]): Promise<void>;
 }

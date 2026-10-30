@@ -41,6 +41,7 @@ export const CHANNEL_TOLERANCES: Record<ChannelName, Tolerance> = {
   [CHANNELS.AMAZON]: DEFAULT_TOLERANCE,
   [CHANNELS.TATA1MG]: DEFAULT_TOLERANCE,
   [CHANNELS.NYKAA]: DEFAULT_TOLERANCE,
+  [CHANNELS.FLIPKART]: DEFAULT_TOLERANCE,
 };
 
 /**
@@ -58,6 +59,7 @@ export const CHANNEL_MASTER_IDS: Record<ChannelName, number> = {
   [CHANNELS.AMAZON]: 9,
   [CHANNELS.TATA1MG]: 11,
   [CHANNELS.NYKAA]: 6,
+  [CHANNELS.FLIPKART]: 8,
 };
 
 /**
@@ -84,6 +86,8 @@ export const CHANNEL_LOCATION_MATCH: Record<ChannelName, LocationMatch> = {
   [CHANNELS.TATA1MG]: LOCATION_MATCH.CODE_THEN_PINCODE,
   /** Delivery Location ("Chennai Warehouse", "Nykaa Warehouse DEL1" ...) = channel_location_code. */
   [CHANNELS.NYKAA]: LOCATION_MATCH.CODE_THEN_PINCODE,
+  /** The consignment's Warehouse Id (ahm_khe_wh_nl_01nl ...) = channel_location_code. */
+  [CHANNELS.FLIPKART]: LOCATION_MATCH.CODE_THEN_PINCODE,
 };
 
 /** Result of validating one PO. */

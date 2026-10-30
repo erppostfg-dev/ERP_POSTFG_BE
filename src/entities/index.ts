@@ -10,6 +10,7 @@ export * from './details-channel.entity';
 export * from './details-purchase-order.entity';
 export * from './feedback.entities';
 export * from './gmail-intake.entities';
+export * from './channel-pull-item.entity';
 export * from './inbound.entities';
 export * from './intransit-channel-sku-map.entity';
 export * from './intransit-master-change.entity';

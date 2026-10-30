@@ -1,8 +1,9 @@
 import { Router } from 'express';
-import { FEEDBACK, INBOUND_ROUTES, MANUAL_UPLOAD, PO_INTAKE, PO_ISSUES, PO_VERIFY } from '../constants';
+import { CHANNEL_PULLS, FEEDBACK, INBOUND_ROUTES, MANUAL_UPLOAD, PO_INTAKE, PO_ISSUES, PO_VERIFY } from '../constants';
 import poVerifyGate from '../modules/po-verify/po-verify.gate';
 import adminRoutes from './admin.routes';
 import amazonInboundRoutes from './amazon-inbound.routes';
+import channelPullsRoutes from './channel-pulls.routes';
 import approvalsRoutes from './approvals.routes';
 import authRoutes from './auth.routes';
 import feedbackRoutes from './feedback.routes';
@@ -25,6 +26,7 @@ router.use('/approvals', approvalsRoutes);
 router.use(PO_INTAKE.BASE, poIntakeControlRoutes);
 router.use('/admin', adminRoutes);
 router.use(INBOUND_ROUTES.BASE, amazonInboundRoutes);
+router.use(CHANNEL_PULLS.BASE, channelPullsRoutes);
 router.use('/intransit', intransitRoutes);
 router.use('/masters', mastersRoutes);
 router.use('/po-intake', poIntakeRoutes);

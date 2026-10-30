@@ -475,6 +475,24 @@ const forkWorker = (job: WorkerJob, timeoutMs: number, onLog: (line: string) => 
     child.send(job);
   });
 
+/**
+ * A Seller Hub job of another module (the Flipkart consignments robot, channel-api/flipkart; 2026-10-30): the same worker
+ * slot (one browser job at a time on this server), the same child process (low priority) and the same saved login
+ * (the caches, as a connector run gets them), so the two Seller Hub robots never run together or log in twice.
+ */
+export const runSellerHubJob = async <T>(name: string, makeJob: (cacheDir: string) => WorkerJob, timeoutMs: number, onLog: (line: string) => void): Promise<T> => {
+  const stored = storageOn();
+  const dir = stored ? path.join(DIR(), INTRANSIT_FOLDERS.CACHE, 'jobs', `${name}-${Date.now()}`) : cacheDir();
+  const loaded = stored ? await cachesIn(dir) : null;
+  try {
+    return (await runInWorker(makeJob(dir), timeoutMs, onLog)) as T;
+  } finally {
+    if (loaded) {
+      await cachesOut(dir, loaded).catch((err: unknown) => onLog(`(the saved login was not stored back: ${err instanceof Error ? err.message : String(err)})`));
+      await fsp.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+};
 /** A connector run's log lines, forwarded to the report run that started it. */
 const forwards = new Map<string, (line: string) => void>();
 

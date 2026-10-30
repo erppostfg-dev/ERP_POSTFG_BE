@@ -84,6 +84,8 @@ export const TABLES = {
   // Gmail intake (2026-10-29, constants/gmail-intake.ts): each labelled email's channel once read; catch-ups as rows.
   GMAIL_MESSAGES: 'gmail_messages',
   INTAKE_CATCHUPS: 'intake_catchups',
+  // Channel pulls (2026-10-30): what a robot fetched (Flipkart consignments), before / when it became a PO.
+  CHANNEL_PULL_ITEMS: 'channel_pull_items',
   INBOUND_PLANS: 'inbound_plans',
   INBOUND_SHIPMENTS: 'inbound_shipments',
   INBOUND_SHIPMENT_LINES: 'inbound_shipment_lines',

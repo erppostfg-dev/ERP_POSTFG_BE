@@ -273,6 +273,10 @@ export const env = {
       region: (process.env.SPAPI_REGION ?? 'EU').toUpperCase(),
       pollMinutes: process.env.AMAZON_POLL_MINUTES ? Number(process.env.AMAZON_POLL_MINUTES) : undefined,
     },
+    // Flipkart consignments (2026-10-30): how often the connector looks at what the Seller Hub robot fetched (DB only)
+    flipkart: {
+      pollMinutes: process.env.FLIPKART_POLL_MINUTES ? Number(process.env.FLIPKART_POLL_MINUTES) : undefined,
+    },
   },
   // Logging (2026-10-19; constants/logging.ts). EC2: LOG_FORMAT=json (the CloudWatch agent sends the pm2 log files to
   // /mcaffeine-erp-post-fg/po-api-ec2/<env>), DB_LOGGING=false. Limits in ms unless named otherwise; 0 switches one off.
