@@ -44,6 +44,8 @@ export const CHANNEL_TOLERANCES: Record<ChannelName, Tolerance> = {
   [CHANNELS.FLIPKART]: DEFAULT_TOLERANCE,
   [CHANNELS.AVENUE]: DEFAULT_TOLERANCE,
   [CHANNELS.FLIPKART_QCOM]: DEFAULT_TOLERANCE,
+  [CHANNELS.GLUZO]: DEFAULT_TOLERANCE,
+  [CHANNELS.SLIKK]: DEFAULT_TOLERANCE,
 };
 
 /**
@@ -66,7 +68,19 @@ export const CHANNEL_MASTER_IDS: Record<ChannelName, number> = {
   [CHANNELS.AVENUE]: 15,
   /** "Flipkart Qcom" (not "Flipkart", id 8: its rates differ). */
   [CHANNELS.FLIPKART_QCOM]: 16,
+  /** "GLUZO". */
+  [CHANNELS.GLUZO]: 24,
+  /** "SLIKK". */
+  [CHANNELS.SLIKK]: 40,
 };
+
+/**
+ * Channels whose PO line gives their channel code, OR our pep code, OR the EAN in the same column (Slikk's "SKU Id": the
+ * EAN for some mCaffeine items, our code for the rest; 2026-11-02): looked up among the channel's rows as channel_code,
+ * then pep_code, then ean_code (SLIKK rows hold some EANs only in ean_code: MCaf371 / MCaf40 carry another item's
+ * channel_code on 2 Nov).
+ */
+export const SKU_ANY_CODE: ReadonlySet<ChannelName> = new Set([CHANNELS.SLIKK]);
 
 /**
  * How the PO's delivery location is found in details_channels:
@@ -101,6 +115,10 @@ export const CHANNEL_LOCATION_MATCH: Record<ChannelName, LocationMatch> = {
   [CHANNELS.AVENUE]: LOCATION_MATCH.PINCODE,
   /** No location code on the PO: the SHIPPED TO ADDRESS pincode (Hillway 387570 -> "Ahmedabad"). */
   [CHANNELS.FLIPKART_QCOM]: LOCATION_MATCH.PINCODE,
+  /** No location code on the PO: the Shipping Address pincode (110092; the master's DELHI row has none on 2 Nov: review). */
+  [CHANNELS.GLUZO]: LOCATION_MATCH.PINCODE,
+  /** No location code on the PO: the Shipped To Address pincode (562114 Hosakote / 560102 HSR; none in the master on 2 Nov). */
+  [CHANNELS.SLIKK]: LOCATION_MATCH.PINCODE,
 };
 
 /** Result of validating one PO. */

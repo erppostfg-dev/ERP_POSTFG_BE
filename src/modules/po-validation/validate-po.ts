@@ -4,6 +4,7 @@ import {
   PRICE_CHOICE,
   PriceChoice,
   PUNCH_S,
+  SKU_ANY_CODE,
   ChannelName,
   IST_OFFSET_MS,
   ISSUE_FIELDS,
@@ -227,7 +228,18 @@ const validateLine = (
   // A reviewer's mapping replaces the lookup: the channel's row for that pep_code (one is enough, they share the rate).
   const byPep = pickedPep ? (master.skusByPep.get(matchKey(pickedPep)) ?? []) : [];
   const chosen = byPep.find((r) => r.rateAfterMargin !== null) ?? byPep[0];
-  const candidates = pickedPep ? (chosen ? [chosen] : []) : (master.skusByCode.get(matchKey(line.channel_sku_code)) ?? []);
+  const byCode = master.skusByCode.get(matchKey(line.channel_sku_code)) ?? [];
+  // Slikk's "SKU Id" is a channel code, our pep code or an EAN (SKU_ANY_CODE): then the channel's rows by pep code
+  // (one is enough, they share the rate), else by ean_code (rows of different pep codes = ambiguous, as for a code).
+  const anyCode = !byCode.length && SKU_ANY_CODE.has(channel);
+  const asPep = anyCode ? (master.skusByPep.get(matchKey(line.channel_sku_code)) ?? []) : [];
+  const asEan = anyCode && !asPep.length ? (master.skusByEan.get(matchKey(line.channel_sku_code)) ?? []) : [];
+  const oneRow = (rows: typeof byCode) => {
+    if (new Set(rows.map((r) => matchKey(r.pepCode))).size > 1) return rows;
+    const r = rows.find((x) => x.rateAfterMargin !== null) ?? rows[0];
+    return r ? [r] : [];
+  };
+  const candidates = pickedPep ? (chosen ? [chosen] : []) : byCode.length ? byCode : asPep.length ? oneRow(asPep) : oneRow(asEan);
   const skuIssue = (detail: string) =>
     add(validationIssue(ISSUE_TYPE.SKU_NOT_MAPPED, { field: ISSUE_FIELDS.CHANNEL_SKU_CODE, lineNo, actual: line.channel_sku_code }, where, detail));
   if (pickedPep && !candidates.length) skuIssue(VALIDATION_TEXT.SKU_NONE(pickedPep));

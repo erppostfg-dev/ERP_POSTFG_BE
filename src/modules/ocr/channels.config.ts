@@ -208,4 +208,27 @@ export const channelConfigs: ChannelConfig[] = [
     domains: [],
     files: { sheet: /\.xlsx?$/i },
   },
+
+  {
+    // Gluzo (2026-11-02): <PO>_244809_<timestamp>.pdf made by EasyEcom (header, every line, totals on the last page) by
+    // Manual Upload only; read by the OCR PDF pipeline (channels.json "gluzo", expects pdf). Option B (user): the PDF alone;
+    // Gluzo's xlsx ("Purchase Order No-<PO>.xlsx") holds the same lines without the header, so it is not taken.
+    channel: CHANNELS.GLUZO,
+    ocrChannel: OCR_CHANNELS[CHANNELS.GLUZO],
+    senders: [],
+    domains: [],
+    files: { pdf: /\.pdf$/i },
+  },
+
+  {
+    // Slikk (2026-11-02): the PO PDF (random name, e.g. 0732ef90....pdf; header + printed totals) with its line sheet
+    // (orderItems ....csv or Pep SLIKPO#<n>.xlsx: every row carries the PO number in "Order"), always together (user: the
+    // PDF alone is not taken). Manual Upload only, one PO per upload (the names never match). OCR "slikk": header from the
+    // PDF, lines from the sheet.
+    channel: CHANNELS.SLIKK,
+    ocrChannel: OCR_CHANNELS[CHANNELS.SLIKK],
+    senders: [],
+    domains: [],
+    files: { pdf: /\.pdf$/i, sheet: /\.(csv|xlsx?)$/i },
+  },
 ];

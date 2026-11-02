@@ -23,6 +23,10 @@ export const CHANNELS = {
   AVENUE: 'avenue',
   /** Flipkart Quick Commerce: the whole PO in one .xls, by Manual Upload only (no email; OCR sheet pipeline; 2026-10-30). */
   FLIPKART_QCOM: 'flipkart_qcom',
+  /** Gluzo: its EasyEcom PO PDF, by Manual Upload only (no email; OCR PDF pipeline; the xlsx is not needed; 2026-11-02). */
+  GLUZO: 'gluzo',
+  /** Slikk: PO PDF + its sheet (CSV / xlsx) together, by Manual Upload only (no email; OCR; 2026-11-02). */
+  SLIKK: 'slikk',
 } as const;
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS];
@@ -53,4 +57,7 @@ export const OCR_CHANNELS: Record<ChannelName, string> = {
   [CHANNELS.AVENUE]: 'avenue',
   /** The OCR reads lines and totals with Python; only the header block goes to its model. */
   [CHANNELS.FLIPKART_QCOM]: 'flipkart_quickcomm',
+  [CHANNELS.GLUZO]: 'gluzo',
+  /** PDF + sheet: header from the PDF, lines from the sheet (the PDF alone is not taken, user 2026-11-02). */
+  [CHANNELS.SLIKK]: 'slikk',
 };
