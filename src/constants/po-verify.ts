@@ -28,6 +28,8 @@ export const PO_VERIFY = {
   BASE: '/po-verify',
   ROUTES: {
     STATES: '/', ONE: '/:uploadId', VERIFY: '/:uploadId/verify', SEND_BACK: '/:uploadId/send-back',
+    /** Many POs at once (2026-11-02: the Processed download with "Verified" typed in its Check column, uploaded back). */
+    VERIFY_MANY: '/verify',
     /** The per-channel switch (Users & Roles -> Settings; admin / developer). Registered before /:uploadId. */
     SETTINGS: '/settings', SETTING: '/settings/:channel',
   },
@@ -37,6 +39,18 @@ export const PO_VERIFY = {
   /** States asked for at most this many uploads per call (the Processed tab loads up to 500). */
   MAX_IDS: 500,
   REMARK_MAX: 500,
+  BODY_IDS: 'uploadIds',
+  /** Uploads per bulk verify call (the screen sends a longer list in chunks of this size, one after another). */
+  BULK_MAX: 200,
+  /** Why a PO of a bulk verify was left as it was. */
+  SKIP: {
+    NOT_FOUND: 'not_found',
+    NOT_READY: 'not_ready',
+    ALREADY_VERIFIED: 'already_verified',
+    IN_UNIWARE: 'in_uniware',
+    NOT_REQUIRED: 'not_required',
+  },
+  BULK_AUDIT: (n: number) => `po verify: bulk verified ${n} upload(s)`,
   /** A line's saved rate may differ from the PO's by this much (₹) before it is flagged (as validation's tolerance). */
   RATE_TOLERANCE: 1,
   ISSUE_TEXT: (remark: string, by: string) => `Verification: ${remark} (sent back by ${by})`,

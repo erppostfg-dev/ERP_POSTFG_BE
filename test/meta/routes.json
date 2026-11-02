@@ -139,6 +139,7 @@
   "POST /po-review/uniware-uploaded",
   "POST /po-verify/:uploadId/send-back",
   "POST /po-verify/:uploadId/verify",
+  "POST /po-verify/verify",
   "POST /price-differences/sent",
   "PUT /admin/mail-lists/:key"
 ]

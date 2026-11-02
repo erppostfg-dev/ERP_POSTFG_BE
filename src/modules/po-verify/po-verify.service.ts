@@ -367,6 +367,66 @@ export const verifyPo = async (uploadId: string, body: VerifyBody, by: Actor): P
   return { state: PO_VERIFY_STATE.VERIFIED };
 };
 
+export type VerifySkip = (typeof PO_VERIFY.SKIP)[keyof typeof PO_VERIFY.SKIP];
+export interface VerifyManyResult {
+  verified: string[];
+  skipped: { uploadId: string; reason: VerifySkip }[];
+}
+
+/**
+ * Many POs at once (2026-11-02, user: the Processed download with "Verified" typed in its Check column, uploaded back).
+ * Only POs still "to verify" are verified; the others are left as they are, with the reason. A fixed number of queries
+ * whatever the batch size (at most PO_VERIFY.BULK_MAX): the uploads (5 columns, locked), their verified rows, the channel
+ * switches, their sale order codes, one insert; then one audit line and one live refresh.
+ */
+export const verifyMany = async (ids: string[], remark: string | undefined, by: Actor): Promise<VerifyManyResult> => {
+  const want = [...new Set(ids.map(String))];
+  const out: VerifyManyResult = { verified: [], skipped: [] };
+  const isOn = await switches();
+  await AppDataSource.transaction(async (m) => {
+    const uploads = await m.getRepository(PoUpload).find({
+      select: ['id', 'status', 'poUid', 'channel', 'uniwareUploadedAt'],
+      where: { id: In(want) },
+      lock: { mode: 'pessimistic_write' },
+    });
+    const byId = new Map(uploads.map((u) => [String(u.id), u]));
+    const uids = uploads.map((u) => u.poUid).filter((v): v is string => !!v);
+    const done = uids.length
+      ? await m.getRepository(PoVerification).find({ select: ['uploadId', 'poUid'], where: { poUid: In(uids), action: PO_VERIFY_ACTION.VERIFIED } })
+      : [];
+    const isDone = new Set(done.map((d) => `${d.uploadId}:${d.poUid}`));
+
+    const ready: (PoUpload & { poUid: string })[] = [];
+    for (const id of want) {
+      const u = byId.get(id);
+      const reason: VerifySkip | null =
+        !u ? PO_VERIFY.SKIP.NOT_FOUND
+        : u.status !== UPLOAD_STATUS.COMPLETED || !u.poUid ? PO_VERIFY.SKIP.NOT_READY
+        : isDone.has(`${u.id}:${u.poUid}`) ? PO_VERIFY.SKIP.ALREADY_VERIFIED
+        : u.uniwareUploadedAt ? PO_VERIFY.SKIP.IN_UNIWARE
+        : !isOn(u.channel) ? PO_VERIFY.SKIP.NOT_REQUIRED
+        : null;
+      if (reason) out.skipped.push({ uploadId: id, reason });
+      else ready.push(u as PoUpload & { poUid: string });
+    }
+    if (!ready.length) return;
+
+    const sos = await m.getRepository(MasterPurchaseOrder).find({ select: ['uid', 'orderNo1'], where: { uid: In(ready.map((u) => u.poUid)) } });
+    const soOf = new Map(sos.map((s) => [String(s.uid), s.orderNo1 ?? null]));
+    const now = new Date();
+    await m.getRepository(PoVerification).insert(ready.map((u) => ({
+      uploadId: u.id, poUid: u.poUid, saleOrderCode: soOf.get(String(u.poUid)) ?? null, action: PO_VERIFY_ACTION.VERIFIED,
+      remark: remark ?? null, linesChecked: null, lineCount: null, doneBy: by.id, doneAt: now,
+    })));
+    out.verified = ready.map((u) => String(u.id));
+  });
+  if (out.verified.length) {
+    await audit(by, PO_VERIFY.BULK_AUDIT(out.verified.length));
+    bumpReview();
+  }
+  return out;
+};
+
 /**
  * Something on the saved PO is wrong: cancel it and send the PO back to In Review (user, 2026-10-22, option A).
  * Nothing is deleted: the saved PO stays (statusActive Inactive) with its sale order code, both kept on the

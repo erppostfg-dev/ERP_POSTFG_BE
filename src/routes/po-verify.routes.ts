@@ -1,7 +1,7 @@
 import { NextFunction, Request, Response, Router } from 'express';
 import { ACCESS_LEVEL, ERROR_CODES, PAGE, PO_VERIFY, UPLOAD_ID_PATTERN } from '../constants';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
-import { listChannelSettings, sendBack, updateChannelSetting, VerifyBody, verifyDetail, verifyPo, verifyStates } from '../modules/po-verify/po-verify.service';
+import { listChannelSettings, sendBack, updateChannelSetting, VerifyBody, verifyDetail, verifyMany, verifyPo, verifyStates } from '../modules/po-verify/po-verify.service';
 import { USER_ADMIN_ROLES } from '../constants/users';
 import { appError } from '../utils/AppError';
 
@@ -87,6 +87,23 @@ router.get(PO_VERIFY.ROUTES.STATES, ...viewer, async (req, res, next) => {
 router.get(PO_VERIFY.ROUTES.ONE, ...viewer, async (req, res, next) => {
   try {
     res.json({ data: await verifyDetail(uploadIdOf(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /po-verify/verify { uploadIds: string[] (1..BULK_MAX), remark? }: the POs still to verify are verified. */
+router.post(PO_VERIFY.ROUTES.VERIFY_MANY, ...editor, async (req, res, next) => {
+  try {
+    const ids = (req.body as Record<string, unknown> | undefined)?.[PO_VERIFY.BODY_IDS];
+    if (!Array.isArray(ids) || !ids.length || ids.length > PO_VERIFY.BULK_MAX || !ids.every((i) => typeof i === 'string' && UPLOAD_ID_PATTERN.test(i))) {
+      throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails([{
+        field: PO_VERIFY.BODY_IDS,
+        code: ERROR_CODES.FIELD_REQUIRED,
+        message: `${PO_VERIFY.BODY_IDS}: 1 to ${PO_VERIFY.BULK_MAX} upload ids`,
+      }]);
+    }
+    res.json({ data: await verifyMany(ids as string[], remarkOf(req, false), { id: req.auth!.user.id, email: req.auth!.user.email }) });
   } catch (err) {
     next(err);
   }
