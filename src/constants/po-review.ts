@@ -64,6 +64,26 @@ export const APPROVER_ROLES: readonly RoleKey[] = [ROLES.ADMIN, ROLES.DEVELOPER]
 /** The tabs of the Approvals page (GET /approvals/po-reviews?status=). */
 export const APPROVAL_LIST_STATUSES = [REVIEW_SUBMISSION_STATUS.PENDING, REVIEW_SUBMISSION_STATUS.APPROVED, REVIEW_SUBMISSION_STATUS.REJECTED] as const;
 
+/**
+ * Approvals list (user 2026-11-02): what kind of approval a submission is, worked out from its fixes (no DB column):
+ * master_update = at least one price check line takes the channel's value AND updates our master on approval;
+ * review = only this PO is changed (location, lines, accepted issues, price check without a master change).
+ * More kinds come later (appointment change, qty update ...): add them here and in kindOf (po-review-approvals.service).
+ */
+export const APPROVAL_KIND = { REVIEW: 'review', MASTER_UPDATE: 'master_update' } as const;
+export type ApprovalKind = (typeof APPROVAL_KIND)[keyof typeof APPROVAL_KIND];
+
+/** Filters of GET /approvals/po-reviews beside status / q / page (channel, from, to come from PO_REVIEW_QUERY). */
+export const APPROVAL_QUERY = { KIND: 'kind', ISSUE: 'issue', SUBMITTED_BY: 'submittedBy' } as const;
+
+/**
+ * Approve / reject several pending submissions at once (user 2026-11-02: the approver checks them one by one, then
+ * approves them together). Each runs exactly like the single Approve / Reject, one after another.
+ * confirmMasterUpdates must be true when any of them updates the master (the screen warns first).
+ */
+export const APPROVAL_BULK = { MAX: 50, IDS: 'ids', CONFIRM_MASTER: 'confirmMasterUpdates' } as const;
+export const APPROVAL_BULK_RESULT = { APPROVED: 'approved', REJECTED: 'rejected', RETURNED: 'returned', FAILED: 'failed' } as const;
+
 /** po_review_submissions.id in a URL. */
 export const SUBMISSION_ID_PATTERN = /^\d{1,19}$/;
 

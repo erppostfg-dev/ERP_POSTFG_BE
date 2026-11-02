@@ -102,6 +102,8 @@
   "POST /amazon/inbound/shipments/:externalId/refresh",
   "POST /approvals/po-reviews/:id/approve",
   "POST /approvals/po-reviews/:id/reject",
+  "POST /approvals/po-reviews/bulk-approve",
+  "POST /approvals/po-reviews/bulk-reject",
   "POST /auth/logout",
   "POST /channel-pulls/:key/process",
   "POST /channel-pulls/:key/robot",
