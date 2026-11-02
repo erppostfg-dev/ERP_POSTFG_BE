@@ -248,6 +248,9 @@ export const ERRORS = {
   INTRANSIT_SOURCE_UNKNOWN: define(404, (source: string, sources: string) => `No connector ${source}; use one of: ${sources}`),
   INTRANSIT_CONNECTOR_RUNNING: define(409, (source: string, id: string) => `The ${source} fetch is already running (run ${id})`),
   INTRANSIT_CONNECTOR_NOT_CONFIGURED: define(500, (source: string, keys: string) => `The ${source} connector needs ${keys} in .env`),
+  // a robot's login sent from a person's browser (the ERP Robot Login extension, 2026-11-02)
+  INTRANSIT_LOGIN_INVALID: define(400, (problem: string) => `The login was not saved: ${problem}`),
+  INTRANSIT_LOGIN_MISSING: define(422, (portal: string, how: string) => `This browser is not logged in to the ${portal}: ${how}`),
   INTRANSIT_CONNECTOR_FAILED: define(502, (source: string, reason: string) => `${source}: ${reason}`),
   INTRANSIT_FETCH_TODAY_ONLY: define(400, (source: string, date: string) => `${source} only gives the current state: it can be fetched for today, not ${date}`),
   INTRANSIT_DATE_INVALID: define(400, (date: string) => `${date} is not a day to work on (YYYY-MM-DD, not in the future)`),
