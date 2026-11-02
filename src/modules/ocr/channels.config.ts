@@ -68,7 +68,7 @@ export const channelConfigs: ChannelConfig[] = [
   {
     // PosFromEmail/Zepto: Reply-To po_fulfilment@zeptonow.com, subject "Purchase Order for [<entity> and P<digits>]",
     // <PO>.csv (header + all lines) and <PO>.pdf (page 1 = PO, page 2 = terms) -> pdf + sheet pipeline.
-    // Not in the OCR repo's channels.json yet, so run_po.py uses its defaults (no "expects" check).
+    // channels.json "zepto" expects pdf+sheet (2026-11-02: it said sheet + flat_csv, which refused every Zepto PO).
     channel: CHANNELS.ZEPTO,
     ocrChannel: OCR_CHANNELS[CHANNELS.ZEPTO],
     senders: ['po_fulfilment@zeptonow.com'],
