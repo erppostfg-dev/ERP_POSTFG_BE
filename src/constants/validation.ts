@@ -92,18 +92,14 @@ export const SKU_ANY_CODE: ReadonlySet<ChannelName> = new Set([CHANNELS.SLIKK]);
  */
 export const SKU_EAN_TIEBREAK: ReadonlySet<ChannelName> = new Set([CHANNELS.POP_TECH]);
 
-/**
- * Channels whose locations may hold the pincode only inside final_shipping_address (user 2026-11-02, Pop Tech: BANGLORE
- * "... Bengaluru -562114", GURGOAN "... Haryana 122001", consignee_pin_code empty): when no row matches by
- * consignee_pin_code, a row WITHOUT consignee_pin_code whose address ends with the PO's pincode (last 6 digits) matches.
- */
-export const LOCATION_PIN_FROM_ADDRESS: ReadonlySet<ChannelName> = new Set([CHANNELS.POP_TECH]);
 
 /**
  * How the PO's delivery location is found in details_channels:
  *   code_then_pincode: delivery_facility_code = channel_location_code (case-insensitive); if no row, delivery_pincode =
  *                      consignee_pin_code
  *   pincode:           delivery_pincode = consignee_pin_code only (Purplle: its plant codes W502 ... are not in the master)
+ * Both, every channel (2026-11-02): no row by consignee_pin_code -> a location WITHOUT consignee_pin_code whose
+ * final_shipping_address ends with the pincode (last 6 digits; Slikk / Gluzo / Pop Tech / Octavos ... keep it only there).
  * Exactly one row must match; none or several -> review.
  */
 /** Pep Technologies' PAN: inside every GSTIN of ours (27AAICP2804J1ZC ...), so a PO's other GSTIN is the buyer's. */
@@ -137,7 +133,7 @@ export const CHANNEL_LOCATION_MATCH: Record<ChannelName, LocationMatch> = {
   /** No location code on the PO: the Shipped To Address pincode (562114 Hosakote / 560102 HSR; none in the master on 2 Nov). */
   [CHANNELS.SLIKK]: LOCATION_MATCH.PINCODE,
   /** No location code on the PO: the Ship to pincode (562114 BANGLORE / 122001 GURGOAN; the 28 Oct master has the pincode
-   *  only inside the address, consignee_pin_code empty: review until the masters team fills it). */
+   *  only inside the address, consignee_pin_code empty: matched by the address, as for every channel). */
   [CHANNELS.POP_TECH]: LOCATION_MATCH.PINCODE,
 };
 
@@ -235,7 +231,7 @@ export const VALIDATION_TEXT = {
   CHANNEL_NOT_CONFIGURED: (channel: string) => `channel "${channel}" has no master_channels id in constants/validation.ts`,
   NO_LOCATION_KEY: 'the PO has neither a delivery facility code nor a delivery pincode',
   LOCATION_NONE: (by: string) => `no details_channels row matches ${by}`,
-  /** Appended to "pincode …" when the location's address was searched too (LOCATION_PIN_FROM_ADDRESS). */
+  /** Appended to "pincode …" when the channel has locations without consignee_pin_code (their address is searched too). */
   LOCATION_BY_ADDRESS: ' (consignee_pin_code, else the pincode in the location address)',
   LOCATION_MANY: (by: string, n: number, codes: string) => `${n} details_channels rows match ${by} (${codes}); exactly one is needed`,
   LOCATION_INCOMPLETE: (code: string, missing: string) => `details_channels row "${code}" has no ${missing}`,

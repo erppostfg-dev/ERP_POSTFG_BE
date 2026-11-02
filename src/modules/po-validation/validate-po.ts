@@ -6,7 +6,6 @@ import {
   PUNCH_S,
   SKU_ANY_CODE,
   SKU_EAN_TIEBREAK,
-  LOCATION_PIN_FROM_ADDRESS,
   ChannelName,
   IST_OFFSET_MS,
   ISSUE_FIELDS,
@@ -153,9 +152,11 @@ const findLocation =(po: ProcessedPo, master: ChannelMasterData, issues: Validat
     rows = master.locations.filter((l) => matchKey(l.consigneePinCode) === pin);
     matchedBy = 'pincode';
     by = `${by ? `${by} or ` : ''}pincode ${po.delivery_pincode}`;
-    // Pop Tech: locations that keep their pincode only in the address (LOCATION_PIN_FROM_ADDRESS)
-    if (LOCATION_PIN_FROM_ADDRESS.has(po.channel_name as ChannelName)) {
-      if (!rows.length) rows = master.locations.filter((l) => !matchKey(l.consigneePinCode) && pincodeFrom(l.finalShippingAddress ?? '') === pin);
+    // Every channel (user 2026-11-02): a location that keeps its pincode only in final_shipping_address (consignee_pin_code
+    // empty) is matched by the address's last 6 digits; a filled consignee_pin_code always wins (never its address).
+    const noPin = master.locations.filter((l) => !matchKey(l.consigneePinCode));
+    if (noPin.length) {
+      if (!rows.length) rows = noPin.filter((l) => pincodeFrom(l.finalShippingAddress ?? '') === pin);
       by += VALIDATION_TEXT.LOCATION_BY_ADDRESS;
     }
   }

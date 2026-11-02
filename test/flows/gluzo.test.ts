@@ -92,6 +92,19 @@ describe('Gluzo checks (validation against the masters)', () => {
     expect(v.lines.map((l) => [l.channelSkuCode, l.pepCode, l.ourRate])).toEqual([['226648', 'MCaf370', 389.22], ['226676', '', ''], ['119464', 'HYPMUBX022F010', 311.22]]);
   });
 
+  it('DELHI without consignee_pin_code but 110092 in its address: matched by the address (every channel)', async () => {
+    await seedGluzo(null);
+    const conn = await db();
+    await conn.query("UPDATE details_channels SET final_shipping_address = '2, FIRST FLOOR, PARK END COLONY, VIKAS MARG, Preet Vihar, Delhi - 110092' WHERE channel_location_code = 'DELHI'");
+    const v = await validate(await process());
+    expect(v.location).toMatchObject({ locationCode: 'DELHI', matchedBy: 'pincode' });
+    expect(v.issues.map((i) => i.type)).toEqual(['SKU_NOT_MAPPED']);
+    // another pincode in the address: still no location, and the issue says the address was searched too
+    await conn.query("UPDATE details_channels SET final_shipping_address = 'Somewhere, Delhi - 110001' WHERE channel_location_code = 'DELHI'");
+    const miss = await validate(await process());
+    expect(miss.issues.find((i) => i.type === 'LOCATION_NOT_MAPPED')?.message).toContain('pincode in the location address');
+  });
+
   it('once DELHI has 110092 (and 226676 one code), the PO passes: prices match Base + Tax, no MRP check', async () => {
     await seedGluzo('110092');
     await (await db()).query("UPDATE master_channel_skus SET is_active = 0 WHERE pep_code = 'MCaf383_WB_N1'");
