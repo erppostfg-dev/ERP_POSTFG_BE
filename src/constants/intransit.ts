@@ -321,6 +321,7 @@ export const INTRANSIT_ROUTES = {
   RUN_MAIL_SEND: '/runs/:id/mail/send',
   RUN_REPORT: '/runs/:id/report',
   CONNECTOR: '/connectors/:source',
+  ROBOT_LOGIN: '/robots/:source/login',
   INVENTORY: '/inventory',
   INPUT_TABLE: '/inputs/:name/table',
   INPUT_DOWNLOAD: '/inputs/:name/download',

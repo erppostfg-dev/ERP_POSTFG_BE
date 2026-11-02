@@ -216,7 +216,7 @@ const ensureLogin = async (page: Page, context: BrowserContext, cfg: MyntraConfi
       opened = await openLoginForm(page);
       if (!opened) {
         throw new Error(`the Myntra login form did not open - ${await pageState(page)}. Myntra's bot check may be blocking this server: `
-          + 'log in on a laptop and hand the session over (npm run intransit:session -- --source myntra --scope test|prod)');
+          + 'log in to partners.myntrainfo.com in Chrome and press "Connect Myntra" on the Daily run page (ERP Robot Login extension)');
       }
     }
     if (opened === 'portal') {

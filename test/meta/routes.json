@@ -119,6 +119,7 @@
   "POST /intransit/final-sku/variants",
   "POST /intransit/inputs/:name",
   "POST /intransit/inputs/:name/restore",
+  "POST /intransit/robots/:source/login",
   "POST /intransit/runs",
   "POST /intransit/runs/:id/mail/send",
   "POST /intransit/split1/rows",
