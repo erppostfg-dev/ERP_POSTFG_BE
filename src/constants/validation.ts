@@ -46,6 +46,7 @@ export const CHANNEL_TOLERANCES: Record<ChannelName, Tolerance> = {
   [CHANNELS.FLIPKART_QCOM]: DEFAULT_TOLERANCE,
   [CHANNELS.GLUZO]: DEFAULT_TOLERANCE,
   [CHANNELS.SLIKK]: DEFAULT_TOLERANCE,
+  [CHANNELS.POP_TECH]: DEFAULT_TOLERANCE,
 };
 
 /**
@@ -72,6 +73,8 @@ export const CHANNEL_MASTER_IDS: Record<ChannelName, number> = {
   [CHANNELS.GLUZO]: 24,
   /** "SLIKK". */
   [CHANNELS.SLIKK]: 40,
+  /** "POP TECH". */
+  [CHANNELS.POP_TECH]: 37,
 };
 
 /**
@@ -81,6 +84,20 @@ export const CHANNEL_MASTER_IDS: Record<ChannelName, number> = {
  * channel_code on 2 Nov).
  */
 export const SKU_ANY_CODE: ReadonlySet<ChannelName> = new Set([CHANNELS.SLIKK]);
+
+/**
+ * Channels whose channel_code is the EAN (Pop Tech, user 2026-11-02): when the code gives rows of several of our codes,
+ * only the rows whose ean_code is the PO line's EAN are kept (8906129570856: channel_code on MTOOL7_NL_S + MTOOL7_NL,
+ * ean_code only on MTOOL7_NL_S). Still several -> review (MCaf383_WB / _N1, Mcaf396_WB / Mcaf396 carry both).
+ */
+export const SKU_EAN_TIEBREAK: ReadonlySet<ChannelName> = new Set([CHANNELS.POP_TECH]);
+
+/**
+ * Channels whose locations may hold the pincode only inside final_shipping_address (user 2026-11-02, Pop Tech: BANGLORE
+ * "... Bengaluru -562114", GURGOAN "... Haryana 122001", consignee_pin_code empty): when no row matches by
+ * consignee_pin_code, a row WITHOUT consignee_pin_code whose address ends with the PO's pincode (last 6 digits) matches.
+ */
+export const LOCATION_PIN_FROM_ADDRESS: ReadonlySet<ChannelName> = new Set([CHANNELS.POP_TECH]);
 
 /**
  * How the PO's delivery location is found in details_channels:
@@ -119,6 +136,9 @@ export const CHANNEL_LOCATION_MATCH: Record<ChannelName, LocationMatch> = {
   [CHANNELS.GLUZO]: LOCATION_MATCH.PINCODE,
   /** No location code on the PO: the Shipped To Address pincode (562114 Hosakote / 560102 HSR; none in the master on 2 Nov). */
   [CHANNELS.SLIKK]: LOCATION_MATCH.PINCODE,
+  /** No location code on the PO: the Ship to pincode (562114 BANGLORE / 122001 GURGOAN; the 28 Oct master has the pincode
+   *  only inside the address, consignee_pin_code empty: review until the masters team fills it). */
+  [CHANNELS.POP_TECH]: LOCATION_MATCH.PINCODE,
 };
 
 /** Result of validating one PO. */
@@ -215,6 +235,8 @@ export const VALIDATION_TEXT = {
   CHANNEL_NOT_CONFIGURED: (channel: string) => `channel "${channel}" has no master_channels id in constants/validation.ts`,
   NO_LOCATION_KEY: 'the PO has neither a delivery facility code nor a delivery pincode',
   LOCATION_NONE: (by: string) => `no details_channels row matches ${by}`,
+  /** Appended to "pincode …" when the location's address was searched too (LOCATION_PIN_FROM_ADDRESS). */
+  LOCATION_BY_ADDRESS: ' (consignee_pin_code, else the pincode in the location address)',
   LOCATION_MANY: (by: string, n: number, codes: string) => `${n} details_channels rows match ${by} (${codes}); exactly one is needed`,
   LOCATION_INCOMPLETE: (code: string, missing: string) => `details_channels row "${code}" has no ${missing}`,
   SKU_CODE_EMPTY: 'the PO line has no channel SKU code',

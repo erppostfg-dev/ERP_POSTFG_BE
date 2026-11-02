@@ -27,6 +27,8 @@ export const CHANNELS = {
   GLUZO: 'gluzo',
   /** Slikk: PO PDF + its sheet (CSV / xlsx) together, by Manual Upload only (no email; OCR; 2026-11-02). */
   SLIKK: 'slikk',
+  /** Pop Tech (Curioso Fashions): its Unicommerce PO PDF, by Manual Upload only (no email yet; OCR PDF pipeline; 2026-11-02). */
+  POP_TECH: 'pop_tech',
 } as const;
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS];
@@ -60,4 +62,6 @@ export const OCR_CHANNELS: Record<ChannelName, string> = {
   [CHANNELS.GLUZO]: 'gluzo',
   /** PDF + sheet: header from the PDF, lines from the sheet (the PDF alone is not taken, user 2026-11-02). */
   [CHANNELS.SLIKK]: 'slikk',
+  /** Unicommerce PDF: "amount (9.000%)" tax cells split, the unlabeled totals row read as the Total row. */
+  [CHANNELS.POP_TECH]: 'pop_tech',
 };

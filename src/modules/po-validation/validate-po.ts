@@ -5,6 +5,8 @@ import {
   PriceChoice,
   PUNCH_S,
   SKU_ANY_CODE,
+  SKU_EAN_TIEBREAK,
+  LOCATION_PIN_FROM_ADDRESS,
   ChannelName,
   IST_OFFSET_MS,
   ISSUE_FIELDS,
@@ -19,6 +21,7 @@ import {
   ValidationStatus,
 } from '../../constants';
 import { DetailsChannel, MasterSku } from '../../entities';
+import { pincodeFrom } from '../po-processing/common/parse';
 import { Num, ProcessedLine, ProcessedPo } from '../po-processing/common/processed-po';
 import { ChannelMasterData, matchKey } from './master-data';
 
@@ -150,6 +153,11 @@ const findLocation =(po: ProcessedPo, master: ChannelMasterData, issues: Validat
     rows = master.locations.filter((l) => matchKey(l.consigneePinCode) === pin);
     matchedBy = 'pincode';
     by = `${by ? `${by} or ` : ''}pincode ${po.delivery_pincode}`;
+    // Pop Tech: locations that keep their pincode only in the address (LOCATION_PIN_FROM_ADDRESS)
+    if (LOCATION_PIN_FROM_ADDRESS.has(po.channel_name as ChannelName)) {
+      if (!rows.length) rows = master.locations.filter((l) => !matchKey(l.consigneePinCode) && pincodeFrom(l.finalShippingAddress ?? '') === pin);
+      by += VALIDATION_TEXT.LOCATION_BY_ADDRESS;
+    }
   }
 
   const issue = (detail: string) =>
@@ -228,7 +236,12 @@ const validateLine = (
   // A reviewer's mapping replaces the lookup: the channel's row for that pep_code (one is enough, they share the rate).
   const byPep = pickedPep ? (master.skusByPep.get(matchKey(pickedPep)) ?? []) : [];
   const chosen = byPep.find((r) => r.rateAfterMargin !== null) ?? byPep[0];
-  const byCode = master.skusByCode.get(matchKey(line.channel_sku_code)) ?? [];
+  const allByCode = master.skusByCode.get(matchKey(line.channel_sku_code)) ?? [];
+  // Pop Tech (SKU_EAN_TIEBREAK): a code on rows of several of our codes -> only the rows whose ean_code is the line's EAN
+  const byEanToo = SKU_EAN_TIEBREAK.has(channel) && line.ean && new Set(allByCode.map((r) => matchKey(r.pepCode))).size > 1
+    ? allByCode.filter((r) => matchKey(r.eanCode) === matchKey(line.ean)) : [];
+  const eanRow = new Set(byEanToo.map((r) => matchKey(r.pepCode))).size === 1 ? (byEanToo.find((r) => r.rateAfterMargin !== null) ?? byEanToo[0]) : undefined;
+  const byCode = eanRow ? [eanRow] : allByCode;
   // Slikk's "SKU Id" is a channel code, our pep code or an EAN (SKU_ANY_CODE): then the channel's rows by pep code
   // (one is enough, they share the rate), else by ean_code (rows of different pep codes = ambiguous, as for a code).
   const anyCode = !byCode.length && SKU_ANY_CODE.has(channel);

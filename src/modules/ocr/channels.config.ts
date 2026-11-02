@@ -231,4 +231,15 @@ export const channelConfigs: ChannelConfig[] = [
     domains: [],
     files: { pdf: /\.pdf$/i, sheet: /\.(csv|xlsx?)$/i },
   },
+
+  {
+    // Pop Tech (Curioso Fashions, 2026-11-02): the Unicommerce PO PDF (DL_MCFN004.pdf, "UC_Invoice Copy_BLR_MCFN002.pdf";
+    // header, every line and the unlabeled totals row; one PO per PDF). Manual Upload only for now (emails later, user).
+    // OCR "pop_tech": PDF pipeline with split_value_rate_cells + unlabeled_total_row + header_notes.
+    channel: CHANNELS.POP_TECH,
+    ocrChannel: OCR_CHANNELS[CHANNELS.POP_TECH],
+    senders: [],
+    domains: [],
+    files: { pdf: /\.pdf$/i },
+  },
 ];
