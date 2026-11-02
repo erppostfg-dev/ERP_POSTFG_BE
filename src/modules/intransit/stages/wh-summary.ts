@@ -5,20 +5,24 @@ import { Cell, Frame, pyStr, toNumber } from '../frame';
  * WH summary (user, 2026-10-29; the table the in-transit mail will carry): GMV, units and COGS of the stock on hand +
  * in transit, per warehouse row, from Sheet35(2) - only rows marked Consider? = Yes (the SKU-Not To Consider list left
  * out, as the team's own table). GMV = Final Units x MRP, COGS (With Tax) = Final Units x COGS (With TAX), COGS Split =
- * the row's share of the total COGS. Sheet35(2) holds a city (Final Location), not a facility, so the rows are:
+ * the row's share of the total COGS. A D2C row's Final Location is its Uniware facility (mCaff_Gurgaon3; Gurgaon3 for
+ * stock in transit to it), the warehouses' a city, so the rows are:
  *   MWH - Delhivery GGN      Channel type GGNMWH, and Return in Gurgaon
- *   D2C WH - Delhivery GGN   D2C in Gurgaon
+ *   D2C WH - Delhivery GGN   D2C at mCaff_Gurgaon3
  *   MWH - Delhivery MUM      MUMMWH, and Return in Mumbai
- *   D2C WH - Delhivery MUM   D2C in Mumbai
- *   D2C WH - SR & DL         every other D2C row (Gurgaon-SR, HYP_*, the other cities)
+ *   D2C WH - Delhivery MUM   D2C at mCaff_Mumbai2
+ *   MWH - Beyond KOL         KOLMWH (KOL_WAREHOUSE), and Return in Kolkata
+ *   D2C WH - Beyond KOL      D2C at mCaff_Kolkata3
+ *   D2C WH - SR & DL         every other D2C row (HYP_*, the other facilities)
  *   DarkStore                DarkStore
  *   B2C (Amazon/FK/Myntra)   B2C
- * KOL MWH is not shown (user). A SKU with no MRP / COGS in the Sheet35 master counts in Units only (logged).
+ * (user, 2026-11-02: the D2C rows by facility - they were matched on a city and always 0 - and Kolkata shown, so the
+ * table adds up to the total stock.) A SKU with no MRP / COGS in the Sheet35 master counts in Units only (logged).
  */
 
 export const WH_ROWS = [
-  'MWH - Delhivery GGN', 'D2C WH - Delhivery GGN', 'MWH - Delhivery MUM', 'D2C WH - Delhivery MUM', 'D2C WH - SR & DL', 'DarkStore',
-  'B2C (Amazon/FK/Myntra)',
+  'MWH - Delhivery GGN', 'D2C WH - Delhivery GGN', 'MWH - Delhivery MUM', 'D2C WH - Delhivery MUM', 'MWH - Beyond KOL', 'D2C WH - Beyond KOL',
+  'D2C WH - SR & DL', 'DarkStore', 'B2C (Amazon/FK/Myntra)',
 ] as const;
 export type WhRow = (typeof WH_ROWS)[number];
 
@@ -33,15 +37,19 @@ export interface WhSummaryRow {
 
 export const WH_COLUMNS = ['WHs', 'GMV', 'Units', 'COGS (With Tax)', 'COGS Split'] as const;
 
+/** D2C facilities (lower case, without the mCaff_ prefix) -> their warehouse's D2C row. */
+const D2C_FACILITY_ROW = new Map<string, WhRow>([
+  ['gurgaon3', 'D2C WH - Delhivery GGN'], ['mumbai2', 'D2C WH - Delhivery MUM'], ['kolkata3', 'D2C WH - Beyond KOL'],
+]);
+
 /** The row a Sheet35(2) line counts in (null = not shown). */
 export const whRowOf = (channelType: string, location: string): WhRow | null => {
   const ct = channelType.trim();
   const loc = location.trim().toLowerCase();
   if (ct === 'GGNMWH' || (ct === 'Return' && loc === 'gurgaon')) return 'MWH - Delhivery GGN';
   if (ct === 'MUMMWH' || (ct === 'Return' && loc === 'mumbai')) return 'MWH - Delhivery MUM';
-  if (ct === 'D2C' && loc === 'gurgaon') return 'D2C WH - Delhivery GGN';
-  if (ct === 'D2C' && loc === 'mumbai') return 'D2C WH - Delhivery MUM';
-  if (ct === 'D2C') return 'D2C WH - SR & DL';
+  if (ct === 'KOLMWH' || (ct === 'Return' && (loc === 'kolkata' || loc === 'kol_warehouse'))) return 'MWH - Beyond KOL';
+  if (ct === 'D2C') return D2C_FACILITY_ROW.get(loc.replace(/^mcaff_/, '')) ?? 'D2C WH - SR & DL';
   if (ct === 'DarkStore') return 'DarkStore';
   if (ct === 'B2C') return 'B2C (Amazon/FK/Myntra)';
   return null;
