@@ -2,10 +2,10 @@
 Run PO extraction for a channel and print the extracted PO as JSON.
 
 Picks the pipeline from the files passed in:
-    pdf + sheet  extract_text_first_excel_v2   (blinkit, myntra)
+    pdf + sheet  extract_text_first_excel_v2   (blinkit, myntra, zepto)
     pdf only     extract_hybrid_text_first_v2  (purplle, avenue)
     sheet only   extract_excel_only_v2         (flipkart, bigbasket, firstcry, scootsy)
-    flat csv     extract_flat_csv              (zepto, tat; set by "pipeline": "flat_csv")
+    flat csv     extract_flat_csv              (tat; set by "pipeline": "flat_csv")
 
 Channel settings come from channels.json. If a channel's "expects" doesn't match the
 files given, the run is refused. Nothing is written to disk and nothing is printed while
@@ -18,7 +18,7 @@ Usage:
 
     python run_po.py blinkit blinkit_1.pdf blinkit_2.xlsx
     python run_po.py purplle s3://my-bucket/purplle/purplle_po.PDF
-    python run_po.py zepto zepto_po.csv > zepto.json
+    python run_po.py zepto P6110725.pdf P6110725.csv > zepto.json
 
 Files can be local or s3:// paths, in any order.
 Exit codes: 0 ok, 1 pipeline or other error, 2 bad arguments. On an error the JSON is
