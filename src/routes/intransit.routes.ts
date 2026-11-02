@@ -13,6 +13,7 @@ import { listPeriods } from '../modules/intransit/s3/periods';
 import { retryStorage, storageStatus } from '../modules/intransit/s3/status';
 import { storageOn } from '../modules/intransit/s3/scope';
 import { downloadLink, head, open } from '../modules/intransit/s3/store';
+import { saveRobotLogin } from '../modules/intransit/robot-login';
 import { getSnapshot, snapshotFile } from '../modules/intransit/snapshot.service';
 import { runMail, runMailWithFiles } from '../modules/intransit/wh-summary-mail';
 import { sendNow } from '../modules/mail/mail-lists.service';
@@ -55,6 +56,10 @@ import { createGunzip, createGzip } from 'zlib';
  *                                          -> 202 the queued fetch; its good files become the inputs of that day. A past
  *                                          day fetches only what can be fetched for any day (400 when nothing is left).
  *                                          409 while one runs for that source
+ *   POST   /intransit/robots/:source/login myntra; { cookies, localStorage? } from a person's browser (the ERP Robot Login
+ *                                          extension, 2026-11-02): kept as the robot's saved login, then a GRN fetch is
+ *                                          started with it: { data: { portal, cookies, check (the run) | null, checkError } }.
+ *                                          422 when the browser is not logged in to the portal (robot-login.ts)
  *   GET    /intransit/inventory            SOH + in-transit per SKU x channel x location from the latest built report, for
  *                                          Inventory Calculation (viewer on /planning/inventory):
  *                                          { data: { runId, asOf, builtAt, columns, rows: [[sku, name, channel, type, location, soh, inTransit]] } }
@@ -372,6 +377,14 @@ router.post(INTRANSIT_ROUTES.CONNECTOR, ...editor, async (req, res, next) => {
       ...(body.refreshCache === true ? { refreshCache: true } : {}),
     };
     res.status(202).json({ data: await startConnector(req.params.source, who(req), options) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post(INTRANSIT_ROUTES.ROBOT_LOGIN, ...editor, async (req, res, next) => {
+  try {
+    res.json({ data: await saveRobotLogin(req.params.source, (req.body ?? {}) as { cookies?: unknown; localStorage?: unknown }, who(req)) });
   } catch (err) {
     next(err);
   }
