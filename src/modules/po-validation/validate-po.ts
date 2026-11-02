@@ -22,6 +22,7 @@ import {
 import { DetailsChannel, MasterSku } from '../../entities';
 import { pincodeFrom } from '../po-processing/common/parse';
 import { Num, ProcessedLine, ProcessedPo } from '../po-processing/common/processed-po';
+import { pickOneLocation } from './location-tiebreak';
 import { ChannelMasterData, matchKey } from './master-data';
 
 /*
@@ -165,6 +166,9 @@ const findLocation =(po: ProcessedPo, master: ChannelMasterData, issues: Validat
     issues.push(validationIssue(ISSUE_TYPE.LOCATION_NOT_MAPPED, { field: ISSUE_FIELDS.DELIVERY_LOCATION, actual: po.delivery_facility_code || po.delivery_pincode }, detail));
   if (!picked && !code && !pin) return issue(VALIDATION_TEXT.NO_LOCATION_KEY), null;
   if (!rows.length) return issue(VALIDATION_TEXT.LOCATION_NONE(by)), null;
+  // Several match (a shared pincode): the PO's facility name, GSTIN or address may name exactly one (location-tiebreak.ts).
+  const one = !picked && rows.length > 1 ? pickOneLocation(rows, po) : null;
+  if (one) rows = [one.row];
   if (rows.length > 1) {
     const codes = rows.map((r) => r.channelLocationCode ?? r.uniwareCustomerCode ?? r.id).join(', ');
     return issue(VALIDATION_TEXT.LOCATION_MANY(by, rows.length, codes)), null;

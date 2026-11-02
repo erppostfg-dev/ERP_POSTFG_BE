@@ -90,6 +90,19 @@ export const SKU_ANY_CODE: ReadonlySet<ChannelName> = new Set([CHANNELS.SLIKK]);
  * only the rows whose ean_code is the PO line's EAN are kept (8906129570856: channel_code on MTOOL7_NL_S + MTOOL7_NL,
  * ean_code only on MTOOL7_NL_S). Still several -> review (MCaf383_WB / _N1, Mcaf396_WB / Mcaf396 carry both).
  */
+/**
+ * Several locations match one PO (shared pincode): how the PO's own address must match one of them to pick it
+ * (po-validation/location-tiebreak.ts; user 2026-11-02). Score = shared words / the smaller word count (0-1).
+ */
+export const LOCATION_TIEBREAK = {
+  /** the best address must share at least this share of words */
+  ADDRESS_MIN: 0.8,
+  /** and be this far ahead of the next one (Avenue Thane 2 (Kukse) 1.0 vs Mouje Borivali 0.93: same building -> review) */
+  ADDRESS_MARGIN: 0.2,
+  /** a PO address shorter than this (e.g. only "BLINK COMMERCE PRIVATE LIMITED") is not used */
+  ADDRESS_MIN_WORDS: 6,
+} as const;
+
 export const SKU_EAN_TIEBREAK: ReadonlySet<ChannelName> = new Set([CHANNELS.POP_TECH]);
 
 
