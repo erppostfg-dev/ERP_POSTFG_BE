@@ -9,6 +9,7 @@ import {
   ISSUE_FIELDS,
   ISSUE_STATUS,
   ISSUE_TYPE,
+  OUR_PRICE_ONLY_CHANNELS,
   PO_ACTIVE_STATUS,
   PO_VERIFY,
   PO_VERIFY_ACTION,
@@ -201,7 +202,7 @@ export interface VerifyLine {
   rate: number;
   value: number;
   /** What the PO says (processed.json); null when the PO has no such line. */
-  po: { description: string; qty: number; rate: number | null; /** A PO priced before GST: its unit cost as read (rate = with GST). */ rateBeforeGst: number | null; mrp: number | null; channelSkuCode: string } | null;
+  po: { description: string; qty: number; rate: number | null; /** A PO priced before GST: its unit cost as read (rate = with GST). */ rateBeforeGst: number | null; /** Information only (Myntra STRs): the channel's own price + GST %, not used. */ channelPrice?: number | null; channelGst?: number | null; mrp: number | null; channelSkuCode: string } | null;
   qtyDiffers: boolean;
   rateDiffers: boolean;
 }
@@ -233,6 +234,11 @@ export interface VerifyDetail {
    */
   totals: {
     po: { lines: number; units: number; value: number; valueBasis: 'with_gst' | 'before_gst'; valueWithGst: number | null };
+    /**
+     * A channel whose own price is NOT used (Myntra STRs, OUR_PRICE_ONLY_CHANNELS; 2026-11-03): what its PO says (with
+     * GST) next to ours, for information; null for the others.
+     */
+    channelPrice: { value: number | null; note: string } | null;
     saved: { lines: number; units: number; value: number };
   };
   /** processed.json as the OCR / API made it: the panel shows it next to the PO and finds each value on the PO. */
@@ -279,6 +285,9 @@ const lastAction = async (u: PoUpload) => {
   return r ? { action: r.action, by: r.user?.name ?? r.user?.email ?? null, at: r.doneAt.toISOString(), remark: r.remark } : null;
 };
 
+/** A number from processed.json's unmapped text, else null. */
+const num = (v: unknown): number | null => (v === undefined || v === null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+
 export const verifyDetail = async (uploadId: string): Promise<VerifyDetail> => {
   const u = await AppDataSource.getRepository(PoUpload).findOneBy({ id: uploadId });
   if (!u) throw appError(ERROR_CODES.UPLOAD_NOT_FOUND, uploadId);
@@ -319,7 +328,7 @@ export const verifyDetail = async (uploadId: string): Promise<VerifyDetail> => {
       qty,
       rate,
       value: Math.round(qty * rate * 100) / 100,
-      po: p ? { description: p.description, qty: n(p.qty), rate: poRate, rateBeforeGst: p.landing_rate === '' && p.unit_cost !== '' ? n(p.unit_cost) : null, mrp: p.channel_mrp !== '' ? n(p.channel_mrp) : null, channelSkuCode: p.channel_sku_code } : null,
+      po: p ? { channelPrice: num(p.unmapped?.myntra_landed_price), channelGst: num(p.unmapped?.myntra_gst), description: p.description, qty: n(p.qty), rate: poRate, rateBeforeGst: p.landing_rate === '' && p.unit_cost !== '' ? n(p.unit_cost) : null, mrp: p.channel_mrp !== '' ? n(p.channel_mrp) : null, channelSkuCode: p.channel_sku_code } : null,
       qtyDiffers: !p || n(p.qty) !== qty,
       rateDiffers: poRate !== null && Math.abs(poRate - rate) > PO_VERIFY.RATE_TOLERANCE,
     };
@@ -355,6 +364,9 @@ export const verifyDetail = async (uploadId: string): Promise<VerifyDetail> => {
         valueWithGst: beforeGst ? (typeof checked.totals.poValue === 'number' ? checked.totals.poValue : null) : n(po.po_value),
       },
       saved: { lines: lines.length, units: lines.reduce((s, l) => s + l.qty, 0), value: Math.round(lines.reduce((s, l) => s + l.value, 0) * 100) / 100 },
+      channelPrice: OUR_PRICE_ONLY_CHANNELS.includes(po.channel_name as ChannelName)
+        ? { value: num(po.unmapped?.myntra_landed_total), note: String(po.unmapped?.price_basis ?? '') }
+        : null,
     },
     processed: po,
   };

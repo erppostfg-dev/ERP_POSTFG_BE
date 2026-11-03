@@ -199,8 +199,23 @@ export const MYNTRA_STR = {
   MAX_RUNS: 3,
   ROBOT_TIMEOUT_MS: 60 * 60_000,
   ROBOT_JOB: 'myntra-strs',
-  /** Step 2 (STR -> PO -> sale order) is not built: the connector lists nothing and Process now is refused. */
-  PROCESSING: false,
+  /** Step 2 (2026-11-03): stored STRs become POs (the shared runner: PO intake, never twice, validation, sale order). */
+  PROCESSING: true,
+  /**
+   * Myntra's destination -> our Myntra location (user's sheet "myntra location", 3 Nov; Myntra = channel id 5, never
+   * Myntra-OR). Matched by the CSV's Destination WH name, else the STR code's destination. The warehouse comes from that
+   * location in our master (Gurgaon / Kolkata GGN_WAREHOUSE, the others MUM_WAREHOUSE2). uniwareChannel = what the sheet
+   * says the location's Uniware channel is: our master differing -> the PO goes to review (user).
+   */
+  DESTINATIONS: [
+    { code: 'BP', name: 'Bilaspur Warehouse - Gurgaon', location: 'Gurgaon', uniwareChannel: 'B2C_STN_MYNTRA_L' },
+    { code: 'FKME', name: 'FK Medchal Hyd - Myntra', location: 'Secunderabad', uniwareChannel: 'B2C_STN_MYNTRA' },
+    { code: 'BW', name: 'Bangalore - New Whitefield W/H', location: 'Bangalore', uniwareChannel: 'B2C_STN_MYNTRA' },
+    { code: 'MW', name: 'Myntra warehouse ( Mumbai )', location: 'Mumbai', uniwareChannel: 'B2C_STN_MYNTRA_L' },
+    { code: 'MYNT', name: 'Myntra Stellar FC', location: 'Kolkata', uniwareChannel: 'B2C_STN_MYNTRA' },
+  ],
+  /** The STR CSV's prices, kept on the PO as information only (user: our margin makes the price; MRP is checked). */
+  PRICE_COLUMNS: { LIST: 'List Price', LANDED: 'Landed Price' },
   POLL_MINUTES: 60,
   /** channel_pull_items.status. */
   STATUS: { WAITING: null, STORED: 'stored', FAILED: 'failed' },

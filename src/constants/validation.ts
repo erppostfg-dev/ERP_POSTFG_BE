@@ -1,5 +1,6 @@
 import { CHANNELS, ChannelName } from './channels';
 import { ISSUE_TYPE, IssueType } from './db';
+import { MYNTRA_STR } from './channel-api';
 
 /*
  * Validation of a processed.json against our master data (before the PO is saved and its sale order is made).
@@ -191,6 +192,17 @@ export type IssueField = (typeof ISSUE_FIELDS)[keyof typeof ISSUE_FIELDS];
  * (FOC / revised = OTHER, expired). Data issues (SKU, MRP, price, total, location, qty, OCR) must be corrected or the PO
  * rejected; DUPLICATE_PO can only be rejected.
  */
+/**
+ * Channels whose PO price is NOT checked (2026-11-03, user: Myntra STRs): the sale order takes our master rate (margin)
+ * and our GST; the PO's own price is only shown as information. No "price missing", no price / total check; MRP is.
+ */
+export const OUR_PRICE_ONLY_CHANNELS: readonly ChannelName[] = [CHANNELS.MYNTRA];
+
+/** What a location's Uniware channel should be (a channel's own sheet); our master differing -> review (OTHER). */
+export const EXPECTED_UNIWARE_CHANNEL: Partial<Record<ChannelName, Record<string, string>>> = {
+  [CHANNELS.MYNTRA]: Object.fromEntries(MYNTRA_STR.DESTINATIONS.map((d) => [d.location, d.uniwareChannel])),
+};
+
 export const ACCEPTABLE_ISSUE_TYPES: readonly IssueType[] = [ISSUE_TYPE.OTHER, ISSUE_TYPE.PO_EXPIRED, ISSUE_TYPE.TOTAL_MISMATCH];
 /** Price check (2026-10-30): a total still off after the line choices is accepted ("go with the line total") only with a remark. */
 export const REMARK_REQUIRED_ISSUE_TYPES: readonly IssueType[] = [ISSUE_TYPE.TOTAL_MISMATCH];
@@ -271,6 +283,8 @@ export const VALIDATION_TEXT = {
   PRICE_MISSING: 'no unit price on the PO line (neither landing rate nor unit cost)',
   GST_MISSING: (pepCode: string) => `no GST rate for ${pepCode} (neither on the PO nor in master_skus)`,
   FOC_REVIEW: (reasons: string) => `marked for manual review by processing: ${reasons}`,
+  UNIWARE_CHANNEL_DIFFERS: (location: string, ours: string, expected: string) =>
+    `Uniware channel of ${location}: our master says ${ours || '(none)'}, the channel's location sheet says ${expected}: fix the master (or accept)`,
   REVISED: (revisionOf: string) => `revised PO${revisionOf ? ` of ${revisionOf}` : ''}: updating the earlier PO is not built yet`,
   OCR_NO_PO_NUMBER: 'no PO number was read',
   OCR_NO_LINES: 'no line items were read',

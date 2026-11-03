@@ -1,6 +1,8 @@
 import {
   CHANNEL_LOCATION_MATCH,
   CHANNEL_TOLERANCES, poTotalAllowed,
+  EXPECTED_UNIWARE_CHANNEL,
+  OUR_PRICE_ONLY_CHANNELS,
   PRICE_CHOICE,
   PriceChoice,
   PUNCH_S,
@@ -291,7 +293,9 @@ const validateLine = (
       poUnit = unitCost * (1 + gst / 100);
       poValue = lineTotal !== null ? lineTotal * (1 + gst / 100) : chargedQty === null ? null : chargedQty * poUnit;
     }
-  } else add(validationIssue(ISSUE_TYPE.OTHER, { field: ISSUE_FIELDS.UNIT_PRICE, lineNo }, `${where}: ${VALIDATION_TEXT.PRICE_MISSING}`));
+  } else if (!OUR_PRICE_ONLY_CHANNELS.includes(channel)) {
+    add(validationIssue(ISSUE_TYPE.OTHER, { field: ISSUE_FIELDS.UNIT_PRICE, lineNo }, `${where}: ${VALIDATION_TEXT.PRICE_MISSING}`));
+  }
   out.poUnitPrice = orEmpty(poUnit);
   out.poLineValue = orEmpty(poValue);
 
@@ -372,6 +376,11 @@ export const validatePo = async (
     issues.push(validationIssue(ISSUE_TYPE.PO_EXPIRED, { field: ISSUE_FIELDS.EXPIRY_DATE, actual: po.expiry_date }, po.expiry_date, today));
   }
   const location = findLocation(po, master, issues, overrides.locationId);
+  // The location's Uniware channel differs from the channel's own location sheet (Myntra, 2026-11-03): review (OTHER)
+  const expectedUniware = location ? EXPECTED_UNIWARE_CHANNEL[channel]?.[location.locationCode] : undefined;
+  if (location && expectedUniware && location.uniwareChannel !== expectedUniware) {
+    issues.push(validationIssue(ISSUE_TYPE.OTHER, { field: ISSUE_FIELDS.CHANNEL }, VALIDATION_TEXT.UNIWARE_CHANNEL_DIFFERS(location.locationCode, location.uniwareChannel, expectedUniware)));
+  }
 
   // Line checks.
   const lines = po.line_items.map((l) => {

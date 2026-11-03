@@ -89,10 +89,9 @@ describe('the list', () => {
     expect((await api().get(`${V}/amazon_spapi/items`).set('Cookie', admin.cookie).expect(200)).body.data).toEqual([]);
   });
 
-  it('Myntra STRs (2026-11-03): a robot started by its email (no schedule), no Process now yet; its STRs with the last error', async () => {
+  it('Myntra STRs (2026-11-03): a robot started by its email (no schedule), Process now makes POs; its STRs with the last error', async () => {
     const my = (await api().get(V).set('Cookie', admin.cookie).expect(200)).body.data.find((p: { key: string }) => p.key === 'myntra_str');
-    expect(my).toMatchObject({ channel: 'myntra', kind: 'robot', processes: false, robot: { schedule: null, nextRunAt: null, startedBy: 'email' } });
-    expect((await api().post(`${V}/myntra_str/process`).set('Cookie', admin.cookie)).body.error.code).toBe('CHANNEL_PULL_NO_PROCESSING');
+    expect(my).toMatchObject({ channel: 'myntra', kind: 'robot', processes: true, robot: { schedule: null, nextRunAt: null, startedBy: 'email' } });
     expect((await api().patch(`${V}/myntra_str/schedule`).set('Cookie', admin.cookie).send({ robotEveryHours: 4 })).body.error.code).toBe('CHANNEL_PULL_NO_SCHEDULE');
     await (await import('../helpers/db')).insert('channel_pull_items', {
       source_system: 'myntra_str', external_id: 'STNCPWEBP271026-01', status: null, warehouse: 'BP', created_on: '2026-10-27',

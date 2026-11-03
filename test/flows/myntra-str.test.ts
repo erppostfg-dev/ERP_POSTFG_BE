@@ -4,7 +4,7 @@ import path from 'path';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { isStrEmail, strsOf } from '../../src/modules/channel-api/myntra/str-email';
 import { strToProcessed } from '../../src/modules/channel-api/myntra/str.parse';
-import { runStrRobot, takeStrEmail, type StrFetcher } from '../../src/modules/channel-api/myntra/str.service';
+import { runStrRobot, setAfterStored, takeStrEmail, type StrFetcher } from '../../src/modules/channel-api/myntra/str.service';
 import { loginAs } from '../helpers/auth';
 import { closeDb, insert, resetDb, rows } from '../helpers/db';
 import { clearS3, s3Objects } from '../helpers/fake-s3';
@@ -89,6 +89,8 @@ const myntraOn = async () => {
 };
 
 beforeEach(async () => {
+  // the process run after storing is tested in myntra-str-po.test.ts
+  setAfterStored(() => undefined);
   await resetDb();
   clearS3();
   tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'myntra-str-test-'));
@@ -133,11 +135,14 @@ describe('the email', () => {
 describe('the CSV', () => {
   it('-> processed.json: STR = PO number, its date = PO date, SKU Code = channel SKU, EAN without the leading 0, GST %; no price', () => {
     const { po, summary } = strToProcessed({ str: 'STNCPWEBP271026-01', date: '2026-10-27', destination: 'BP', group: 'NON TC', priority: 'P0' }, CSV);
-    expect(po).toMatchObject({ channel_name: 'myntra', po_number: 'STNCPWEBP271026-01', po_date: '2026-10-27', delivery_facility_code: 'BP', total_qty: 102, po_value: '' });
-    expect(po.line_items[0]).toMatchObject({ channel_sku_code: 'MCFNFCWH86498566', ean: '8906129573567', qty: 102, channel_mrp: 299, gst: 5, landing_rate: '', listing_sku_code: 'MCaf270' });
+    expect(po).toMatchObject({ channel_name: 'myntra', po_number: 'STNCPWEBP271026-01', po_date: '2026-10-27', delivery_facility_code: 'Gurgaon', total_qty: 102, po_value: '' });
+    // Myntra's prices + GST: information only (ours are used)
+    expect(po.line_items[0].unmapped).toMatchObject({ myntra_list_price: '209.3', myntra_landed_price: '219.77', myntra_gst: '5' });
+    expect(po.unmapped).toMatchObject({ myntra_landed_total: '22416.54', destination_code: 'BP' });
+    expect(po.line_items[0]).toMatchObject({ channel_sku_code: 'MCFNFCWH86498566', ean: '8906129573567', qty: 102, channel_mrp: 299, gst: '', landing_rate: '', listing_sku_code: 'MCaf270' });
     expect(summary).toMatchObject({ rows: 1, units: 102, source: 'Pep Technologies_SJIT_Bhiwandi_CPWE', destination: 'Bilaspur Warehouse - Gurgaon', missingColumns: [] });
     // intra-state: SGST + CGST
-    expect(strToProcessed({ str: 'STNCPWEMW271026-01', date: '2026-10-27', destination: 'MW', group: '', priority: '' }, CSV_INTRA).po.line_items[0].gst).toBe(18);
+    expect(strToProcessed({ str: 'STNCPWEMW271026-01', date: '2026-10-27', destination: 'MW', group: '', priority: '' }, CSV_INTRA).po.line_items[0].unmapped.myntra_gst).toBe('18');
   });
 });
 

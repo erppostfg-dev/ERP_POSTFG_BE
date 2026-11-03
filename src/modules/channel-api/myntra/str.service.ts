@@ -12,8 +12,11 @@ import { runSellerHubJob } from '../../intransit/runs.service';
 import { readBodyText } from '../../po-processing/common/email-sources';
 import { intakeGate } from '../../po-intake-control/intake-settings.service';
 import { isStrEmail, StrRef, strsOf } from './str-email';
-import { strToProcessed, StrSummary } from './str.parse';
+import { strToProcessed } from './str.parse';
+import type { StrItemData } from './str.types';
 import { FetchedStr } from './str.robot';
+import { processNow } from '../scheduler';
+import { myntraStrConnector } from './myntra-str.connector';
 
 /*
  * Myntra STRs, server side (2026-11-03, user: "until processed.json; the checks later"):
@@ -23,20 +26,11 @@ import { FetchedStr } from './str.robot';
  *   2. the robot (In-transit worker, the Myntra login, one browser job at a time) downloads each waiting STR's CSV;
  *   3. here: CSV + processed.json -> S3 channel-api/FY<yy><yy>/<month>/myntra/<STR>/ (no local copy kept), the row ->
  *      `stored` with the S3 folder and a summary. An STR that fails waits for the next run; after MAX_RUNS runs -> failed.
- * Nothing goes to po_uploads / validation / the PO tables yet. One run at a time; an email during a run -> one more run.
+ * Then (step 2, 2026-11-03) the stored STRs go through the Myntra connector at once (myntra-str.connector.ts): PO +
+ * sale order, or In Review. One run at a time; an email during a run -> one more run.
  */
 
-export interface StrItemData {
-  email: { folder: string; subject: string; receivedAt: string | null };
-  order: number;
-  group: string;
-  priority: string;
-  destination: string;
-  runs: number;
-  lastError: string | null;
-  s3Folder?: string;
-  summary?: StrSummary;
-}
+export type { StrItemData } from './str.types';
 
 /** A robot run, in the same shape as the Flipkart robot's (Channel Pulls shows both alike): listed = STRs asked for. */
 export interface StrRun {
@@ -202,8 +196,14 @@ export const runStrRobot = async (trigger: string, fetcher: StrFetcher = workerF
   }
   out.finishedAt = new Date().toISOString();
   await saveRun(out);
+  // step 2 (2026-11-03): the STRs just stored become POs at once (the shared runner, as Flipkart's Process now)
+  if (out.stored && MYNTRA_STR.PROCESSING) afterStored();
   return out;
 };
+
+/** What runs after STRs are stored (the Myntra connector's process run; tests replace it). */
+let afterStored = (): void => void processNow(myntraStrConnector);
+export const setAfterStored = (fn: () => void): void => { afterStored = fn; };
 
 let running: Promise<StrRun> | null = null;
 let again = false;

@@ -7,10 +7,17 @@ import type { StrRef } from './str-email';
  * One STR's CSV (Myntra partner portal "Download CSV", <STR>-summary.csv) -> processed.json (2026-11-03). One row per
  * SKU: GTIN, SKU Code (= our Myntra channel_code), Quantity, Vendor Article No / Name, HSN, Source WH, Destination WH,
  * MRP, List Price, Landed Price, IGST (or SGST + CGST) Rate / Amount. The CSV has no date: the STR code's date is the
- * PO date (as the team's Inventory Planning files have it). Price (user): List / Landed Price and tax amounts are NOT
- * used, our rate from the master margin makes the value later, so landing_rate stays empty; MRP and GST % are kept for
- * the checks (later).
+ * PO date (as the team's Inventory Planning files have it). Price + GST (user, 3 Nov): OURS only (master margin 0.85 and
+ * our GST); Myntra's List / Landed Price and GST % are NOT used, only kept per line as information (unmapped:
+ * myntra_list_price / myntra_landed_price / myntra_gst) and shown next to ours; MRP is checked. The delivery location =
+ * our Myntra location for the Destination WH (MYNTRA_STR.DESTINATIONS, the user's sheet), else '' (-> review).
  */
+
+/** Our location for a Myntra destination: by the CSV's Destination WH name, else the STR code's destination. */
+export const destinationOf = (name: string, code: string) => {
+  const key = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ');
+  return MYNTRA_STR.DESTINATIONS.find((d) => key(d.name) === key(name)) ?? MYNTRA_STR.DESTINATIONS.find((d) => d.code === code) ?? null;
+};
 
 const byName = (head: string[]) => {
   const ix = new Map(head.map((h, i) => [h.trim().toLowerCase(), i]));
@@ -48,7 +55,7 @@ export const strToProcessed = (ref: Pick<StrRef, 'str' | 'date' | 'destination' 
     const c = num(get(r, C.CGST));
     return s !== '' && c !== '' ? s + c : '';
   };
-  const items: ProcessedLine[] = rows.map((r, i) => ({
+  const items: ProcessedLine[] = rows.map((r, i): ProcessedLine => ({
     line_no: i + 1,
     pep_sku_code: '',
     listing_sku_code: get(r, C.ARTICLE),
@@ -64,9 +71,14 @@ export const strToProcessed = (ref: Pick<StrRef, 'str' | 'date' | 'destination' 
     line_total: '',
     margin: '',
     hsn: get(r, C.HSN),
-    gst: gstOf(r),
-    unmapped: { vendor_article_no: get(r, C.ARTICLE), brand: get(r, C.BRAND) },
+    // our GST is used (master); Myntra's is information only
+    gst: '',
+    unmapped: {
+      vendor_article_no: get(r, C.ARTICLE), brand: get(r, C.BRAND),
+      myntra_list_price: get(r, MYNTRA_STR.PRICE_COLUMNS.LIST), myntra_landed_price: get(r, MYNTRA_STR.PRICE_COLUMNS.LANDED), myntra_gst: String(gstOf(r)),
+    },
   }));
+  const landedTotal = Math.round(rows.reduce((t, r) => t + (Number(num(get(r, MYNTRA_STR.PRICE_COLUMNS.LANDED))) || 0) * (Number(num(get(r, C.QTY))) || 0), 0) * 100) / 100;
   const distinct = (name: string) => [...new Set(rows.map((r) => get(r, name)).filter(Boolean))].join(' | ');
   const summary: StrSummary = {
     rows: items.length,
@@ -75,7 +87,8 @@ export const strToProcessed = (ref: Pick<StrRef, 'str' | 'date' | 'destination' 
     destination: distinct(C.DESTINATION),
     missingColumns,
   };
-  const sources: Record<string, string> = { po_number: 'STR code', po_date: 'STR code', delivery_facility_code: 'STR code', line_items: 'STR csv' };
+  const dest = destinationOf(summary.destination, ref.destination);
+  const sources: Record<string, string> = { po_number: 'STR code', po_date: 'STR code', delivery_facility_code: dest ? 'Myntra location sheet' : 'missing', line_items: 'STR csv' };
   const po: ProcessedPo = {
     'subject line if email': `Myntra STR ${ref.str} (${summary.destination || ref.destination})`,
     channel_name: MYNTRA_STR.CHANNEL,
@@ -84,8 +97,8 @@ export const strToProcessed = (ref: Pick<StrRef, 'str' | 'date' | 'destination' 
     po_number: ref.str,
     po_date: ref.date,
     type_delivery_facility: '',
-    // the destination code (BP, FKME ...); its location mapping comes with the checks (later)
-    delivery_facility_code: ref.destination,
+    // our Myntra location for the destination (the user's sheet); unknown -> '' (review for the location)
+    delivery_facility_code: dest?.location ?? '',
     'shipping address': summary.destination,
     delivery_pincode: '',
     total_line_items: items.length,
@@ -103,7 +116,9 @@ export const strToProcessed = (ref: Pick<StrRef, 'str' | 'date' | 'destination' 
     revision_of: '',
     line_items: items,
     unmapped: {
-      source_wh: summary.source, destination_wh: summary.destination, str_group: ref.group, str_priority: ref.priority,
+      source_wh: summary.source, destination_wh: summary.destination, destination_code: ref.destination, str_group: ref.group, str_priority: ref.priority,
+      // information only: what Myntra's STR says the whole STR is worth (Landed Price with GST); ours is used
+      myntra_landed_total: String(landedTotal), price_basis: 'our master rate (margin) and our GST; Myntra prices not used',
       missing_columns: missingColumns.join(', '),
     },
     field_sources: sources,
