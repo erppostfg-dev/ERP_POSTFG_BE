@@ -11,4 +11,6 @@ export interface StrItemData {
   lastError: string | null;
   s3Folder?: string;
   summary?: StrSummary;
+  /** Came by Manual Upload (that upload's id), not by the STR email. */
+  manualUploadId?: string;
 }

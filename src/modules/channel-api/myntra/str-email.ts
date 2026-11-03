@@ -66,3 +66,11 @@ export const strsOf = (body: string): StrRef[] => {
   }
   return out;
 };
+
+/** One STR code's parts (destination, date), or null when it is not an STR code. */
+export const refOfStr = (str: string): Pick<StrRef, 'str' | 'destination' | 'date'> | null => {
+  const m = new RegExp(`^${MYNTRA_STR.CODE.source}$`).exec(str.trim().toUpperCase());
+  if (!m) return null;
+  const [, , dest, dd, mm, yy] = m;
+  return { str: m[0], destination: dest, date: `20${yy}-${mm}-${dd}` };
+};

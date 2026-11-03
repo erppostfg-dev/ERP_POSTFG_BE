@@ -227,6 +227,9 @@ export const MYNTRA_STR = {
   },
   CSV_FILE: (str: string) => `${str}-summary.csv`,
   INPUT_TYPE: 'myntra_str_csv',
+  /** Manual Upload (2026-11-03): the portal's file name (the STR + -summary), a copy's " (1)" allowed. */
+  MANUAL_FILE: /^(STN[A-Z]{4}[A-Z]{2,6}\d{6}-\d{2})(?:-summary)?(?:\s*\(\d+\))?\.csv$/i,
+  MANUAL_INPUT_TYPE: 'myntra_str_manual',
   PO_TYPE: 'Myntra STR',
   LOG_LINES: 200,
 } as const;
