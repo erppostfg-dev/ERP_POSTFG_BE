@@ -265,6 +265,24 @@ describe('verification before the Uniware hand-off', () => {
     await api().get(`${V}/po-review/${done.id}/uniware-csv`).set('Cookie', reviewer.cookie).expect(200);
     expect((await api().patch(`${V}/po-verify/settings/NoSuchChannel`).set('Cookie', admin.cookie).send({ required: false })).status).toBe(404);
   });
+
+  it('a switch saved under an older spelling of the channel (case) still works and takes the new spelling (dev 29 Oct)', async () => {
+    // the 28 Oct masters renamed e.g. "Gluzo" -> "GLUZO": the old row stayed, MySQL matches it, the code did not
+    await insert('po_verify_channel_settings', { channel: 'BIGBASKET', required: 1, updated_by: admin.userId, updated_at: new Date() });
+    const shown = async () => (await api().get(`${V}/po-verify/settings`).set('Cookie', admin.cookie).expect(200)).body.data.channels
+      .find((c: { channel: string }) => c.channel === 'BigBasket');
+    expect(await shown()).toMatchObject({ required: true, isDefault: false });
+    const off = await api().patch(`${V}/po-verify/settings/BigBasket`).set('Cookie', admin.cookie).send({ required: false }).expect(200);
+    expect(off.body.data).toMatchObject({ channel: 'BigBasket', required: false });
+    expect(await shown()).toMatchObject({ required: false });
+    // one row, now with the channel's own spelling; its POs follow the switch (CSV not locked)
+    expect(await rows('SELECT channel, required FROM po_verify_channel_settings')).toEqual([{ channel: 'BigBasket', required: 0 }]);
+    const done = await runPo(bigBasketPo(m));
+    await api().get(`${V}/po-review/${done.id}/uniware-csv`).set('Cookie', reviewer.cookie).expect(200);
+    // asked with another spelling: the same channel
+    await api().patch(`${V}/po-verify/settings/bigbasket`).set('Cookie', admin.cookie).send({ required: true }).expect(200);
+    expect(await shown()).toMatchObject({ required: true });
+  });
 });
 
 describe('Uniware hand-off', () => {

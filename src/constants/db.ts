@@ -45,6 +45,9 @@ export const TABLES = {
   PO_ISSUES: 'po_issues',
   PO_ISSUE_ACTIONS: 'po_issue_actions',
   PO_REVIEW_SUBMISSIONS: 'po_review_submissions',
+  PO_PRICE_DIFFERENCES: 'po_price_differences',
+  /** A rejected PO sent back to In Review to be fixed and approved after all (2026-11-03). */
+  PO_REOPENS: 'po_reopens',
   // Login and page access (2026-10-09, prefg's shape; created by our migration).
   USERS: 'users',
   USER_ROLES: 'user_roles',
@@ -76,6 +79,16 @@ export const TABLES = {
   // Who changed what in the 5 Masters tabs (2026-10-28): one row per changed field, read by the History button.
   MASTER_CHANGE_LOGS: 'master_change_logs',
   // Inbound plan + shipment tracking (2026-10-19, constants/inbound.ts).
+  // Feedback (2026-10-29, constants/feedback.ts): items, the people added to each, images (S3), comments + changes.
+  FEEDBACK_ITEMS: 'feedback_items',
+  FEEDBACK_MEMBERS: 'feedback_members',
+  FEEDBACK_IMAGES: 'feedback_images',
+  FEEDBACK_COMMENTS: 'feedback_comments',
+  // Gmail intake (2026-10-29, constants/gmail-intake.ts): each labelled email's channel once read; catch-ups as rows.
+  GMAIL_MESSAGES: 'gmail_messages',
+  INTAKE_CATCHUPS: 'intake_catchups',
+  // Channel pulls (2026-10-30): what a robot fetched (Flipkart consignments), before / when it became a PO.
+  CHANNEL_PULL_ITEMS: 'channel_pull_items',
   INBOUND_PLANS: 'inbound_plans',
   INBOUND_SHIPMENTS: 'inbound_shipments',
   INBOUND_SHIPMENT_LINES: 'inbound_shipment_lines',
@@ -93,6 +106,9 @@ export const TABLES = {
   INTAKE_EMAILS: 'intake_emails',
   /** Small server state kept across deploys, e.g. the Gmail sync point and the in-transit caches (2026-10-23). */
   APP_STATE: 'app_state',
+  /** Mailing lists (2026-10-30; constants/mail-lists.ts): a mail switched on / off, and who gets each mail. */
+  MAIL_LIST_SETTINGS: 'mail_list_settings',
+  MAIL_RECIPIENTS: 'mail_recipients',
 } as const;
 
 /** master_sku_components.stage: which split file a combo's parts come from (the report splits in two stages). */

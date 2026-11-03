@@ -9,6 +9,11 @@ import {
   ISSUE_STATUS,
   SYSTEM_ACTOR,
   PO_REVIEW_REMARK_MAX,
+  PRICE_CHOICE,
+  PRICE_DIFF_FIELD,
+  PriceChoice,
+  PriceDiffField,
+  REMARK_REQUIRED_ISSUE_TYPES,
   REVIEW_FIX_FIELD,
   REVIEW_SUBMISSION_STATUS,
   REVIEW_SUBMISSION_TYPE,
@@ -39,7 +44,7 @@ import { ProcessedPo } from '../po-processing/common/processed-po';
 import { csvOf, poRows, takeSerial } from '../po-pipeline/po-save.service';
 import { issueKey } from '../po-pipeline/po-uploads.service';
 import { MasterDataReader, matchKey } from '../po-validation/master-data';
-import { todayIst, validatePo } from '../po-validation/validate-po';
+import { todayIst, validatePo, ValidationResult } from '../po-validation/validate-po';
 import { LOG_SOURCE } from '../../constants/logging';
 import { log } from '../../utils/logger';
 
@@ -70,6 +75,11 @@ export interface LineCorrection {
   mrp?: number;
   /** PO unit price with tax. */
   rate?: number;
+  /** Price check (2026-10-30): a price / MRP mismatch decided by a click, ours or the channel's (no typing). */
+  priceFrom?: PriceChoice;
+  mrpFrom?: PriceChoice;
+  /** With a CHANNEL choice: the channel SKU gets the PO's value when the PO is approved. */
+  updateMaster?: boolean;
 }
 
 export interface ResubmitBody {
@@ -134,7 +144,10 @@ const prepare = async (uploadId: string, body: ResubmitBody, status: UploadStatu
     const issue = open.find((i) => String(i.id) === a.issueId);
     if (!issue) throw appError(ERROR_CODES.ISSUE_NOT_OPEN, a.issueId);
     if (!ACCEPTABLE_ISSUE_TYPES.includes(issue.issueType)) throw appError(ERROR_CODES.ISSUE_NOT_ACCEPTABLE, a.issueId, issue.issueType);
-    return { issue, remark: a.remark ?? body.remark ?? null };
+    const remark = a.remark ?? body.remark ?? null;
+    // "go with the line total" (price check) needs a reason
+    if (!remark && REMARK_REQUIRED_ISSUE_TYPES.includes(issue.issueType)) throw appError(ERROR_CODES.ISSUE_REMARK_REQUIRED, a.issueId, issue.issueType);
+    return { issue, remark };
   });
   if (body.locationId && !master?.locations.some((l) => String(l.id) === body.locationId)) {
     throw appError(ERROR_CODES.LOCATION_NOT_IN_CHANNEL, body.locationId, channel);
@@ -148,8 +161,10 @@ const prepare = async (uploadId: string, body: ResubmitBody, status: UploadStatu
   // Validate the corrected PO; what is left must all be accepted.
   const fixedPo = corrected(po, body.lines);
   const pepCodeByLine = new Map(body.lines.filter((c) => c.pepCode !== undefined).map((c) => [c.lineNo, c.pepCode as string]));
+  const priceFromByLine = new Map(body.lines.filter((c) => c.priceFrom).map((c) => [c.lineNo, c.priceFrom as PriceChoice]));
+  const mrpFromByLine = new Map(body.lines.filter((c) => c.mrpFrom).map((c) => [c.lineNo, c.mrpFrom as PriceChoice]));
   const now = new Date();
-  const v = await validatePo(fixedPo, master, now, { locationId: body.locationId, pepCodeByLine });
+  const v = await validatePo(fixedPo, master, now, { locationId: body.locationId, pepCodeByLine, priceFromByLine, mrpFromByLine });
   const acceptedKeys = new Set(accepted.map(({ issue }) => issueKey(issue.issueType, issue.lineNo, issue.fieldName)));
   const left = v.issues.filter((i) => !acceptedKeys.has(issueKey(i.type, i.lineNo, i.field)));
   if (left.length || !v.location) {
@@ -181,6 +196,13 @@ const fixesOf = (p: Prepared, body: ResubmitBody): ReviewFixes => {
         return { lineNo: c.lineNo, channelSku: line?.channel_sku_code || null, description: line?.description || null, changes };
       })
       .filter((l) => l.changes.length),
+    // price check: what the sale order takes per decided line, and whether the master changes on approval
+    choices: p.v.lines.flatMap((l) => {
+      const c = body.lines.find((x) => x.lineNo === String(l.lineNo));
+      const one = (field: PriceDiffField, from: PriceChoice | '', ours: unknown, channel: unknown) =>
+        from ? [{ lineNo: String(l.lineNo), channelSku: l.channelSkuCode || null, description: l.skuName || null, field, from, ours: Number(ours), channel: Number(channel), updateMaster: from === PRICE_CHOICE.CHANNEL && !!c?.updateMaster }] : [];
+      return [...one(PRICE_DIFF_FIELD.PRICE, l.priceFrom, l.masterRate, l.poUnitPrice), ...one(PRICE_DIFF_FIELD.MRP, l.mrpFrom, l.masterMrp, l.poMrp)];
+    }),
     issues: p.open.map((i) => ({
       issueId: String(i.id),
       type: i.issueType,
@@ -322,11 +344,17 @@ const pendingSubmission = async (id: string, m?: EntityManager): Promise<PoRevie
 };
 
 /** Approver: replay the reviewer's corrections, validate again, create the PO. No longer passing -> back to In Review. */
-export const approveSubmission = async (id: string, by: Actor, remark?: string): Promise<ResubmitResult & { submissionId: string }> => {
+/** Runs inside the approval's transaction once the PO is saved (price check: the list + master updates; 2026-10-30). */
+export type ApprovalHook = (m: EntityManager, ctx: {
+  v: ValidationResult; poDate: string | null; uploadId: string; submissionId: string; poUid: string; reviewer: Actor; now: Date; lines: LineCorrection[];
+}) => Promise<void>;
+
+export const approveSubmission = async (id: string, by: Actor, remark?: string, hook?: ApprovalHook): Promise<ResubmitResult & { submissionId: string }> => {
   const s = await pendingSubmission(id);
   const body = s.changes as unknown as ResubmitBody;
   // Issues are resolved by the reviewer who fixed them; the approval itself is recorded on the submission.
-  const reviewer = (s.submittedBy ? await AppDataSource.getRepository(User).findOneBy({ id: s.submittedBy }) : null)?.email ?? by.email;
+  const submitter = s.submittedBy ? await AppDataSource.getRepository(User).findOneBy({ id: s.submittedBy }) : null;
+  const reviewer = submitter?.email ?? by.email;
   let p: Prepared;
   try {
     p = await prepare(s.uploadId, body, UPLOAD_STATUS.PENDING_APPROVAL);
@@ -360,6 +388,12 @@ export const approveSubmission = async (id: string, by: Actor, remark?: string):
       poUid: r.poUid,
       saleOrderCode: r.code,
     });
+    if (hook) {
+      await hook(m, {
+        v: p.v, poDate: p.fixedPo.po_date || null, uploadId: s.uploadId, submissionId: id, poUid: r.poUid,
+        reviewer: submitter ? { id: submitter.id, email: submitter.email } : by, now: p.now, lines: body.lines,
+      });
+    }
   });
   log.info(LOG_SOURCE.APP, `[po-review] submission ${id}: approved by ${by.email}`);
   bumpReview();

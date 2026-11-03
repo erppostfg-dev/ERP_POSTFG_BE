@@ -14,6 +14,8 @@ export interface ReviewFixes {
   location: { from: string | null; to: string | null } | null;
   lines: { lineNo: string; channelSku: string | null; description: string | null; changes: { field: string; from: unknown; to: unknown }[] }[];
   issues: { issueId: string; type: string; lineNo: string | null; field: string | null; message: string | null; how: 'fixed' | 'accepted'; remark: string | null }[];
+  /** Price check (2026-10-30): per decided line + field, ours or the channel's value, and whether the master changes. */
+  choices?: { lineNo: string; channelSku: string | null; description: string | null; field: string; from: string; ours: number; channel: number; updateMaster: boolean }[];
 }
 
 /**

@@ -39,6 +39,8 @@ const CONTENT_TYPES: Record<string, string> = {
   '.xls': 'application/vnd.ms-excel',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
 };
 
 const METADATA = FILES.METADATA;
@@ -85,6 +87,9 @@ export const readS3Json = async <T>(s3Url: string): Promise<T | undefined> => {
   return text === undefined ? undefined : (JSON.parse(text) as T);
 };
 
+/** A text file from S3 by its s3:// URL, or undefined when it isn't there (Myntra STR CSVs, 2026-11-03). */
+export const readS3Text = async (s3Url: string): Promise<string | undefined> => getText(keyOfS3Url(s3Url));
+
 /** The key of an s3://<our bucket>/<key> URL (S3 must be on, and the bucket ours). */
 const keyOfS3Url = (s3Url: string): string => {
   if (!env.s3.enabled) throw appError(ERROR_CODES.S3_DISABLED);
@@ -101,6 +106,15 @@ export const writeS3Text = async (s3Url: string, body: string): Promise<void> =>
   const key = keyOfS3Url(s3Url);
   await putBody(key, body, key);
 };
+
+/** Writes a file (bytes) to S3 by its s3:// URL; the type comes from the name (Feedback images, 2026-10-29). */
+export const writeS3File = async (s3Url: string, body: Buffer): Promise<void> => {
+  const key = keyOfS3Url(s3Url);
+  await putBody(key, body, key);
+};
+
+/** The s3:// URL of a key in our bucket. */
+export const s3UrlOfKey = (key: string): string => `s3://${env.s3.bucket}/${key}`;
 
 /**
  * A short-lived https link to an S3 file, for the browser (it cannot open s3://). The file is served with its type

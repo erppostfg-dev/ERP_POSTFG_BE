@@ -11,15 +11,18 @@ import {
   IssueType,
   PO_REVIEW_LINK_MINUTES,
   PoWarning,
+  REVIEW_SUBMISSION_STATUS,
+  REVIEW_SUBMISSION_TYPE,
   UPLOAD_STATUS,
   UploadStatus,
 } from '../../constants';
-import { DetailsChannel, DetailsPurchaseOrder, PoIssue, PoUpload, User } from '../../entities';
+import { DetailsChannel, DetailsPurchaseOrder, PoIssue, PoReopen, PoReviewSubmission, PoUpload, User } from '../../entities';
 import { appError } from '../../utils/AppError';
 import { openS3File, readS3Json, s3DownloadLink } from '../email-intake/s3-mirror.service';
 import { Num, ProcessedPo } from '../po-processing/common/processed-po';
 import { MasterDataReader, matchKey } from '../po-validation/master-data';
 import { validatePo } from '../po-validation/validate-po';
+import { verifyStatesOf, type VerifyStateItem } from '../po-verify/po-verify.service';
 
 /*
  * GET /po-review (API contract "PO review"): po_uploads of one status, newest first, with what the review screens
@@ -68,7 +71,43 @@ export interface PoReviewListItem {
   csvDownloadedBy: string | null;
   uniwareUploadedAt: string | null;
   uniwareUploadedBy: string | null;
+  /**
+   * Failed POs (2026-11-02, user: "show the failed ones with why"): the step that failed (PIPELINE_STEP: ocr, processing,
+   * save_po, uniware_csv, release), its code and reason as stored in po_uploads.error_details, and when. null otherwise.
+   */
+  failure: { step: string | null; code: string | null; reason: string | null; at: string | null; ocrAttempts: number } | null;
+  /** Rejected POs: the latest rejection: by the reviewer (from PO review) or the approver (Approvals), who, when, why. */
+  rejection: { by: string | null; byEmail: string | null; at: string | null; reason: string | null; from: 'review' | 'approval' } | null;
+  /**
+   * Processed POs (2026-11-03): the verification state (To verify / Verified / In Uniware / not required), whether its
+   * channel needs it, who verified and when; null for the other lists. Replaces the screen's GET /po-verify?uploadIds.
+   */
+  verify: Omit<VerifyStateItem, 'uploadId'> | null;
+  /** Reopened after a rejection (2026-11-03): the latest reopen (when, why) and the rejection it undid; null = never. */
+  reopened: { at: string; remark: string; rejectedReason: string | null; rejectedFrom: string | null; times: number } | null;
 }
+
+/** po_uploads.error_details as the pipeline writes it ({ step, code?, reason? | message? }). */
+const failureOf = (u: PoUpload): PoReviewListItem['failure'] => {
+  if (u.status !== UPLOAD_STATUS.FAILED) return null;
+  const e: Record<string, unknown> = u.errorDetails ?? {};
+  const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+  return { step: str(e.step), code: str(e.code), reason: str(e.reason) ?? str(e.message) ?? str(e.error), at: iso(u.updatedAt), ocrAttempts: u.ocrAttempts };
+};
+
+const reopenedFor = (e: { latest: PoReopen; times: number } | undefined): PoReviewListItem['reopened'] =>
+  e ? { at: e.latest.reopenedAt.toISOString(), remark: e.latest.remark, rejectedReason: e.latest.rejectedReason, rejectedFrom: e.latest.rejectedFrom, times: e.times } : null;
+
+const rejectionFor = (
+  u: PoUpload, r: PoReviewSubmission | undefined, who: (id: number | null) => string | null, emailOf: (id: number | null) => string | null,
+): PoReviewListItem['rejection'] => {
+  if (u.status !== UPLOAD_STATUS.REJECTED) return null;
+  if (!r) return { by: null, byEmail: null, at: iso(u.updatedAt), reason: null, from: 'review' };
+  return {
+    by: who(r.decidedBy), byEmail: emailOf(r.decidedBy), at: iso(r.decidedAt), reason: r.decisionRemark,
+    from: r.type === REVIEW_SUBMISSION_TYPE.REVIEWER_REJECT ? 'review' : 'approval',
+  };
+};
 
 /** Start of an Indian-time calendar day, as the UTC instant the DB stores (timezone 'Z'). */
 const istDayStart = (day: string): Date => new Date(Date.parse(`${day}T00:00:00Z`) - IST_OFFSET_MS);
@@ -81,7 +120,10 @@ export const listPoReview = async (query: PoReviewListQuery): Promise<{ items: P
   // Completed POs are listed and filtered by when they finished, newest first; the rest by when they arrived,
   // oldest first (the PO waiting longest for a reviewer is on top).
   const dateColumn = query.status === UPLOAD_STATUS.COMPLETED ? 'u.completedAt' : 'u.createdAt';
-  const order = query.status === UPLOAD_STATUS.COMPLETED ? 'DESC' : 'ASC';
+  // Rejected / failed (2026-11-02): the latest first, by when it was rejected / failed.
+  const ended = query.status === UPLOAD_STATUS.REJECTED || query.status === UPLOAD_STATUS.FAILED;
+  const order = query.status === UPLOAD_STATUS.COMPLETED || ended ? 'DESC' : 'ASC';
+  const orderColumn = ended ? 'u.updatedAt' : dateColumn;
 
   const qb = AppDataSource.getRepository(PoUpload)
     .createQueryBuilder('u')
@@ -100,7 +142,7 @@ export const listPoReview = async (query: PoReviewListQuery): Promise<{ items: P
   }
 
   const [uploads, total] = await qb
-    .orderBy(dateColumn, order)
+    .orderBy(orderColumn, order)
     .addOrderBy('u.id', order)
     .skip((query.page - 1) * query.pageSize)
     .take(query.pageSize)
@@ -131,10 +173,37 @@ export const listPoReview = async (query: PoReviewListQuery): Promise<{ items: P
     .addGroupBy('i.issueType')
     .getRawMany<{ uploadId: string; issueType: string; count: string }>();
 
-  const userIds = [...new Set(uploads.flatMap((u) => [u.csvDownloadedBy, u.uniwareUploadedBy]).filter((v): v is number => v !== null))];
-  const names = new Map(
-    userIds.length ? (await AppDataSource.getRepository(User).findBy({ id: In(userIds) })).map((x) => [x.id, x.name] as const) : [],
+  // Rejected ones: their latest rejected submission (reviewer reject from PO review, or the approver's reject).
+  const rejectedIds = uploads.filter((u) => u.status === UPLOAD_STATUS.REJECTED).map((u) => u.id);
+  const rejections = rejectedIds.length
+    ? await AppDataSource.getRepository(PoReviewSubmission).find({
+        select: { id: true, uploadId: true, type: true, decidedBy: true, decidedAt: true, decisionRemark: true },
+        where: { uploadId: In(rejectedIds), status: REVIEW_SUBMISSION_STATUS.REJECTED },
+        order: { id: 'DESC' },
+      })
+    : [];
+  const rejectionOf = new Map<string, PoReviewSubmission>();
+  for (const r of rejections) if (!rejectionOf.has(String(r.uploadId))) rejectionOf.set(String(r.uploadId), r);
+  // Reopened ones (2026-11-03): their latest reopen + how many times (one read per page)
+  const reopens = await AppDataSource.getRepository(PoReopen).find({ where: { uploadId: In(uploads.map((u) => u.id)) }, order: { id: 'DESC' } });
+  const reopenOf = new Map<string, { latest: PoReopen; times: number }>();
+  for (const r of reopens) {
+    const e = reopenOf.get(String(r.uploadId));
+    if (e) e.times++;
+    else reopenOf.set(String(r.uploadId), { latest: r, times: 1 });
+  }
+
+  const userIds = [...new Set([
+    ...uploads.flatMap((u) => [u.csvDownloadedBy, u.uniwareUploadedBy]),
+    ...[...rejectionOf.values()].map((r) => r.decidedBy),
+  ].filter((v): v is number => v !== null))];
+  // Processed: each PO's verification state, worked out here (no separate call with every id from the screen)
+  const verifyOf = new Map(
+    query.status === UPLOAD_STATUS.COMPLETED ? (await verifyStatesOf(uploads)).items.map(({ uploadId, ...v }) => [uploadId, v] as const) : [],
   );
+  const people = userIds.length ? await AppDataSource.getRepository(User).findBy({ id: In(userIds) }) : [];
+  const names = new Map(people.map((x) => [x.id, x.name] as const));
+  const emails = new Map(people.map((x) => [x.id, x.email] as const));
   const who = (id: number | null) => (id === null ? null : names.get(id) ?? null);
 
   const items = uploads.map((u): PoReviewListItem => {
@@ -166,6 +235,10 @@ export const listPoReview = async (query: PoReviewListQuery): Promise<{ items: P
       csvDownloadedBy: who(u.csvDownloadedBy),
       uniwareUploadedAt: iso(u.uniwareUploadedAt),
       uniwareUploadedBy: who(u.uniwareUploadedBy),
+      failure: failureOf(u),
+      rejection: rejectionFor(u, rejectionOf.get(String(u.id)), who, (id) => (id === null ? null : emails.get(id) ?? null)),
+      reopened: reopenedFor(reopenOf.get(String(u.id))),
+      verify: verifyOf.get(String(u.id)) ?? null,
     };
   });
   return { items, total };
@@ -194,6 +267,8 @@ export interface PoReviewLine {
   poLineValue: Num;
   /** Ours, from the master ("" when the SKU is not mapped). */
   pepCode: string;
+  /** The code the sale order is punched with: the _S code of a combo when our master has it, else pepCode. */
+  punchCode: string;
   skuName: string;
   ourMrp: Num;
   ourRate: Num;
@@ -379,6 +454,7 @@ export const getPoReview = async (uploadId: string): Promise<PoReviewDetail> => 
         poUnitPrice: v?.poUnitPrice ?? l.landing_rate,
         poLineValue: v?.poLineValue ?? l.line_total,
         pepCode: v?.pepCode ?? '',
+        punchCode: v?.punchCode || v?.pepCode || '',
         skuName: v?.skuName ?? '',
         ourMrp: v?.ourMrp ?? '',
         ourRate: v?.ourRate ?? '',

@@ -516,6 +516,11 @@ export const planDay = async (date: string, missingKeys: (s: IntransitSource) =>
   const fetchRequired: string[] = [];
   for (const d of daily) {
     if (d.connector === PEPIMS_CONNECTOR && d.fetchable) continue; // read fresh from PEPIMS at the build
+    // an optional file never holds a build up: without a copy its sheet says so and the build warns
+    if (INPUT_BY_NAME.get(d.name)?.optional) {
+      if (d.on === 'missing') warnings.push(`${d.name}: no copy yet (optional: the build goes on without it)`);
+      continue;
+    }
     if (d.on === 'missing') {
       if (d.fetchable) fetchRequired.push(d.name);
       else blockers.push(`${d.name}: ${d.group === 'api' && d.notFetchable ? `${d.notFetchable}; ` : ''}upload it for ${longDay(date)}`);

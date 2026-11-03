@@ -1,9 +1,9 @@
-import { Not } from 'typeorm';
+import { In, IsNull, Not } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
 import {
-  CHANNEL_MASTER_IDS, CHANNELS, ChannelName, ERROR_CODES, IST_OFFSET_MS, PO_INTAKE, UPLOAD_SOURCE, UPLOAD_STATUS,
+  CHANNEL_MASTER_IDS, CHANNELS, ChannelName, CatchupStatus, ERROR_CODES, IST_OFFSET_MS, PO_INTAKE, UPLOAD_SOURCE, UPLOAD_STATUS,
 } from '../../constants';
-import { ActivityLog, ChannelIntakeSetting, MasterChannel, MasterPurchaseOrder, PoUpload } from '../../entities';
+import { ActivityLog, ChannelIntakeSetting, IntakeCatchup, MasterChannel, MasterPurchaseOrder, PoUpload } from '../../entities';
 import { appError } from '../../utils/AppError';
 import { channelConfigs } from '../ocr/channels.config';
 
@@ -24,6 +24,10 @@ const intakeChannels = (): { channel: ChannelName; source: 'email' | 'api' }[] =
   // A channel with no senders (Nykaa) comes by Manual Upload only, which is never held: no switch for it here.
   ...channelConfigs.filter((c) => c.senders.length).map((c) => ({ channel: c.channel, source: 'email' as const })),
   { channel: CHANNELS.AMAZON, source: 'api' as const },
+  // Flipkart scheduled consignments, from the Seller Hub robot (2026-10-30): switched like Amazon
+  { channel: CHANNELS.FLIPKART, source: 'api' as const },
+  // Myntra STRs (2026-11-03): the STR list comes by email, the CSVs by our robot; switched like Flipkart
+  { channel: CHANNELS.MYNTRA, source: 'api' as const },
 ];
 
 /** po_uploads.channel holds master_channels.display_name. */
@@ -88,6 +92,25 @@ export const intakeGate = async (channel: string, receivedAt: Date | null): Prom
   return 'take';
 };
 
+export type IntakeGate = (channel: string, receivedAt: Date | null) => 'take' | 'off' | 'before';
+
+/** intakeGate for many emails with ONE query (a Gmail pass, 2026-10-29): the switches as they are now. */
+export const intakeGates = async (): Promise<IntakeGate> => {
+  const rows = await AppDataSource.getRepository(ChannelIntakeSetting).find({ select: { channel: true, enabled: true, processFrom: true } })
+    .catch((err: { code?: string }) => {
+      if (err.code === 'ER_NO_SUCH_TABLE') return null;
+      throw err;
+    });
+  if (!rows) return () => 'take';
+  const by = new Map(rows.map((r) => [r.channel, r]));
+  return (channel, receivedAt) => {
+    const row = by.get(channel);
+    if (!row?.enabled) return 'off';
+    if (row.processFrom && receivedAt && receivedAt < row.processFrom) return 'before';
+    return 'take';
+  };
+};
+
 /** The channel's "process from" time: older POs are not taken at all (emails stay in Gmail). null = no start. */
 export const processFromOf = async (channel: string): Promise<Date | null> => {
   const row = await settingOf(channel);
@@ -96,7 +119,8 @@ export const processFromOf = async (channel: string): Promise<Date | null> => {
 
 /**
  * Before OCR (2026-10-23, user: "check the PO is in our system before processing, to save OCR cost"): a PO number read
- * from the email subject that POST_FG already has for this channel (a PO upload not failed, or a saved PO).
+ * from the email subject that POST_FG already has for this channel (a PO upload not failed, one still waiting for OCR
+ * whose email subject names the same PO, or a saved PO).
  */
 export const alreadyHavePo = async (channel: string, poNumber: string): Promise<string | null> => {
   const name = (await displayNames()).get(channel) ?? channel;
@@ -104,6 +128,18 @@ export const alreadyHavePo = async (channel: string, poNumber: string): Promise<
     where: { channel: name, poNumber, status: Not(UPLOAD_STATUS.FAILED) }, order: { id: 'DESC' },
   });
   if (row) return `upload ${row.id} (${row.status})`;
+  // An upload still waiting for OCR has no po_number yet (OCR fills it): its email subject names the PO (backlog B2,
+  // 2026-10-30: a re-send or a catch-up overlapping a live email was OCR'd twice).
+  const subjectPo = channelConfigs.find((c) => c.channel === channel)?.poNumber;
+  if (subjectPo) {
+    const waiting = await AppDataSource.getRepository(PoUpload).find({
+      select: ['id', 'status', 'emailSubject'],
+      where: { channel: name, poNumber: IsNull(), status: In([UPLOAD_STATUS.QUEUED, UPLOAD_STATUS.HELD, UPLOAD_STATUS.EXTRACTING]) },
+      order: { id: 'DESC' },
+    });
+    const same = waiting.find((w) => w.emailSubject?.match(subjectPo)?.[1] === poNumber);
+    if (same) return `upload ${same.id} (${same.status}, waiting for OCR)`;
+  }
   const saved = await AppDataSource.getRepository(MasterPurchaseOrder).findOne({ select: ['uid'], where: { channel: name, poNumber } });
   return saved ? `saved PO ${saved.uid}` : null;
 };
@@ -140,11 +176,38 @@ export interface IntakeChannel {
   heldBeforeStart: number;
   updatedBy: string | null;
   updatedAt: string | null;
+  /** Email channels: the last Gmail catch-up and how it went (null = never asked). */
+  catchUp: CatchUpState | null;
 }
 
+export interface CatchUpState {
+  status: CatchupStatus;
+  from: string;
+  /** Failed tries so far, and when it is tried again by itself. */
+  attempts: number;
+  nextTryAt: string | null;
+  lastError: string | null;
+  /** Last finished pass: the channel's emails looked at, and how many were newly sent. */
+  found: number | null;
+  sent: number | null;
+  finishedAt: string | null;
+}
+
+const catchUpStates = async (): Promise<Map<string, CatchUpState>> => {
+  const rows = await AppDataSource.getRepository(IntakeCatchup).find().catch((err: { code?: string }) => {
+    if (err.code === 'ER_NO_SUCH_TABLE') return [];
+    throw err;
+  });
+  return new Map(rows.map((r) => [r.channel, {
+    status: r.status, from: r.fromAt.toISOString(), attempts: r.attempts, nextTryAt: r.nextTryAt?.toISOString() ?? null,
+    lastError: r.lastError, found: r.found, sent: r.sent, finishedAt: r.finishedAt?.toISOString() ?? null,
+  }]));
+};
+
 export const listIntake = async (): Promise<{ universal: { processFrom: string | null; updatedBy: string | null; updatedAt: string | null }; channels: IntakeChannel[] }> => {
-  const names = await displayNames();
-  const rows = await AppDataSource.getRepository(ChannelIntakeSetting).find({ relations: { user: true } });
+  const [names, rows, catchUps] = await Promise.all([
+    displayNames(), AppDataSource.getRepository(ChannelIntakeSetting).find({ relations: { user: true } }), catchUpStates(),
+  ]);
   const u = rows.find((x) => x.channel === PO_INTAKE.UNIVERSAL_KEY);
   const out: IntakeChannel[] = [];
   for (const { channel, source } of intakeChannels()) {
@@ -159,6 +222,7 @@ export const listIntake = async (): Promise<{ universal: { processFrom: string |
       ...(({ held, beforeStart }) => ({ held, heldBeforeStart: beforeStart }))(await heldCounts(name, r?.processFrom ?? null)),
       updatedBy: r?.user?.name ?? r?.user?.email ?? null,
       updatedAt: r ? r.updatedAt.toISOString() : null,
+      catchUp: source === 'email' ? catchUps.get(channel) ?? null : null,
     });
   }
   return {

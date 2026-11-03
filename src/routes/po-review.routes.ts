@@ -11,6 +11,8 @@ import {
   PO_REVIEW_LIST,
   PO_REVIEW_REMARK_MAX,
   PO_REVIEW_QUERY,
+  PRICE_CHOICE,
+  PriceChoice,
   REVIEW_LIVE,
   REVIEW_RECHECK,
   UNIWARE_HANDOFF,
@@ -24,7 +26,8 @@ import { getPoFile, getPoReview, listPoReview, PoReviewListQuery } from '../modu
 import { reviewEvents, reviewVersion } from '../modules/po-review/po-review.live';
 import { recheckInReview } from '../modules/po-review/recheck.service';
 import { downloadCombined, downloadOne, markUploaded } from '../modules/po-review/uniware-handoff.service';
-import { lineItems } from '../modules/po-review/line-items.service';
+import { lineItems, reviewLineItems } from '../modules/po-review/line-items.service';
+import { getRejection, reopenRejected } from '../modules/po-review/po-review-reopen.service';
 import { LineCorrection, rejectPo, ResubmitBody, submitForApproval } from '../modules/po-review/po-review-actions.service';
 import { appError } from '../utils/AppError';
 
@@ -52,6 +55,7 @@ const router = Router();
 export type Problem = { field: string; code: string; message: string };
 
 const STATUSES = Object.values(UPLOAD_STATUS) as string[];
+const CHOICES = Object.values(PRICE_CHOICE);
 
 const text = (req: Request, name: string): string | undefined => {
   const v = req.query[name];
@@ -216,12 +220,24 @@ const parseResubmit = (body: unknown): ResubmitBody => {
     if (lineNo === undefined || lineNo === null || lineNo === '') return r.bad(f(B.LINE_NO), 'FIELD_REQUIRED', f(B.LINE_NO)), undefined;
     const pep = l[B.PEP_CODE];
     if (pep !== undefined && (typeof pep !== 'string' || !pep.trim())) r.bad(f(B.PEP_CODE), 'FIELD_NOT_TEXT', f(B.PEP_CODE));
+    // price check (2026-10-30): ours | channel per mismatch, update master = true / false
+    const choice = (key: string): PriceChoice | undefined => {
+      const v = l[key];
+      if (v === undefined || v === null || v === '') return undefined;
+      if (!(CHOICES as unknown[]).includes(v)) return r.bad(f(key), 'FIELD_NOT_ONE_OF', f(key), CHOICES.join(', ')), undefined;
+      return v as PriceChoice;
+    };
+    const update = l[B.UPDATE_MASTER];
+    if (update !== undefined && typeof update !== 'boolean') r.bad(f(B.UPDATE_MASTER), 'FIELD_NOT_BOOLEAN', f(B.UPDATE_MASTER));
     return {
       lineNo: String(lineNo),
       pepCode: typeof pep === 'string' && pep.trim() ? pep.trim() : undefined,
       qty: r.amount(l[B.QTY], f(B.QTY)),
       mrp: r.amount(l[B.MRP], f(B.MRP)),
       rate: r.amount(l[B.RATE], f(B.RATE)),
+      priceFrom: choice(B.PRICE_FROM),
+      mrpFrom: choice(B.MRP_FROM),
+      updateMaster: update === true || undefined,
     };
   });
 
@@ -272,6 +288,32 @@ router.post('/:uploadId/reject', requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS
   }
 });
 
+// ---- Rejected POs: why, and reopen (2026-11-03, user) ---------------------------------------------------------------
+
+/** GET /po-review/:uploadId/rejection: why it was rejected (who / where / reason), the errors rejected with it, what the
+ *  reviewer had changed (approver rejections) and every earlier reopen. Viewer. */
+router.get('/:uploadId/rejection', requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.VIEWER), async (req, res, next) => {
+  try {
+    res.json({ data: await getRejection(uploadIdOf(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /po-review/:uploadId/reopen { remark }: a rejected PO back to In Review (checks again against today's masters +
+ *  one issue to accept), to be fixed and submitted for approval again. Editor; any number of times. */
+router.post('/:uploadId/reopen', requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
+  try {
+    const uploadId = uploadIdOf(req);
+    const problems: Problem[] = [];
+    const remark = bodyReader(problems).remark((req.body as Record<string, unknown> | undefined)?.[B.REMARK], B.REMARK, true);
+    if (problems.length || !remark) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails(problems);
+    res.json({ data: await reopenRejected(uploadId, remark, { id: req.auth!.user.id, email: req.auth!.user.email }) });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ---- Re-check after a master fix (2026-10-22, REVIEW_RECHECK) ------------------------------------------------------
 
 /** POST /po-review/recheck: re-check every PO in review now (the timer does it every RECHECK_MINUTES too). Editor. */
@@ -315,6 +357,19 @@ router.get(UNIWARE_HANDOFF.CSV_ONE, requireAuth, requirePage(PAGE.PO_REVIEW, ACC
 router.post(UNIWARE_HANDOFF.CSV_MANY, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
   try {
     sendCsv(res, await downloadCombined(idsOf(req.body), actorOf(req)));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---- In Review line items (2026-11-03): each line as read + its open issues, for the In Review download ------------
+
+/** POST /po-review/review-line-items { uploadIds } (POs in review, at most LINE_ITEMS.MAX_IDS). Read-only: viewer. */
+router.post(LINE_ITEMS.REVIEW_ROUTE, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.VIEWER), async (req, res, next) => {
+  try {
+    const v = (req.body as Record<string, unknown> | undefined)?.[UNIWARE_HANDOFF.BODY_IDS];
+    const ids = Array.isArray(v) ? [...new Set(v.map(String).filter((x) => UPLOAD_ID_PATTERN.test(x)))] : [];
+    res.json({ data: await reviewLineItems(ids) });
   } catch (err) {
     next(err);
   }

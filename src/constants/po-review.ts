@@ -45,6 +45,10 @@ export const PO_REVIEW_BODY = {
   QTY: 'qty',
   MRP: 'mrp',
   RATE: 'rate',
+  /** Price check (2026-10-30): 'ours' | 'channel' per line, and update the master with the PO's value. */
+  PRICE_FROM: 'priceFrom',
+  MRP_FROM: 'mrpFrom',
+  UPDATE_MASTER: 'updateMaster',
   ACCEPT: 'accept',
   ISSUE_ID: 'issueId',
   REMARK: 'remark',
@@ -59,6 +63,34 @@ export const APPROVER_ROLES: readonly RoleKey[] = [ROLES.ADMIN, ROLES.DEVELOPER]
 
 /** The tabs of the Approvals page (GET /approvals/po-reviews?status=). */
 export const APPROVAL_LIST_STATUSES = [REVIEW_SUBMISSION_STATUS.PENDING, REVIEW_SUBMISSION_STATUS.APPROVED, REVIEW_SUBMISSION_STATUS.REJECTED] as const;
+
+/**
+ * Approvals list (user 2026-11-02): what kind of approval a submission is, worked out from its fixes (no DB column):
+ * master_update = at least one price check line takes the channel's value AND updates our master on approval;
+ * review = only this PO is changed (location, lines, accepted issues, price check without a master change).
+ * More kinds come later (appointment change, qty update ...): add them here and in kindOf (po-review-approvals.service).
+ */
+export const APPROVAL_KIND = { REVIEW: 'review', MASTER_UPDATE: 'master_update' } as const;
+export type ApprovalKind = (typeof APPROVAL_KIND)[keyof typeof APPROVAL_KIND];
+
+/** Filters of GET /approvals/po-reviews beside status / q / page (channel, from, to come from PO_REVIEW_QUERY). */
+export const APPROVAL_QUERY = { KIND: 'kind', ISSUE: 'issue', SUBMITTED_BY: 'submittedBy', REOPENED: 'reopened' } as const;
+
+/**
+ * Approve / reject several pending submissions at once (user 2026-11-02: the approver checks them one by one, then
+ * approves them together). Each runs exactly like the single Approve / Reject, one after another.
+ * confirmMasterUpdates must be true when any of them updates the master (the screen warns first).
+ */
+export const APPROVAL_BULK = { MAX: 50, IDS: 'ids', CONFIRM_MASTER: 'confirmMasterUpdates' } as const;
+export const APPROVAL_BULK_RESULT = { APPROVED: 'approved', REJECTED: 'rejected', RETURNED: 'returned', FAILED: 'failed' } as const;
+
+/**
+ * Reopen a rejected PO (2026-11-03, user): back to In Review with the checks run again against today's masters, plus
+ * one OTHER issue a person accepts (so it always goes through Approvals, never saved by the timed re-check alone).
+ */
+export const REOPEN = {
+  ISSUE_TEXT: (reason: string | null) => `Reopened after rejection${reason ? ` ("${reason}")` : ''}: check every value, fix what is wrong and submit for approval`,
+} as const;
 
 /** po_review_submissions.id in a URL. */
 export const SUBMISSION_ID_PATTERN = /^\d{1,19}$/;
@@ -103,6 +135,8 @@ export const UNIWARE_HANDOFF = {
 export const LINE_ITEMS = {
   /** Route under /po-review. */
   ROUTE: '/line-items',
+  /** In Review POs' lines (2026-11-03): from processed.json + each line's open issues (nothing saved yet). */
+  REVIEW_ROUTE: '/review-line-items',
   MAX_IDS: 100,
   S3_PARALLEL: 20,
 } as const;

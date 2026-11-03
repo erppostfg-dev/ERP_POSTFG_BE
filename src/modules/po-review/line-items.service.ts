@@ -1,7 +1,7 @@
 import { In } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
-import { ERROR_CODES, LINE_ITEMS, PO_VERIFY_STATE, UPLOAD_STATUS } from '../../constants';
-import { DetailsPurchaseOrder, MasterPurchaseOrder, PoUpload } from '../../entities';
+import { ERROR_CODES, ISSUE_STATUS, LINE_ITEMS, PO_VERIFY_STATE, UPLOAD_STATUS } from '../../constants';
+import { DetailsPurchaseOrder, MasterPurchaseOrder, PoIssue, PoUpload } from '../../entities';
 import { appError } from '../../utils/AppError';
 import { readS3Json } from '../email-intake/s3-mirror.service';
 import { verifyStates } from '../po-verify/po-verify.service';
@@ -150,5 +150,76 @@ export const lineItems = async (ids: string[]): Promise<LineItemRow[]> => {
         s3Missing: !po,
       };
     });
+  });
+};
+
+// ---- In Review POs (2026-11-03, user: "the same download in review, with a column of each line's issues") ----------
+
+/** One line of a PO in review, as read (processed.json) + its open issues; PO-level issues on every line of that PO. */
+export interface ReviewLineItemRow {
+  uploadId: string;
+  poNumber: string | null;
+  poDate: string | null;
+  channel: string | null;
+  receivedAt: string | null;
+  lineNo: Num | null;
+  channelSkuCode: string | null;
+  ean: string | null;
+  description: string | null;
+  hsn: string | null;
+  qty: Num | null;
+  freeQty: Num | null;
+  channelMrp: Num | null;
+  landingRate: Num | null;
+  unitCost: Num | null;
+  gstPercent: Num | null;
+  lineTotal: Num | null;
+  /** This line's open issues: type + what the check said. */
+  issues: { type: string; details: string | null }[];
+  /** The PO's open issues not tied to a line (location, total, expired ...), repeated on each of its lines. */
+  poIssues: { type: string; details: string | null }[];
+  s3Missing: boolean;
+}
+
+export const reviewLineItems = async (ids: string[]): Promise<ReviewLineItemRow[]> => {
+  if (!ids.length) throw appError(ERROR_CODES.UPLOAD_IDS_REQUIRED);
+  if (ids.length > LINE_ITEMS.MAX_IDS) throw appError(ERROR_CODES.LINE_ITEMS_TOO_MANY, LINE_ITEMS.MAX_IDS);
+  const uploads = await AppDataSource.getRepository(PoUpload).find({
+    select: { id: true, status: true, poNumber: true, poDate: true, channel: true, emailReceivedAt: true, createdAt: true, ocrResult: true },
+    where: { id: In(ids) },
+  });
+  const ok = uploads.filter((u) => u.status === UPLOAD_STATUS.NEEDS_REVIEW);
+  const bad = ids.filter((id) => !ok.some((u) => String(u.id) === id));
+  if (bad.length) throw appError(ERROR_CODES.LINE_ITEMS_NOT_IN_REVIEW, bad.join(', '));
+  const open = await AppDataSource.getRepository(PoIssue).find({
+    select: { uploadId: true, lineNo: true, issueType: true, details: true },
+    where: { uploadId: In(ids), status: ISSUE_STATUS.OPEN },
+    order: { id: 'ASC' },
+  });
+  const ordered = ids.map((id) => ok.find((u) => String(u.id) === id)!);
+  const files = await inBatches(ordered, LINE_ITEMS.S3_PARALLEL, (u) => {
+    const url = u.ocrResult?.processed_json;
+    return readPo(typeof url === 'string' ? url : null);
+  });
+  return ordered.flatMap((u, i) => {
+    const po = files[i];
+    const mine = open.filter((x) => String(x.uploadId) === String(u.id));
+    const poIssues = mine.filter((x) => x.lineNo === null).map((x) => ({ type: x.issueType, details: x.details }));
+    const base = {
+      uploadId: String(u.id), poNumber: u.poNumber ?? po?.po_number ?? null, poDate: u.poDate ? String(u.poDate) : po?.po_date || null,
+      channel: u.channel, receivedAt: (u.emailReceivedAt ?? u.createdAt)?.toISOString() ?? null, poIssues, s3Missing: !po,
+    };
+    const lines = po?.line_items ?? [];
+    if (!lines.length) {
+      return [{ ...base, lineNo: null, channelSkuCode: null, ean: null, description: null, hsn: null, qty: null, freeQty: null, channelMrp: null,
+        landingRate: null, unitCost: null, gstPercent: null, lineTotal: null, issues: [] }];
+    }
+    return lines.map((l): ReviewLineItemRow => ({
+      ...base,
+      lineNo: l.line_no, channelSkuCode: l.channel_sku_code || null, ean: l.ean || null, description: l.description || null, hsn: l.hsn || null,
+      qty: l.qty, freeQty: l.free_qty, channelMrp: l.channel_mrp, landingRate: l.landing_rate, unitCost: l.unit_cost, gstPercent: l.gst,
+      lineTotal: l.line_total,
+      issues: mine.filter((x) => x.lineNo !== null && String(x.lineNo) === String(l.line_no)).map((x) => ({ type: x.issueType, details: x.details })),
+    }));
   });
 };

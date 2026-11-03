@@ -6,8 +6,7 @@ import { kickRelease } from '../modules/po-intake-control/intake-release.service
 import { IntakeChannel, intakeStateOf, listIntake, setUniversal, updateIntake } from '../modules/po-intake-control/intake-settings.service';
 import { rewindTo } from '../modules/channel-api/runner';
 import { runChannelNow } from '../modules/channel-api/scheduler';
-import { backfillSince } from '../modules/email-intake/label-router.service';
-import { runJob } from '../utils/log-call';
+import { requestCatchUp } from '../modules/email-intake/catchup.service';
 import { logError } from '../utils/classify-error';
 import { LOG_SOURCE } from '../constants/logging';
 import { appError } from '../utils/AppError';
@@ -45,8 +44,9 @@ const readProcessFrom = (b: Record<string, unknown>, problems: { field: string; 
 /** The one-time catch-up of one channel from its start (background; Gmail catch-ups run one after another). */
 const catchUp = (c: Pick<IntakeChannel, 'channel' | 'source'>, from: Date) => {
   if (c.source === 'email') {
-    void runJob('intake-backfill', () => backfillSince(from, c.channel), { channel: c.channel })
-      .catch((err) => logError(LOG_SOURCE.GMAIL, `[intake] ${c.channel}: catch-up from its start failed (switch it off and on to try again)`, err));
+    // saved as a row: run with any other channel's in one Gmail pass, retried by itself when it fails (2026-10-29)
+    void requestCatchUp(c.channel, from)
+      .catch((err) => logError(LOG_SOURCE.GMAIL, `[intake] ${c.channel}: catch-up could not be saved (switch it off and on to try again)`, err));
     return;
   }
   void rewindTo(c.channel, from)

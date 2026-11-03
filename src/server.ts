@@ -5,6 +5,7 @@ import { env } from './config/env';
 import { startEmailListener } from './modules/email-intake/pubsub.listener';
 import { queueExtractPo } from './modules/ocr/extract-po.service';
 import { migrateFlatInputs } from './modules/intransit/input-store';
+import { startFacilityCheck, stopFacilityCheck } from './modules/intransit/facility-check.service';
 import { startPeriodKeeper, stopPeriodKeeper } from './modules/intransit/s3/periods';
 import { startQueue, stopQueue } from './modules/intransit/s3/queue';
 import { clearJobs } from './modules/intransit/s3/run-store';
@@ -12,6 +13,7 @@ import { storageOn, storageProblems, writeScope } from './modules/intransit/s3/s
 import { expireStaleRuns, recoverRuns } from './modules/intransit/runs.service';
 import { applyResume, planResume } from './modules/po-pipeline/resume.service';
 import { startChannelApis } from './modules/channel-api/scheduler';
+import { startRobotSchedule } from './modules/channel-api/flipkart/consignments.service';
 import { resumeManualQueue } from './modules/manual-upload/manual-upload.service';
 import { recheckInReview } from './modules/po-review/recheck.service';
 import { holdForIntake, kickRelease } from './modules/po-intake-control/intake-release.service';
@@ -24,6 +26,7 @@ import { logError } from './utils/classify-error';
 import { runJob } from './utils/log-call';
 import { log, logEvent } from './utils/logger';
 import { logCrashes, startProcessMonitor } from './utils/process-monitor';
+import { startStrRetry } from './modules/channel-api/myntra/str.service';
 
 const start = async (): Promise<void> => {
   logCrashes();
@@ -64,6 +67,8 @@ const start = async (): Promise<void> => {
     await startQueue().catch((err) => logError(LOG_SOURCE.S3, '[intransit-s3] queue did not start', err));
     startPeriodKeeper();
   } else log.info(LOG_SOURCE.APP, `[intransit] disk store (S3 off: ${storageProblems().join(', ')})`);
+  // weekly Uniware facility check (Mondays; live scope only, not in laptop mode)
+  startFacilityCheck();
 
   const server = app.listen(env.port);
   // The email listener posts to our own endpoint, so wait until we are listening.
@@ -96,6 +101,12 @@ const start = async (): Promise<void> => {
   let channelApis: { stop: () => void } | undefined;
   if (env.channelApi.enabled && AppDataSource.isInitialized) channelApis = startChannelApis();
   else log.info(LOG_SOURCE.AMAZON, 'channel API connectors disabled (CHANNEL_API_ENABLED=false)');
+
+  // The Flipkart consignments robot's schedule (Channel Pulls, 2026-10-30): a due run starts by itself. Not on a laptop
+  // (laptop = code only; the dev EC2 owns the robots), not without a DB.
+  const robotSchedule = AppDataSource.isInitialized && !env.laptopMode ? startRobotSchedule() : undefined;
+  // Myntra STRs waiting (a failed run, a restart) are tried again by themselves (2026-11-03); same rule.
+  const strRetry = AppDataSource.isInitialized && !env.laptopMode ? startStrRetry() : undefined;
 
   // PO jobs worker (2026-10-26): with QUEUE_MODE=sqs + WORKER_IN_SERVER=true this process also takes the queued jobs;
   // otherwise the separate `npm run worker` does (EC2: its own pm2 process).
@@ -160,11 +171,14 @@ const start = async (): Promise<void> => {
     monitor.stop();
     await listener?.stop();
     channelApis?.stop();
+    robotSchedule?.stop();
+    strRetry?.stop();
     await worker?.stop();
     if (recheckTimer) clearInterval(recheckTimer);
     if (releaseTimer) clearInterval(releaseTimer);
     if (cleanupTimer) clearInterval(cleanupTimer);
     stopPeriodKeeper();
+    stopFacilityCheck();
     await stopQueue().catch(() => undefined); // in-transit files still waiting for S3 are sent at the next start
     server.close(async () => {
       if (AppDataSource.isInitialized) await AppDataSource.destroy();

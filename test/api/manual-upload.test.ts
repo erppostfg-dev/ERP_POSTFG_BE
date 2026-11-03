@@ -5,6 +5,10 @@ import { closeDb, count, insert, resetDb, rows } from '../helpers/db';
 import { s3Objects } from '../helpers/fake-s3';
 import { seedMasters, type Masters } from '../helpers/fixtures';
 import { covers } from '../helpers/routes';
+import { fkBulk, fkCsv, fkRobot, fkSwitchOn, seedFlipkart, WAREHOUSE } from '../helpers/flipkart';
+import { runConnector } from '../../src/modules/channel-api/runner';
+import { flipkartConnector } from '../../src/modules/channel-api/flipkart/flipkart.connector';
+import { storeRobotResult } from '../../src/modules/channel-api/flipkart/consignments.service';
 
 /*
  * Manual Upload (2026-10-28): PO files uploaded by hand on Processed & Review -> Manual Upload, queued with Process,
@@ -185,5 +189,72 @@ describe('Amazon shipment file (.tsv, no OCR)', () => {
     await amazonMasters();
     const res = await upload('amazon', [['FBA15TEST0004.tsv', tsv('FBA15TEST0004', 'X00TEST001')]]);
     expect((await statusOf(res.body.data.ids[0])).note).toContain('not found at Amazon');
+  });
+});
+
+describe('Flipkart consignment file (.csv, no OCR; 2026-10-30)', () => {
+  const file = (id: string, lines = [{ qty: 10, cost: 74.85 }]): [string, string] => [`Consignment_Details_${id}_24-10-2026.csv`, fkCsv(lines)];
+  /** A robot run that only brought the Bulk Consignment File (kept for Manual Upload). */
+  const robotBulk = (rows: Parameters<typeof fkBulk>[0]) => storeRobotResult(fkRobot([], fkBulk(rows)));
+  const runIt = async (ids: string[]) => {
+    await api().post(`${V}/process`).set('Cookie', reviewer.cookie).send({ ids }).expect(200);
+    for (const id of ids) await vi.waitFor(async () => expect((await statusOf(id)).status).toBe('done'), { timeout: 15_000 });
+  };
+
+  it('is offered with Amazon (API / robot group) once Flipkart has its master', async () => {
+    await seedFlipkart(m);
+    const res = await api().get(`${V}/channels`).set('Cookie', reviewer.cookie).expect(200);
+    expect(res.body.data).toEqual(expect.arrayContaining([expect.objectContaining({ channel: 'flipkart', group: 'api', twoFiles: false })]));
+  });
+
+  it('warehouse from the robot\'s last Bulk Consignment File -> real chain -> PO + sale order; the robot never takes it again', async () => {
+    await seedFlipkart(m);
+    await robotBulk([{ id: '205170001', qty: 10 }]);
+    const [id] = (await upload('flipkart', [file('205170001')]).expect((r) => expect(r.status).toBeLessThan(300))).body.data.ids as string[];
+    expect((await statusOf(id)).note).toBe(`Flipkart: ${WAREHOUSE} · PICK_UP_ORDER_REGISTERED`);
+    await runIt([id]);
+    expect(fake.ocr).toEqual([]);
+    const [u] = await rows<{ status: string; po_number: string; source_system: string }>("SELECT status, po_number, source_system FROM po_uploads WHERE external_id = '205170001'");
+    expect(u).toMatchObject({ po_number: '205170001', status: 'completed', source_system: 'flipkart_seller_hub' });
+    const csv = [...s3Objects().entries()].find(([k]) => k.endsWith('.csv') && k.includes('205170001') && !k.includes('Consignment_Details'))?.[1] ?? '';
+    expect(csv).toContain('FLIPKART_AHMEDABAD_387570');
+    // marked taken: the robot's "known" list has it, the connector does not list it
+    const [pull] = await rows<{ taken_at: Date | null; warehouse: string }>("SELECT taken_at, warehouse FROM channel_pull_items WHERE external_id = '205170001'");
+    expect(pull.taken_at).not.toBeNull();
+    expect(pull.warehouse).toBe(WAREHOUSE);
+    await fkSwitchOn(reviewer.userId);
+    const run = await runConnector(flipkartConnector, { apply: true });
+    expect(run.items.filter((i) => i.externalId === '205170001' && i.decision === 'ready')).toEqual([]);
+    expect(await count('po_uploads')).toBe(1);
+    // and uploading it again is refused
+    expect((await upload('flipkart', [file('205170001')])).body.error.code).toBe('MANUAL_DUPLICATE');
+  });
+
+  it('not in the last Bulk Consignment File: PO date from the file name, waits in review for the location', async () => {
+    await seedFlipkart(m);
+    const [id] = (await upload('flipkart', [file('205170002')])).body.data.ids as string[];
+    expect((await statusOf(id)).note).toContain('not in the last Bulk Consignment File');
+    await runIt([id]);
+    const [u] = await rows<{ id: string; status: string }>("SELECT id, status FROM po_uploads WHERE external_id = '205170002'");
+    expect(u.status).toBe('needs_review');
+    const processed = JSON.parse([...s3Objects().entries()].find(([k]) => k.endsWith('/flipkart/205170002/processed.json'))?.[1] ?? '{}') as { po_date: string; delivery_facility_code: string };
+    expect(processed).toMatchObject({ po_date: '2026-10-24', delivery_facility_code: '' });
+  });
+
+  it('refuses a wrong file name / columns, a cancelled consignment, one the robot fetched, and twice in one upload', async () => {
+    await seedFlipkart(m);
+    // POST_FG's own name for it (the original file downloaded from Processed / In Review) is taken too
+    const [own] = (await upload('flipkart', [['205170007.csv', fkCsv([{ qty: 1, cost: 74.85 }])]]).expect((r) => expect(r.status).toBeLessThan(300))).body.data.ids as string[];
+    await api().post(`${V}/${own}/cancel`).set('Cookie', reviewer.cookie).send({}).expect(200);
+    expect((await upload('flipkart', [['lines.csv', fkCsv([{ qty: 1, cost: 1 }])]])).body.error.code).toBe('MANUAL_FLIPKART_FILE');
+    expect((await upload('flipkart', [['Consignment_Details_205170003_24-10-2026.csv', 'a,b\n1,2\n']])).body.error.code).toBe('MANUAL_FLIPKART_FILE');
+    await robotBulk([{ id: '205170004', qty: 1, status: 'CANCELLED' }]);
+    expect((await upload('flipkart', [file('205170004')])).body.error.code).toBe('MANUAL_FLIPKART_STATUS');
+    await storeRobotResult(fkRobot([{ id: '205170005', row: 'ID: 205170005', csv: fkCsv([{ qty: 1, cost: 74.85 }]) }], null));
+    const robot = await upload('flipkart', [file('205170005')]);
+    expect(robot.body.error.code).toBe('MANUAL_DUPLICATE');
+    expect(robot.body.error.message).toContain('Flipkart robot');
+    expect((await upload('flipkart', [file('205170006'), file('205170006')])).body.error.code).toBe('MANUAL_DUPLICATE');
+    expect(await count('manual_uploads')).toBe(1); // only the cancelled 205170007.csv;
   });
 });

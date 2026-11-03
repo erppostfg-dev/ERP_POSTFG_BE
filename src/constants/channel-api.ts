@@ -10,12 +10,18 @@ import { CHANNELS } from './channels';
 /** po_uploads.source_system and channel_api_sync.connector: which connector a PO came from. */
 export const SOURCE_SYSTEM = {
   AMAZON_SPAPI: 'amazon_spapi',
+  /** Flipkart Seller Hub, read by our robot (2026-10-30). */
+  FLIPKART_SELLER_HUB: 'flipkart_seller_hub',
+  /** Myntra STRs: numbers from the "Request to Raise STRs" email, CSV by our robot on the partner portal (2026-11-03). */
+  MYNTRA_STR: 'myntra_str',
 } as const;
 export type SourceSystem = (typeof SOURCE_SYSTEM)[keyof typeof SOURCE_SYSTEM];
 
 /** Shown next to "API" on the screens (e.g. "API · Amazon"). */
 export const SOURCE_SYSTEM_LABEL: Record<SourceSystem, string> = {
   [SOURCE_SYSTEM.AMAZON_SPAPI]: 'Amazon SP-API',
+  [SOURCE_SYSTEM.FLIPKART_SELLER_HUB]: 'Flipkart Seller Hub',
+  [SOURCE_SYSTEM.MYNTRA_STR]: 'Myntra STR (partner portal)',
 };
 
 /** The scheduler: a connector that fails this many runs in a row waits longer (MAX_BACKOFF_MS at most) before retrying. */
@@ -79,4 +85,176 @@ export const AMAZON = {
   NAME_DATE: /\((\d{2})\/(\d{2})\/(\d{4})/,
   /** input_type in processed.json for an API PO. */
   INPUT_TYPE: 'api',
+} as const;
+
+/*
+ * Flipkart scheduled consignments (user, 2026-10-30; port of Kunal's rpa-channel-codes/flipkart_rpa): our stock sent to a
+ * Flipkart warehouse. One consignment = one PO, made a PO + sale order as soon as it is SCHEDULED (the robot reads the
+ * Scheduled tab only). The robot (modules/channel-api/flipkart, run as an In-transit job: one Seller Hub login, one
+ * browser job at a time) reads every row of the Scheduled table, downloads each NEW consignment's CSV (its lines) and
+ * the Bulk Consignment File (warehouse, creation date, status of every consignment). Each consignment is kept in
+ * channel_pull_items; the connector turns it into a PO like Amazon's (S3 channel-api/FY.../<month>/flipkart/<id>/).
+ * A consignment is taken once: a later change is not read again (user, 2026-10-30; backlog G6).
+ */
+export const FLIPKART = {
+  CHANNEL: CHANNELS.FLIPKART,
+  /** Seller Hub's Scheduled consignments list. */
+  SCHEDULED_URL: 'https://seller.flipkart.com/index.html#dashboard/fa/consignmentsView?stateView=scheduled',
+  /** One table row per consignment; its id shows as "ID: 205149496". */
+  ROWS: 'table tbody tr',
+  ROW_ID: /ID:\s*(\d+)/,
+  /** The 3-dots button in a row (its accessible name) and the menu option that downloads the consignment's CSV. */
+  MENU_BUTTON: 'icon',
+  MENU_ITEM: 'option-item-Download CSV-story',
+  MENU_OPTIONS: "[data-testid^='option-item-']",
+  /** Rows per page asked for (10 / 20 / 40 offered); every page is read anyway. */
+  PAGE_SIZE: '20',
+  /** The table footer: "1-16 of 16 items 1 of 1 pages". */
+  PAGER_ITEMS: /of\s+(\d+)\s+items/,
+  PAGER_PAGES: /of\s+(\d+)\s+pages/,
+  /** The consignment CSV's columns (by name; renamed / missing ones go to review, never guessed). */
+  CSV: {
+    NAME: 'Product Name',
+    FSN: 'FSN',
+    SKU_ID: 'SKU Id',
+    BRAND: 'Brand',
+    QTY_SENT: 'Quantity Sent',
+    QTY_RECEIVED: 'Quantity Received',
+    COST: 'Cost Price',
+  },
+  /** The Bulk Consignment File's columns (FK_GRN.csv, the same file the In-transit robot downloads). */
+  BULK: {
+    ID: 'Consignment Id',
+    CREATED: 'Creation Date',
+    WAREHOUSE: 'Warehouse Id',
+    STATUS: 'Consignment Status',
+    DISPATCH_TYPE: 'Dispatch Type',
+    PICKUP_DATE: 'Scheduled Pick Up Date',
+    DROP_DATE: 'Scheduled Drop In Date',
+    PROMISED_QTY: 'Promised Qty',
+  },
+  /** A consignment whose status matches this never becomes a PO. */
+  SKIP_STATUS: /CANCEL/i,
+  /** Minutes between the connector's looks at the fetched consignments (cheap: the DB only), FLIPKART_POLL_MINUTES overrides. */
+  POLL_MINUTES: 15,
+  /** A robot run at most this long (one browser job; then it is stopped and failed). */
+  ROBOT_TIMEOUT_MS: 30 * 60_000,
+  /** File names kept in the consignment's folder (and S3). */
+  CSV_FILE: (id: string) => `${id}.csv`,
+  INPUT_TYPE: 'rpa',
+  /** The In-transit worker's job kind for the robot (run-worker.ts). */
+  ROBOT_JOB: 'flipkart-consignments',
+  PO_TYPE: 'Flipkart consignment',
+  /**
+   * Manual Upload (2026-10-30): Seller Hub's "Download CSV" name Consignment_Details_<id>_<DD-MM-YYYY>.csv (id + date), or
+   * <id>.csv as POST_FG keeps it (the original file downloaded from Processed / In Review; no date: the bulk file's).
+   */
+  MANUAL_FILE: /^(?:Consignment_Details_(\d+)_(\d{2})-(\d{2})-(\d{4})|(\d{6,}))(?:\s*\(\d+\))?\.csv$/i,
+  MANUAL_INPUT_TYPE: 'flipkart_csv',
+  /** The Bulk Consignment File's rows kept for Manual Upload: consignments created in the last this many days. */
+  BULK_KEEP_DAYS: 120,
+} as const;
+/*
+ * Myntra STRs (user 2026-11-03; G9): Myntra SJIT Ops replies in the "Request to Raise STRs" thread with "Please find the
+ * STR Numbers listed below" and a grid of STR codes (NON TC / TC, P0 - P3). A NEW such email in Po-Intake (Myntra ON in
+ * PO intake, after its start) -> each STR not seen before = a channel_pull_items row (waiting) -> the robot (the in-transit
+ * Myntra login, one browser job at a time) downloads each STR's CSV (STR filter -> open -> Download CSV, as
+ * dev-tools/myntra-str-pull-many.ts) -> the CSV + processed.json go to S3, the downloaded file is deleted at once.
+ * Validation / PO / sale order: later (user: "we do until there").
+ */
+export const MYNTRA_STR = {
+  CHANNEL: CHANNELS.MYNTRA,
+  /** The email: subject words and the line that starts the list (in the email's newest part only). */
+  SUBJECT: /Request to Raise STRs?/i,
+  LIST_START: /Please find the STR Numbers? listed below/i,
+  /** STN + CPWE (our Bhiwandi) + destination code + ddmmyy + -NN, e.g. STNCPWEBP271026-01. */
+  CODE: /\bSTN([A-Z]{4})([A-Z]{2,6})(\d{2})(\d{2})(\d{2})-(\d{2})\b/g,
+  /** Group headers of the grid, kept with each STR (label only). */
+  GROUP: /^(NON\s*TC|TC)$/i,
+  PRIORITY: /^P\d$/i,
+  /**
+   * Where the newest part of an email ends: a reply header ("On Mon, ... wrote:", possibly split over 2 lines), Outlook's
+   * "From: ... Sent:", "-----Original Message-----", or a quoted line (">").
+   */
+  QUOTE_START: [/^On .{6,200}(wrote:|<)\s*$/, /^-{2,}\s*Original Message\s*-{2,}/i, /^From:\s.+$/, /^>/],
+  /** A forwarded email starts with this block (its header lines are skipped, the forwarded text is read). */
+  FORWARD: /^-{5,}\s*Forwarded message\s*-{5,}/i,
+  FORWARD_HEADER: /^(From|Date|Sent|Subject|To|Cc):/i,
+  PORTAL: {
+    DASHBOARD: 'https://partners.myntrainfo.com/Dashboard',
+    /** FBM > Inventory movement (a hover menu that closes while the mouse travels): its page, opened directly. */
+    STR_PAGE: 'https://partners.myntrainfo.com/Growth/sjit-inventory/actions',
+    TEAM_CARD: 'FBM/PPMP/MDirect',
+    TAB: /STRs? And Actions/i,
+    FILTER: /Filter to Search STRs?/i,
+    DETAILS: /STR Details/i,
+    DOWNLOAD: /^\s*Download CSV\s*$/i,
+  },
+  /** Tries per STR in one run (one click timed out once in 45 on 2 Nov), and runs before an STR is marked failed. */
+  TRIES_PER_RUN: 3,
+  /** How long the STR's row may take to show after Apply, and after a second Apply. */
+  ROW_WAIT_MS: 90_000,
+  ROW_WAIT_AGAIN_MS: 45_000,
+  NOT_FOUND: 'not found on the Myntra portal',
+  MAX_RUNS: 3,
+  ROBOT_TIMEOUT_MS: 60 * 60_000,
+  ROBOT_JOB: 'myntra-strs',
+  /** Step 2 (2026-11-03): stored STRs become POs (the shared runner: PO intake, never twice, validation, sale order). */
+  PROCESSING: true,
+  /**
+   * Myntra's destination -> our Myntra location (user's sheet "myntra location", 3 Nov; Myntra = channel id 5, never
+   * Myntra-OR). Matched by the CSV's Destination WH name, else the STR code's destination. The warehouse comes from that
+   * location in our master (Gurgaon / Kolkata GGN_WAREHOUSE, the others MUM_WAREHOUSE2). uniwareChannel = what the sheet
+   * says the location's Uniware channel is: our master differing -> the PO goes to review (user).
+   */
+  DESTINATIONS: [
+    { code: 'BP', name: 'Bilaspur Warehouse - Gurgaon', location: 'Gurgaon', uniwareChannel: 'B2C_STN_MYNTRA_L' },
+    { code: 'FKME', name: 'FK Medchal Hyd - Myntra', location: 'Secunderabad', uniwareChannel: 'B2C_STN_MYNTRA' },
+    { code: 'BW', name: 'Bangalore - New Whitefield W/H', location: 'Bangalore', uniwareChannel: 'B2C_STN_MYNTRA' },
+    { code: 'MW', name: 'Myntra warehouse ( Mumbai )', location: 'Mumbai', uniwareChannel: 'B2C_STN_MYNTRA_L' },
+    { code: 'MYNT', name: 'Myntra Stellar FC', location: 'Kolkata', uniwareChannel: 'B2C_STN_MYNTRA' },
+  ],
+  /** The STR CSV's prices, kept on the PO as information only (user: our margin makes the price; MRP is checked). */
+  PRICE_COLUMNS: { LIST: 'List Price', LANDED: 'Landed Price' },
+  POLL_MINUTES: 60,
+  /** channel_pull_items.status. */
+  STATUS: { WAITING: null, STORED: 'stored', FAILED: 'failed' },
+  /** The STR CSV's columns (by name; IGST or SGST + CGST by the destination's state). */
+  CSV: {
+    GTIN: 'GTIN', SKU: 'SKU Code', QTY: 'Quantity', ARTICLE: 'Vendor Article No', NAME: 'Vendor Article Name', SIZE: 'Size',
+    BRAND: 'Brand Name', HSN: 'HSN Code', SOURCE: 'Source WH', DESTINATION: 'Destination WH', MRP: 'MRP',
+    IGST: 'IGST Rate', SGST: 'SGST Rate', CGST: 'CGST Rate',
+  },
+  CSV_FILE: (str: string) => `${str}-summary.csv`,
+  INPUT_TYPE: 'myntra_str_csv',
+  /** Manual Upload (2026-11-03): the portal's file name (the STR + -summary), a copy's " (1)" allowed. */
+  MANUAL_FILE: /^(STN[A-Z]{4}[A-Z]{2,6}\d{6}-\d{2})(?:-summary)?(?:\s*\(\d+\))?\.csv$/i,
+  MANUAL_INPUT_TYPE: 'myntra_str_manual',
+  PO_TYPE: 'Myntra STR',
+  LOG_LINES: 200,
+} as const;
+
+/*
+ * Channel Pulls page (2026-10-30, user: replaces Amazon Inbound in the sidebar; one place for every channel pulled by API
+ * or robot, with buttons to pull and process). Same page key as Amazon Inbound (PAGE.AMAZON_INBOUND): nobody's access
+ * changes. Viewer reads; editor runs the robot, processes, sets the schedule.
+ */
+export const CHANNEL_PULLS = {
+  BASE: '/channel-pulls',
+  ROUTES: {
+    LIST: '/',
+    ITEMS: '/:key/items',
+    ROBOT: '/:key/robot',
+    PROCESS: '/:key/process',
+    SCHEDULE: '/:key/schedule',
+  },
+  BODY: { EVERY_HOURS: 'robotEveryHours' },
+  /** The schedule: every 1-24 hours, or null = only by Run now. */
+  MAX_EVERY_HOURS: 24,
+  /** How often the server looks whether a scheduled robot run is due. */
+  SCHEDULE_TICK_MS: 5 * 60_000,
+  /** app_state key of an API connector's poll schedule (null = its default). */
+  POLL_KEY: (key: string) => `channel-pull:${key}:poll`,
+  /** Recent consignments listed on the page. */
+  ITEMS_MAX: 200,
 } as const;

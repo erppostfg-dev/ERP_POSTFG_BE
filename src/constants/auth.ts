@@ -53,6 +53,12 @@ export const PAGES: readonly PageEntry[] = [
 ];
 
 /**
+ * Pages every signed-in person may use whatever their roles (2026-10-29, user: Feedback "show it to all the people"):
+ * always editor, not listed in the Roles tab, no grants. What a person may change INSIDE is the page's own rule.
+ */
+export const OPEN_PAGES: readonly PageEntry[] = [{ slug: '/feedback', label: 'Feedback', section: 'General' }];
+
+/**
  * Special permissions (2026-10-22): on / off per role in the Roles tab, stored as page_permissions rows (editor = on,
  * none = off) under a key without "/" so it never inherits from a page (a role with PO Review editor does NOT get it).
  * Admin and developer always have every one (USER_ADMIN_ROLES).
@@ -88,6 +94,7 @@ export const PAGE = {
   INTRANSIT_STOCK: '/planning/intransit-stock',
   APPROVALS: '/approvals',
   ADMIN: '/admin',
+  FEEDBACK: '/feedback',
 } as const;
 
 /** Grants the seed writes: both roles editor on every top-level page (children inherit). */

@@ -22,4 +22,12 @@ export type IntakeEmailKind = (typeof INTAKE_EMAIL_KIND)[keyof typeof INTAKE_EMA
 export const APP_STATE_KEY = {
   /** Gmail sync point (was storage/gmail-state.json until 2026-10-23). */
   GMAIL: 'gmail',
+  /** The Flipkart consignments robot's last run and schedule (Channel Pulls, 2026-10-30). */
+  FLIPKART_ROBOT: 'channel-pull:flipkart',
+  /** The Myntra STR robot's last run (2026-11-03). */
+  MYNTRA_STR_ROBOT: 'channel-pull:myntra-str',
+  /** Its schedule: { everyHours, updatedBy, updatedAt } (Channel Pulls). */
+  FLIPKART_ROBOT_SCHEDULE: 'channel-pull:flipkart:schedule',
+  /** The last Bulk Consignment File the robot read: { savedAt, headers by consignment id } (Manual Upload's warehouse). */
+  FLIPKART_BULK: 'channel-pull:flipkart:bulk',
 } as const;

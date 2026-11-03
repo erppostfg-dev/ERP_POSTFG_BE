@@ -11,7 +11,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { env } from '../config/env';
-import { INTRANSIT_TEMPLATE_NAME } from '../constants';
+import { blockingMissing, INTRANSIT_TEMPLATE_NAME } from '../constants';
 import { resolveFromDate } from '../modules/intransit/context';
 import { checkDate, resolveInputs } from '../modules/intransit/input-store';
 import { runPipeline } from '../modules/intransit/pipeline';
@@ -27,7 +27,8 @@ const main = async (): Promise<void> => {
   let inputDir = arg('input-dir') ? path.resolve(arg('input-dir') as string) : '';
   if (!inputDir) {
     inputDir = path.join(outputDir, 'input');
-    const { files, missing } = await resolveInputs(asOf);
+    const { files, missing: allMissing } = await resolveInputs(asOf);
+    const missing = blockingMissing(allMissing);
     if (missing.length) throw new Error(`no copy of ${missing.join(', ')} for ${asOf}`);
     await fs.mkdir(inputDir, { recursive: true });
     for (const file of files) await fs.copyFile(file.path, path.join(inputDir, file.name));

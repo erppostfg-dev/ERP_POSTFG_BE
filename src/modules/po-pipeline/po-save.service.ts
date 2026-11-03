@@ -70,6 +70,9 @@ export const takeSerial = async (m: EntityManager, date: string): Promise<number
   return row.lastSerial + 1;
 };
 
+/** The code a line is punched with (its _S code for combos, PUNCH_S); a result validated before 2026-10-30 has none. */
+const punchCode = (l: ValidatedLine): string => l.punchCode || l.pepCode;
+
 /**
  * The master_purchase_orders row and details_purchase_orders rows of a validated PO, as PEPIMS fills them (no ids,
  * no sale order code yet). Used by step 2 and by the review's resubmit.
@@ -109,7 +112,7 @@ export const poRows = (
     return {
       srNo: String(i + 1),
       skuName: l.skuName || null,
-      skuCode: l.pepCode,
+      skuCode: punchCode(l),
       channelSkuCode: l.channelSkuCode,
       qty: n(l.qty),
       gmv,
@@ -180,9 +183,9 @@ export const csvOf = (v: ValidationResult, poDate: string | null, code: string):
     v.poNumber,
     UNIWARE_CSV.COD,
     loc?.uniwareChannel ?? '',
-    l.pepCode,
+    punchCode(l),
     UNIWARE_CSV.SHIPPING_METHOD,
-    l.pepCode,
+    punchCode(l),
     l.channelSkuCode,
     n(l.ourRate).toFixed(2),
     UNIWARE_CSV.ON_HOLD,

@@ -72,8 +72,21 @@ export const takeSlot = (): boolean => {
  * A PO email was stored (intake): its po_uploads row, if it has none yet. Returns whether the email goes on into the
  * chain (so the caller starts the OCR): false when PIPELINE_LIMIT is reached; true when the database is not connected
  * (no chain, the old behaviour).
+ * One email at a time (B2 lock, 2026-10-30): live Gmail, catch-ups (own timer), the webhook and Manual Upload can call
+ * this at the same moment; without the lock two emails of the same PO both passed the "already in POST_FG" check before
+ * either row was saved, and the PO was OCR'd twice. The lock is per server process (one server today).
  */
-export const emailStored = async (folder: string): Promise<boolean> => {
+export const emailStored = (folder: string): Promise<boolean> => oneAtATime(() => emailStoredNow(folder));
+
+let intakeTail: Promise<unknown> = Promise.resolve();
+/** Runs fn after every earlier call has finished (a failed call does not block the next). */
+const oneAtATime = <T>(fn: () => Promise<T>): Promise<T> => {
+  const run = intakeTail.then(fn, fn);
+  intakeTail = run.catch(() => undefined);
+  return run;
+};
+
+const emailStoredNow = async (folder: string): Promise<boolean> => {
   if (!on()) return true;
   // Fails closed (2026-10-23): any error here = no OCR now; the email has no row, so the next start's backlog takes it.
   let allowed = false;

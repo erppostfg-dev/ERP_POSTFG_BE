@@ -169,26 +169,30 @@ const buildSheet35 = async (ctx: Context, split2: Frame, master: Frame, notConsi
 };
 
 /**
- * Sheet35(2) pivoted: one Final Units column per reporting bucket. Each warehouse absorbs the returned stock at its
- * own city; DarkStore folds into D2C.
+ * The reporting bucket of a Sheet35(2) row (a Final Sheet35(2) column): each warehouse absorbs the returned stock at
+ * its own city; DarkStore folds into D2C. `channelType` already stripped ('' = '(blank)'); `location` lower-cased.
  */
+export const reportBucket = (channelType: string, location: string): string => {
+  const c = channelType === '' ? '(blank)' : channelType;
+  const l = c.toLowerCase();
+  // returns, and warehouse rows typed only "MWH", go to the warehouse of their city
+  const byCity = l === 'return' || l === 'mwh';
+  if (byCity && location === 'mumbai') return 'MUMMWH+ReturnMUM';
+  if (byCity && GGN_LOCATIONS.has(location)) return 'GGNMWH+ReturnGGN';
+  if (byCity && KOL_LOCATIONS.has(location)) return 'KOLMWH+ReturnKOL';
+  if (l === 'mummwh') return 'MUMMWH+ReturnMUM';
+  if (l === 'ggnmwh') return 'GGNMWH+ReturnGGN';
+  if (l === 'kolmwh') return 'KOLMWH+ReturnKOL';
+  if (l === 'd2c' || l === 'darkstore') return 'D2C+DarkStore';
+  return c;
+};
+
+/** Sheet35(2) pivoted: one Final Units column per reporting bucket (reportBucket). */
 const buildFinalSheet35 = (s35: Frame): Frame => {
   const pivotKey = present(s35, ['Split2 SKU', ...SHEET35_FIELDS, 'Stock Type', 'Consider?', 'Found in Sheet35 Master']);
-  const ctRaw = stripped(s35.get('Channel type')).map((c) => (c === '' ? '(blank)' : c));
+  const ctRaw = stripped(s35.get('Channel type'));
   const loc = lowerAll(stripped(s35.get('Final Location')));
-  const ct = ctRaw.map((c, i) => {
-    const l = c.toLowerCase();
-    // returns, and warehouse rows typed only "MWH", go to the warehouse of their city
-    const byCity = l === 'return' || l === 'mwh';
-    if (byCity && loc[i] === 'mumbai') return 'MUMMWH+ReturnMUM';
-    if (byCity && GGN_LOCATIONS.has(loc[i])) return 'GGNMWH+ReturnGGN';
-    if (byCity && KOL_LOCATIONS.has(loc[i])) return 'KOLMWH+ReturnKOL';
-    if (l === 'mummwh') return 'MUMMWH+ReturnMUM';
-    if (l === 'ggnmwh') return 'GGNMWH+ReturnGGN';
-    if (l === 'kolmwh') return 'KOLMWH+ReturnKOL';
-    if (l === 'd2c' || l === 'darkstore') return 'D2C+DarkStore';
-    return c;
-  });
+  const ct = ctRaw.map((c, i) => reportBucket(c, loc[i]));
   const fs = s35.set('Channel type', ct);
 
   // groupby(pivotKey + [Channel type]).sum().unstack("Channel type", fill_value=0)

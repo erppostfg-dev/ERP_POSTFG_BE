@@ -68,7 +68,7 @@ export const channelConfigs: ChannelConfig[] = [
   {
     // PosFromEmail/Zepto: Reply-To po_fulfilment@zeptonow.com, subject "Purchase Order for [<entity> and P<digits>]",
     // <PO>.csv (header + all lines) and <PO>.pdf (page 1 = PO, page 2 = terms) -> pdf + sheet pipeline.
-    // Not in the OCR repo's channels.json yet, so run_po.py uses its defaults (no "expects" check).
+    // channels.json "zepto" expects pdf+sheet (2026-11-02: it said sheet + flat_csv, which refused every Zepto PO).
     channel: CHANNELS.ZEPTO,
     ocrChannel: OCR_CHANNELS[CHANNELS.ZEPTO],
     senders: ['po_fulfilment@zeptonow.com'],
@@ -186,5 +186,60 @@ export const channelConfigs: ChannelConfig[] = [
     files: { sheet: /\.csv$/i },
     reader: 'sheet',
     manyPosPerFile: true,
+  },
+
+  {
+    // Avenue E-Commerce (DMart, 2026-10-30): the PO PDF ("Purchase Order 4502349805", lines printed on two rows) by
+    // Manual Upload only; read by the OCR (channels.json "avenue", expects pdf). No senders / domains: no email matches.
+    channel: CHANNELS.AVENUE,
+    ocrChannel: OCR_CHANNELS[CHANNELS.AVENUE],
+    senders: [],
+    domains: [],
+    files: { pdf: /\.pdf$/i },
+  },
+
+  {
+    // Flipkart Quick Commerce (2026-10-30): purchase_order_<PO>.xls (header block, line table, totals in one sheet) by
+    // Manual Upload only; read by the OCR sheet pipeline (channels.json "flipkart_quickcomm": lines and totals by Python,
+    // only the header block goes to its model). No senders / domains: no email matches.
+    channel: CHANNELS.FLIPKART_QCOM,
+    ocrChannel: OCR_CHANNELS[CHANNELS.FLIPKART_QCOM],
+    senders: [],
+    domains: [],
+    files: { sheet: /\.xlsx?$/i },
+  },
+
+  {
+    // Gluzo (2026-11-02): <PO>_244809_<timestamp>.pdf made by EasyEcom (header, every line, totals on the last page) by
+    // Manual Upload only; read by the OCR PDF pipeline (channels.json "gluzo", expects pdf). Option B (user): the PDF alone;
+    // Gluzo's xlsx ("Purchase Order No-<PO>.xlsx") holds the same lines without the header, so it is not taken.
+    channel: CHANNELS.GLUZO,
+    ocrChannel: OCR_CHANNELS[CHANNELS.GLUZO],
+    senders: [],
+    domains: [],
+    files: { pdf: /\.pdf$/i },
+  },
+
+  {
+    // Slikk (2026-11-02): the PO PDF (random name, e.g. 0732ef90....pdf; header + printed totals) with its line sheet
+    // (orderItems ....csv or Pep SLIKPO#<n>.xlsx: every row carries the PO number in "Order"), always together (user: the
+    // PDF alone is not taken). Manual Upload only, one PO per upload (the names never match). OCR "slikk": header from the
+    // PDF, lines from the sheet.
+    channel: CHANNELS.SLIKK,
+    ocrChannel: OCR_CHANNELS[CHANNELS.SLIKK],
+    senders: [],
+    domains: [],
+    files: { pdf: /\.pdf$/i, sheet: /\.(csv|xlsx?)$/i },
+  },
+
+  {
+    // Pop Tech (Curioso Fashions, 2026-11-02): the Unicommerce PO PDF (DL_MCFN004.pdf, "UC_Invoice Copy_BLR_MCFN002.pdf";
+    // header, every line and the unlabeled totals row; one PO per PDF). Manual Upload only for now (emails later, user).
+    // OCR "pop_tech": PDF pipeline with split_value_rate_cells + unlabeled_total_row + header_notes.
+    channel: CHANNELS.POP_TECH,
+    ocrChannel: OCR_CHANNELS[CHANNELS.POP_TECH],
+    senders: [],
+    domains: [],
+    files: { pdf: /\.pdf$/i },
   },
 ];

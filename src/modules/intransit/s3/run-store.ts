@@ -5,7 +5,7 @@ import { gunzipSync } from 'zlib';
 import { In } from 'typeorm';
 import { AppDataSource } from '../../../config/data-source';
 import { env } from '../../../config/env';
-import { COMBO_CHECK, INTRANSIT_REPORT_NAME, INTRANSIT_RUN_KIND, INTRANSIT_RUN_STATUS, INTRANSIT_TEMPLATE_NAME, RUN_RECORD_FILE } from '../../../constants';
+import { blockingMissing, COMBO_CHECK, INTRANSIT_REPORT_NAME, INTRANSIT_RUN_KIND, INTRANSIT_RUN_STATUS, INTRANSIT_TEMPLATE_NAME, MAIL_FILE_NAMES, RUN_RECORD_FILE } from '../../../constants';
 import { IntransitRun } from '../../../entities';
 import { ConnectorResult } from '../connectors';
 import { DB_MASTER_FILES, exportMastersFromDb } from '../masters-export';
@@ -117,7 +117,8 @@ export interface InputUsed {
 /** A build's inputs into `into`: the day's files from S3 (checked), the template, and the 8 masters from the database. */
 export const snapshotFromStore = async (asOf: string, into: string) => {
   await fsp.mkdir(into, { recursive: true });
-  const { files: resolved, missing } = await resolveStored(asOf);
+  const { files: resolved, missing: allMissing } = await resolveStored(asOf);
+  const missing = blockingMissing(allMissing);
   if (missing.length) throw new Error(`no copy of ${missing.join(', ')} for ${asOf}`);
   const stored = resolved.filter((f) => f.key);
   for (let i = 0; i < stored.length; i += 4) {
@@ -214,7 +215,7 @@ export const publishBuild = async (run: IntransitRun, dir: string): Promise<{ re
     files[label] = r.key;
     if (r.stored === 'queued') queued++;
   };
-  for (const name of [INTRANSIT_REPORT_NAME, COMBO_CHECK.ALERT_FILE, COMBO_CHECK.SPLIT1_ROWS_FILE]) {
+  for (const name of [INTRANSIT_REPORT_NAME, COMBO_CHECK.ALERT_FILE, COMBO_CHECK.SPLIT1_ROWS_FILE, ...MAIL_FILE_NAMES]) {
     const file = path.join(dir, name);
     if (fs.existsSync(file)) await keep(`${base}${name}`, file, name);
   }

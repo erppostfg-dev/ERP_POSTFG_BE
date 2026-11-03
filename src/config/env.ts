@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { ERROR_CODES } from '../constants/errors';
+import { GMAIL_PACE } from '../constants/gmail-intake';
 import { LOG_DEFAULTS, LOG_FORMAT, LOG_LEVEL_RANK, type LogFormat, type LogLevel } from '../constants/logging';
 import { PO_JOBS, QUEUE_MODE, type QueueMode } from '../constants/po-jobs';
 import { REVIEW_RECHECK } from '../constants/po-review';
@@ -104,6 +105,10 @@ export const env = {
     oauthRefreshToken: process.env.GMAIL_OAUTH_REFRESH_TOKEN,
     // one outgoing email (welcome) gives up after this; its retries then take over (2026-10-27)
     sendTimeoutMs: Number(process.env.MAIL_SEND_TIMEOUT_MS ?? 30_000),
+    // our share of the mailbox's Gmail quota (6,000 units / min per user), all intake calls together (2026-10-29)
+    unitsPerMinute: Number(process.env.GMAIL_UNITS_PER_MINUTE ?? GMAIL_PACE.UNITS_PER_MINUTE),
+    // first wait after a rate-limited Gmail call (then doubled); tests set it tiny
+    retryFirstWaitMs: Number(process.env.GMAIL_RETRY_FIRST_WAIT_MS ?? GMAIL_PACE.FIRST_WAIT_MS),
   },
   // Gmail watch -> Pub/Sub topic -> pull subscription read by this server.
   pubsub: {
@@ -189,6 +194,8 @@ export const env = {
     maxWorkers: Math.max(1, Number(process.env.INTRANSIT_MAX_WORKERS ?? 1) || 1),
     // Priority of those child processes and what they start (the robots' Chromium, Xvfb): 0 = as the API, 19 = lowest.
     // 10 by default: a build or robot takes only spare CPU, so the ERP's pages stay quick on a small server (2026-10-29).
+    /** The weekly Uniware facility check (Mondays; live scope only). false = off on this server. */
+    facilityCheck: flag('INTRANSIT_FACILITY_CHECK', 'true'),
     workerNice: Math.min(19, Math.max(0, Number(process.env.INTRANSIT_WORKER_NICE ?? 10) || 0)),
     // Default start date of a report: shipments with an earlier Entry Date are left out. "2026-08-01" (fixed),
     // "79" (the last 79 days before as-of; the team's choice, 2026-10-21) or blank (all). A run can override it.
@@ -267,6 +274,10 @@ export const env = {
       refreshToken: process.env.SPAPI_REFRESH_TOKEN,
       region: (process.env.SPAPI_REGION ?? 'EU').toUpperCase(),
       pollMinutes: process.env.AMAZON_POLL_MINUTES ? Number(process.env.AMAZON_POLL_MINUTES) : undefined,
+    },
+    // Flipkart consignments (2026-10-30): how often the connector looks at what the Seller Hub robot fetched (DB only)
+    flipkart: {
+      pollMinutes: process.env.FLIPKART_POLL_MINUTES ? Number(process.env.FLIPKART_POLL_MINUTES) : undefined,
     },
   },
   // Logging (2026-10-19; constants/logging.ts). EC2: LOG_FORMAT=json (the CloudWatch agent sends the pm2 log files to

@@ -1,16 +1,18 @@
 /*
  * Backfill / test the label routing without Pub/Sub: sends the emails already in a label to
  * that label's endpoint, the same way the Pub/Sub listener does. Emails already stored are
- * skipped by the endpoint (same Message-ID). The server must be running.
+ * skipped by the endpoint (same Message-ID). The server must be running. Uses the DB (gmail_messages, the channel switches).
  *
  *   npm run email:route -- --label Po-Intake            (every email in the label)
  *   npm run email:route -- --label Po-Intake --max 5    (newest 5 only)
  */
+import { AppDataSource } from '../config/data-source';
 import { ERROR_CODES } from '../constants';
 import { appError } from '../utils/AppError';
 import { getGmail } from '../modules/email-intake/gmail.client';
 import { resolveRoutes } from '../modules/email-intake/gmail-watch.service';
 import { forwardMessage } from '../modules/email-intake/label-router.service';
+import { intakeGates } from '../modules/po-intake-control/intake-settings.service';
 
 const arg = (name: string): string | undefined => {
   const i = process.argv.indexOf(`--${name}`);
@@ -18,6 +20,7 @@ const arg = (name: string): string | undefined => {
 };
 
 const main = async (): Promise<void> => {
+  await AppDataSource.initialize(); // guarded: only mcaff_postfg_dev (gmail_messages + the channel switches)
   const routes = await resolveRoutes();
   const label = arg('label') ?? routes[0]?.label;
   const route = routes.find((r) => r.label.toLowerCase() === label?.toLowerCase());
@@ -40,7 +43,10 @@ const main = async (): Promise<void> => {
   } while (pageToken && ids.length < max);
 
   console.log(`[${route.label}] ${ids.length} email(s) -> ${route.endpoint}`);
-  for (const id of ids) await forwardMessage(gmail, id, [route]);
+  // the channel switches decide, as for the live intake (OFF / before its start = left in Gmail)
+  const gate = await intakeGates();
+  for (const id of ids) await forwardMessage(gmail, id, [route], { gate });
+  await AppDataSource.destroy();
 };
 
 main().catch((err) => {

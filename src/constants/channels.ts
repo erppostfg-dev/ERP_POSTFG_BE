@@ -17,6 +17,20 @@ export const CHANNELS = {
   TATA1MG: 'tata1mg',
   /** Nykaa: the vendor portal's "Purchase Orders" CSV, by Manual Upload only (no email, no OCR; 2026-10-27). */
   NYKAA: 'nykaa',
+  /** Flipkart scheduled consignments, read from Seller Hub by our robot (no email, no OCR; 2026-10-30). */
+  FLIPKART: 'flipkart',
+  /** Avenue E-Commerce (DMart): its PO PDF, by Manual Upload only (no email; read by the OCR; 2026-10-30). */
+  AVENUE: 'avenue',
+  /** Flipkart Quick Commerce: the whole PO in one .xls, by Manual Upload only (no email; OCR sheet pipeline; 2026-10-30). */
+  FLIPKART_QCOM: 'flipkart_qcom',
+  /** Gluzo: its EasyEcom PO PDF, by Manual Upload only (no email; OCR PDF pipeline; the xlsx is not needed; 2026-11-02). */
+  GLUZO: 'gluzo',
+  /** Slikk: PO PDF + its sheet (CSV / xlsx) together, by Manual Upload only (no email; OCR; 2026-11-02). */
+  SLIKK: 'slikk',
+  /** Pop Tech (Curioso Fashions): its Unicommerce PO PDF, by Manual Upload only (no email yet; OCR PDF pipeline; 2026-11-02). */
+  POP_TECH: 'pop_tech',
+  /** Myntra STRs (= POs): the STR numbers come by email, our robot downloads each STR's CSV (no OCR; 2026-11-03). */
+  MYNTRA: 'myntra',
 } as const;
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS];
@@ -42,4 +56,15 @@ export const OCR_CHANNELS: Record<ChannelName, string> = {
   [CHANNELS.TATA1MG]: 'tata1mg',
   /** Not OCR'd: its CSV is read by our sheet reader (channels.config reader: 'sheet'). */
   [CHANNELS.NYKAA]: 'nykaa',
+  /** Not OCR'd: Flipkart consignments come from Seller Hub. */
+  [CHANNELS.FLIPKART]: 'flipkart',
+  [CHANNELS.MYNTRA]: 'myntra',
+  [CHANNELS.AVENUE]: 'avenue',
+  /** The OCR reads lines and totals with Python; only the header block goes to its model. */
+  [CHANNELS.FLIPKART_QCOM]: 'flipkart_quickcomm',
+  [CHANNELS.GLUZO]: 'gluzo',
+  /** PDF + sheet: header from the PDF, lines from the sheet (the PDF alone is not taken, user 2026-11-02). */
+  [CHANNELS.SLIKK]: 'slikk',
+  /** Unicommerce PDF: "amount (9.000%)" tax cells split, the unlabeled totals row read as the Total row. */
+  [CHANNELS.POP_TECH]: 'pop_tech',
 };

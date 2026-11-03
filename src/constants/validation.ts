@@ -1,5 +1,6 @@
 import { CHANNELS, ChannelName } from './channels';
 import { ISSUE_TYPE, IssueType } from './db';
+import { MYNTRA_STR } from './channel-api';
 
 /*
  * Validation of a processed.json against our master data (before the PO is saved and its sale order is made).
@@ -13,12 +14,21 @@ export interface Tolerance {
   mrpPerSku: number;
   /** PO unit price (with tax) vs our rate_after_margin, per SKU (per unit). */
   pricePerSku: number;
-  /** PO value (with tax) vs the sum of qty x rate_after_margin, for the whole PO. */
+  /** PO value (with tax) vs the sum of qty x rate_after_margin, for the whole PO: at least this many rupees... */
   poTotal: number;
+  /** ...or this percent of our value when that is more (paisa rounding grows with the quantities). */
+  poTotalPercent: number;
 }
 
-/** For now the same for every channel (user, 2026-10-08): Rs 2 per SKU, Rs 10 on the PO total. */
-const DEFAULT_TOLERANCE: Tolerance = { mrpPerSku: 2, pricePerSku: 2, poTotal: 10 };
+/**
+ * The same for every channel. 2026-10-29 (user): Rs 1 per SKU on MRP and on the unit price (was Rs 2); PO total
+ * 0.02% of the value, at least Rs 10 (was a flat Rs 10: Reliance 5000501376 = -19.52 on 15 lakh, only paisa rounding).
+ */
+const DEFAULT_TOLERANCE: Tolerance = { mrpPerSku: 1, pricePerSku: 1, poTotal: 10, poTotalPercent: 0.02 };
+
+/** The rupees a PO's total may differ by: poTotal, or poTotalPercent of our value when that is more. */
+export const poTotalAllowed = (t: Tolerance, ourValue: number): number =>
+  Math.max(t.poTotal, Math.round(Math.abs(ourValue) * t.poTotalPercent) / 100);
 
 /** Change a channel's limits here. */
 export const CHANNEL_TOLERANCES: Record<ChannelName, Tolerance> = {
@@ -32,6 +42,13 @@ export const CHANNEL_TOLERANCES: Record<ChannelName, Tolerance> = {
   [CHANNELS.AMAZON]: DEFAULT_TOLERANCE,
   [CHANNELS.TATA1MG]: DEFAULT_TOLERANCE,
   [CHANNELS.NYKAA]: DEFAULT_TOLERANCE,
+  [CHANNELS.FLIPKART]: DEFAULT_TOLERANCE,
+  [CHANNELS.MYNTRA]: DEFAULT_TOLERANCE,
+  [CHANNELS.AVENUE]: DEFAULT_TOLERANCE,
+  [CHANNELS.FLIPKART_QCOM]: DEFAULT_TOLERANCE,
+  [CHANNELS.GLUZO]: DEFAULT_TOLERANCE,
+  [CHANNELS.SLIKK]: DEFAULT_TOLERANCE,
+  [CHANNELS.POP_TECH]: DEFAULT_TOLERANCE,
 };
 
 /**
@@ -49,15 +66,62 @@ export const CHANNEL_MASTER_IDS: Record<ChannelName, number> = {
   [CHANNELS.AMAZON]: 9,
   [CHANNELS.TATA1MG]: 11,
   [CHANNELS.NYKAA]: 6,
+  [CHANNELS.FLIPKART]: 8,
+  /** master_channels "Myntra" (B2C, 208 SKU rows; checked 2026-11-02), not Myntra-OR (17, no SKUs). */
+  [CHANNELS.MYNTRA]: 5,
+  /** "Avenue E-Commerce" (DMart). */
+  [CHANNELS.AVENUE]: 15,
+  /** "Flipkart Qcom" (not "Flipkart", id 8: its rates differ). */
+  [CHANNELS.FLIPKART_QCOM]: 16,
+  /** "GLUZO". */
+  [CHANNELS.GLUZO]: 24,
+  /** "SLIKK". */
+  [CHANNELS.SLIKK]: 40,
+  /** "POP TECH". */
+  [CHANNELS.POP_TECH]: 37,
 };
+
+/**
+ * Channels whose PO line gives their channel code, OR our pep code, OR the EAN in the same column (Slikk's "SKU Id": the
+ * EAN for some mCaffeine items, our code for the rest; 2026-11-02): looked up among the channel's rows as channel_code,
+ * then pep_code, then ean_code (SLIKK rows hold some EANs only in ean_code: MCaf371 / MCaf40 carry another item's
+ * channel_code on 2 Nov).
+ */
+export const SKU_ANY_CODE: ReadonlySet<ChannelName> = new Set([CHANNELS.SLIKK]);
+
+/**
+ * Channels whose channel_code is the EAN (Pop Tech, user 2026-11-02): when the code gives rows of several of our codes,
+ * only the rows whose ean_code is the PO line's EAN are kept (8906129570856: channel_code on MTOOL7_NL_S + MTOOL7_NL,
+ * ean_code only on MTOOL7_NL_S). Still several -> review (MCaf383_WB / _N1, Mcaf396_WB / Mcaf396 carry both).
+ */
+/**
+ * Several locations match one PO (shared pincode): how the PO's own address must match one of them to pick it
+ * (po-validation/location-tiebreak.ts; user 2026-11-02). Score = shared words / the smaller word count (0-1).
+ */
+export const LOCATION_TIEBREAK = {
+  /** the best address must share at least this share of words */
+  ADDRESS_MIN: 0.8,
+  /** and be this far ahead of the next one (Avenue Thane 2 (Kukse) 1.0 vs Mouje Borivali 0.93: same building -> review) */
+  ADDRESS_MARGIN: 0.2,
+  /** a PO address shorter than this (e.g. only "BLINK COMMERCE PRIVATE LIMITED") is not used */
+  ADDRESS_MIN_WORDS: 6,
+} as const;
+
+export const SKU_EAN_TIEBREAK: ReadonlySet<ChannelName> = new Set([CHANNELS.POP_TECH]);
+
 
 /**
  * How the PO's delivery location is found in details_channels:
  *   code_then_pincode: delivery_facility_code = channel_location_code (case-insensitive); if no row, delivery_pincode =
  *                      consignee_pin_code
  *   pincode:           delivery_pincode = consignee_pin_code only (Purplle: its plant codes W502 ... are not in the master)
+ * Both, every channel (2026-11-02): no row by consignee_pin_code -> a location WITHOUT consignee_pin_code whose
+ * final_shipping_address ends with the pincode (last 6 digits; Slikk / Gluzo / Pop Tech / Octavos ... keep it only there).
  * Exactly one row must match; none or several -> review.
  */
+/** Pep Technologies' PAN: inside every GSTIN of ours (27AAICP2804J1ZC ...), so a PO's other GSTIN is the buyer's. */
+export const OUR_PAN = 'AAICP2804J';
+
 export const LOCATION_MATCH = { CODE_THEN_PINCODE: 'code_then_pincode', PINCODE: 'pincode' } as const;
 export type LocationMatch = (typeof LOCATION_MATCH)[keyof typeof LOCATION_MATCH];
 
@@ -75,6 +139,20 @@ export const CHANNEL_LOCATION_MATCH: Record<ChannelName, LocationMatch> = {
   [CHANNELS.TATA1MG]: LOCATION_MATCH.CODE_THEN_PINCODE,
   /** Delivery Location ("Chennai Warehouse", "Nykaa Warehouse DEL1" ...) = channel_location_code. */
   [CHANNELS.NYKAA]: LOCATION_MATCH.CODE_THEN_PINCODE,
+  /** The consignment's Warehouse Id (ahm_khe_wh_nl_01nl ...) = channel_location_code. */
+  [CHANNELS.FLIPKART]: LOCATION_MATCH.CODE_THEN_PINCODE,
+  [CHANNELS.MYNTRA]: LOCATION_MATCH.CODE_THEN_PINCODE,
+  /** No site code on the PO: the Ship To pincode (two locations share 421302 on 30 Oct: the reviewer picks). */
+  [CHANNELS.AVENUE]: LOCATION_MATCH.PINCODE,
+  /** No location code on the PO: the SHIPPED TO ADDRESS pincode (Hillway 387570 -> "Ahmedabad"). */
+  [CHANNELS.FLIPKART_QCOM]: LOCATION_MATCH.PINCODE,
+  /** No location code on the PO: the Shipping Address pincode (110092; the master's DELHI row has none on 2 Nov: review). */
+  [CHANNELS.GLUZO]: LOCATION_MATCH.PINCODE,
+  /** No location code on the PO: the Shipped To Address pincode (562114 Hosakote / 560102 HSR; none in the master on 2 Nov). */
+  [CHANNELS.SLIKK]: LOCATION_MATCH.PINCODE,
+  /** No location code on the PO: the Ship to pincode (562114 BANGLORE / 122001 GURGOAN; the 28 Oct master has the pincode
+   *  only inside the address, consignee_pin_code empty: matched by the address, as for every channel). */
+  [CHANNELS.POP_TECH]: LOCATION_MATCH.PINCODE,
 };
 
 /** Result of validating one PO. */
@@ -104,6 +182,8 @@ export const ISSUE_FIELDS = {
   REVISED: 'revised',
   /** A processed PO sent back to review by the person verifying it (constants/po-verify.ts). */
   VERIFICATION: 'verification',
+  /** A rejected PO reopened (2026-11-03): one OTHER issue that a person must accept before it goes for approval. */
+  REOPENED: 'reopened',
 } as const;
 export type IssueField = (typeof ISSUE_FIELDS)[keyof typeof ISSUE_FIELDS];
 
@@ -112,7 +192,20 @@ export type IssueField = (typeof ISSUE_FIELDS)[keyof typeof ISSUE_FIELDS];
  * (FOC / revised = OTHER, expired). Data issues (SKU, MRP, price, total, location, qty, OCR) must be corrected or the PO
  * rejected; DUPLICATE_PO can only be rejected.
  */
-export const ACCEPTABLE_ISSUE_TYPES: readonly IssueType[] = [ISSUE_TYPE.OTHER, ISSUE_TYPE.PO_EXPIRED];
+/**
+ * Channels whose PO price is NOT checked (2026-11-03, user: Myntra STRs): the sale order takes our master rate (margin)
+ * and our GST; the PO's own price is only shown as information. No "price missing", no price / total check; MRP is.
+ */
+export const OUR_PRICE_ONLY_CHANNELS: readonly ChannelName[] = [CHANNELS.MYNTRA];
+
+/** What a location's Uniware channel should be (a channel's own sheet); our master differing -> review (OTHER). */
+export const EXPECTED_UNIWARE_CHANNEL: Partial<Record<ChannelName, Record<string, string>>> = {
+  [CHANNELS.MYNTRA]: Object.fromEntries(MYNTRA_STR.DESTINATIONS.map((d) => [d.location, d.uniwareChannel])),
+};
+
+export const ACCEPTABLE_ISSUE_TYPES: readonly IssueType[] = [ISSUE_TYPE.OTHER, ISSUE_TYPE.PO_EXPIRED, ISSUE_TYPE.TOTAL_MISMATCH];
+/** Price check (2026-10-30): a total still off after the line choices is accepted ("go with the line total") only with a remark. */
+export const REMARK_REQUIRED_ISSUE_TYPES: readonly IssueType[] = [ISSUE_TYPE.TOTAL_MISMATCH];
 
 /** Rupee amounts are compared after rounding to paise, so 0.004 of float noise is never an issue. */
 export const round2 = (n: number): number => Math.round(n * 100) / 100;
@@ -169,6 +262,8 @@ export const VALIDATION_TEXT = {
   CHANNEL_NOT_CONFIGURED: (channel: string) => `channel "${channel}" has no master_channels id in constants/validation.ts`,
   NO_LOCATION_KEY: 'the PO has neither a delivery facility code nor a delivery pincode',
   LOCATION_NONE: (by: string) => `no details_channels row matches ${by}`,
+  /** Appended to "pincode …" when the channel has locations without consignee_pin_code (their address is searched too). */
+  LOCATION_BY_ADDRESS: ' (consignee_pin_code, else the pincode in the location address)',
   LOCATION_MANY: (by: string, n: number, codes: string) => `${n} details_channels rows match ${by} (${codes}); exactly one is needed`,
   LOCATION_INCOMPLETE: (code: string, missing: string) => `details_channels row "${code}" has no ${missing}`,
   SKU_CODE_EMPTY: 'the PO line has no channel SKU code',
@@ -188,6 +283,8 @@ export const VALIDATION_TEXT = {
   PRICE_MISSING: 'no unit price on the PO line (neither landing rate nor unit cost)',
   GST_MISSING: (pepCode: string) => `no GST rate for ${pepCode} (neither on the PO nor in master_skus)`,
   FOC_REVIEW: (reasons: string) => `marked for manual review by processing: ${reasons}`,
+  UNIWARE_CHANNEL_DIFFERS: (location: string, ours: string, expected: string) =>
+    `Uniware channel of ${location}: our master says ${ours || '(none)'}, the channel's location sheet says ${expected}: fix the master (or accept)`,
   REVISED: (revisionOf: string) => `revised PO${revisionOf ? ` of ${revisionOf}` : ''}: updating the earlier PO is not built yet`,
   OCR_NO_PO_NUMBER: 'no PO number was read',
   OCR_NO_LINES: 'no line items were read',
