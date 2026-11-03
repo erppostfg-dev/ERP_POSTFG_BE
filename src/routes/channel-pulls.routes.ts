@@ -1,15 +1,17 @@
 import { Router } from 'express';
 import { ACCESS_LEVEL, CHANNEL_PULLS, ERROR_CODES, PAGE } from '../constants';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
-import { channelPull, connectorOrThrow, hasRobot, listChannelPulls, listPullItems, robotRunOf } from '../modules/channel-api/channel-pulls.service';
-import { setRobotSchedule, startRobotRun } from '../modules/channel-api/flipkart/consignments.service';
+import { channelPull, connectorOrThrow, hasRobot, listChannelPulls, listPullItems, processesPos, robotOf, robotRunOf } from '../modules/channel-api/channel-pulls.service';
+import { setRobotSchedule } from '../modules/channel-api/flipkart/consignments.service';
 import { processNow, rescheduleConnector } from '../modules/channel-api/scheduler';
 import { savePollSchedule } from '../modules/channel-api/poll-schedule';
 import { appError } from '../utils/AppError';
 
 /*
  * Channel Pulls page (2026-10-30; the page key of Amazon Inbound, PAGE.AMAZON_INBOUND, so nobody's access changes).
- * Every channel pulled by API or robot (constants SOURCE_SYSTEM keys: amazon_spapi, flipkart_seller_hub).
+ * Every channel pulled by API or robot (constants SOURCE_SYSTEM keys: amazon_spapi, flipkart_seller_hub, myntra_str).
+ * Myntra STRs (2026-11-03): its robot starts with the STR email (Run now = the waiting STRs again); no schedule (400),
+ * no Process now yet (409: step 2).
  *   GET   /channel-pulls                     every channel: set up, PO intake ON / OFF, last process run, robot + schedule, counts
  *   GET   /channel-pulls/:key/items          the robot's recent fetches (newest first) with the PO each became
  *   GET   /channel-pulls/:key/robot          the robot's last run with its log lines
@@ -47,9 +49,10 @@ router.post(CHANNEL_PULLS.ROUTES.ROBOT, ...editor, async (req, res, next) => {
   try {
     const key = String(req.params.key);
     connectorOrThrow(key);
-    if (!hasRobot(key)) throw appError(ERROR_CODES.CHANNEL_PULL_NO_ROBOT, key);
+    const rb = robotOf(key);
+    if (!rb) throw appError(ERROR_CODES.CHANNEL_PULL_NO_ROBOT, key);
     // started here (its checks throw now); the run itself goes on after the answer
-    void startRobotRun(`run now (${by(req)})`).catch(() => undefined);
+    rb.start(`run now (${by(req)})`);
     res.status(202).json({ data: await channelPull(key) });
   } catch (err) { next(err); }
 });
@@ -57,6 +60,8 @@ router.post(CHANNEL_PULLS.ROUTES.ROBOT, ...editor, async (req, res, next) => {
 router.post(CHANNEL_PULLS.ROUTES.PROCESS, ...editor, async (req, res, next) => {
   try {
     const c = connectorOrThrow(String(req.params.key));
+    // Myntra STRs: stored in S3 only until step 2 (no POs from them yet)
+    if (!processesPos(c.key)) throw appError(ERROR_CODES.CHANNEL_PULL_NO_PROCESSING, c.label);
     const started = processNow(c);
     res.status(202).json({ data: { started, pull: await channelPull(c.key) } });
   } catch (err) { next(err); }
@@ -73,6 +78,7 @@ router.patch(CHANNEL_PULLS.ROUTES.SCHEDULE, ...editor, async (req, res, next) =>
       }]);
     }
     // robot channels: the robot's runs; API channels: how often the server pulls (null = its default)
+    if (hasRobot(key) && !robotOf(key)?.schedule) throw appError(ERROR_CODES.CHANNEL_PULL_NO_SCHEDULE, c.label);
     if (hasRobot(key)) await setRobotSchedule(v as number | null, by(req));
     else {
       await savePollSchedule(key, v as number | null, by(req));

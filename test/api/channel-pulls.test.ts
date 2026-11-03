@@ -80,13 +80,28 @@ describe('who may use it (the Amazon Inbound page key)', () => {
 describe('the list', () => {
   it('every channel: Amazon by API, Flipkart by robot; set up, PO intake switch, counts', async () => {
     const all = (await api().get(V).set('Cookie', admin.cookie).expect(200)).body.data as { key: string; kind: string }[];
-    expect(all.map((p) => [p.key, p.kind])).toEqual([['amazon_spapi', 'api'], [FK_KEY, 'robot']]);
+    expect(all.map((p) => [p.key, p.kind])).toEqual([['amazon_spapi', 'api'], [FK_KEY, 'robot'], ['myntra_str', 'robot']]);
     expect(await pull(admin)).toMatchObject({
       channel: 'flipkart', configured: true, intake: { enabled: false }, processing: false,
-      robot: { running: false, lastRun: null, schedule: { everyHours: null }, nextRunAt: null }, counts: { fetched: 0, notTaken: 0, waiting: 0, taken: 0 },
+      robot: { running: false, lastRun: null, schedule: { everyHours: null }, nextRunAt: null, startedBy: 'schedule' }, processes: true, counts: { fetched: 0, notTaken: 0, waiting: 0, taken: 0 },
     });
     expect((await api().get(`${V}/nope/items`).set('Cookie', admin.cookie)).status).toBe(404);
     expect((await api().get(`${V}/amazon_spapi/items`).set('Cookie', admin.cookie).expect(200)).body.data).toEqual([]);
+  });
+
+  it('Myntra STRs (2026-11-03): a robot started by its email (no schedule), no Process now yet; its STRs with the last error', async () => {
+    const my = (await api().get(V).set('Cookie', admin.cookie).expect(200)).body.data.find((p: { key: string }) => p.key === 'myntra_str');
+    expect(my).toMatchObject({ channel: 'myntra', kind: 'robot', processes: false, robot: { schedule: null, nextRunAt: null, startedBy: 'email' } });
+    expect((await api().post(`${V}/myntra_str/process`).set('Cookie', admin.cookie)).body.error.code).toBe('CHANNEL_PULL_NO_PROCESSING');
+    expect((await api().patch(`${V}/myntra_str/schedule`).set('Cookie', admin.cookie).send({ robotEveryHours: 4 })).body.error.code).toBe('CHANNEL_PULL_NO_SCHEDULE');
+    await (await import('../helpers/db')).insert('channel_pull_items', {
+      source_system: 'myntra_str', external_id: 'STNCPWEBP271026-01', status: null, warehouse: 'BP', created_on: '2026-10-27',
+      label: 'STNCPWEBP271026-01 · NON TC P0 · BP', data: JSON.stringify({ runs: 1, lastError: 'not found on the Myntra portal' }), fetched_at: new Date(),
+    });
+    const items = (await api().get(`${V}/myntra_str/items`).set('Cookie', admin.cookie).expect(200)).body.data;
+    expect(items).toEqual([expect.objectContaining({ externalId: 'STNCPWEBP271026-01', label: 'STNCPWEBP271026-01 · NON TC P0 · BP', status: null, error: 'not found on the Myntra portal', createdOn: '2026-10-27' })]);
+    expect((await api().get(V).set('Cookie', admin.cookie)).body.data.find((p: { key: string }) => p.key === 'myntra_str').counts).toMatchObject({ fetched: 1, waiting: 1, stored: 0 });
+    expect((await api().get(`${V}/myntra_str/robot`).set('Cookie', admin.cookie).expect(200)).body.data).toBeNull();
   });
 });
 
@@ -98,7 +113,7 @@ describe('Run robot now -> Process now', () => {
     expect(run).toMatchObject({ ok: true, listed: 1, stored: 1, failed: [], error: null });
     expect(run.trigger).toContain('run now');
     expect(robotJob.calls).toBe(1);
-    expect((await pull(admin)).counts).toEqual({ fetched: 1, notTaken: 1, waiting: 0, taken: 0 });
+    expect((await pull(admin)).counts).toEqual({ fetched: 1, notTaken: 1, waiting: 0, taken: 0, stored: 0, failed: 0 });
 
     // OFF in PO intake: Process now takes nothing
     await api().post(`${V}/${FK_KEY}/process`).set('Cookie', admin.cookie).expect(202);

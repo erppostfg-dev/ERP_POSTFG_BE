@@ -63,9 +63,19 @@ const pullOne = async (page: Page, str: string, tmp: string): Promise<FetchedStr
   await input.click();
   await input.fill('');
   await input.pressSequentially(str, { delay: between(50, 100) });
-  await humanClick(page, page.getByRole('button', { name: /^apply$/i }).first());
+  const apply = page.getByRole('button', { name: /^apply$/i }).first();
   const row = page.getByText(new RegExp(`^\\s*${esc(str)}\\s*$`)).locator('visible=true').first();
-  if (!(await row.waitFor({ state: 'visible', timeout: 45_000 }).then(() => true, () => false))) return { str, csv: null, error: 'not found on the Myntra portal' };
+  // the list loads slowly at times (3 Nov: one STR "not found" that was there): wait for the page to settle and long
+  // enough, then Apply once more before calling it not found
+  const shows = async (ms: number) => {
+    await page.waitForLoadState('networkidle', { timeout: 30_000 }).catch(() => undefined);
+    return row.waitFor({ state: 'visible', timeout: ms }).then(() => true, () => false);
+  };
+  await humanClick(page, apply);
+  if (!(await shows(MYNTRA_STR.ROW_WAIT_MS))) {
+    await humanClick(page, apply);
+    if (!(await shows(MYNTRA_STR.ROW_WAIT_AGAIN_MS))) return { str, csv: null, error: MYNTRA_STR.NOT_FOUND };
+  }
   await page.waitForTimeout(between(600, 1200));
   await humanClick(page, row);
   await page.getByText(P.DETAILS).locator('visible=true').first().waitFor({ state: 'visible', timeout: 60_000 });
@@ -105,6 +115,7 @@ export const fetchMyntraStrs = (cfg: MyntraConfig, cacheDir: string, strs: strin
           await openStrTab(page).catch(() => undefined);
           // "not found" is tried again too: the list was slow once (3 Nov, STNCPWEBW271026-04: found on the next look)
           if (r.csv !== null) break;
+          await page.waitForTimeout(between(3_000, 6_000)); // a short pause before the next try
         }
         out.push(r);
       }

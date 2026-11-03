@@ -101,6 +101,8 @@ export const ERRORS = {
   // Channel Pulls (2026-10-30)
   CHANNEL_PULL_NOT_CONFIGURED: define(409, (what: string) => `${what} is not set up on this server (its login is missing in the settings)`),
   CHANNEL_PULL_NOT_FOUND: define(404, (key: string) => `No channel pull ${key}`),
+  CHANNEL_PULL_NO_PROCESSING: define(409, (label: string) => `${label}: making POs from these is not switched on yet`),
+  CHANNEL_PULL_NO_SCHEDULE: define(400, (label: string) => `${label}: its robot starts when its email comes; it has no schedule`),
   CHANNEL_PULL_NO_ROBOT: define(400, (key: string) => `${key} has no robot to run (it is pulled by its API)`),
   CHANNEL_PULL_RUNNING: define(409, (what: string) => `${what} is already running: wait for it to finish`),
   MANUAL_AMAZON_STATUS: define(409, (id: string, status: string) => `${id} is ${status} at Amazon: cancelled / deleted / closed shipments are not made into POs`),

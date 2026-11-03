@@ -151,13 +151,17 @@ describe('the robot run', () => {
       return strs.map((str) => (str === 'STNCPWEMYNT271026-02' ? { str, csv: null, error: 'not found on the Myntra portal' } : { str, csv: CSV }));
     };
     const run = await runStrRobot('test', fetcher);
-    expect(run).toMatchObject({ ok: true, asked: 4, stored: 3 });
+    expect(run).toMatchObject({ ok: true, listed: 4, stored: 3 });
     expect(asked[0]).toEqual(['STNCPWEBP271026-01', 'STNCPWEFKME271026-00', 'STNCPWEMYNT271026-02', 'STNCPWEBW271026-05']);
     const objects = s3Objects();
     const folder = [...objects.keys()].find((k) => k.endsWith('/STNCPWEBP271026-01/processed.json'))!;
     expect(folder).toMatch(/channel-api\/FY\d{4}\/[A-Za-z]+\/myntra\/STNCPWEBP271026-01\/processed\.json$/);
     expect(JSON.parse(objects.get(folder)!)).toMatchObject({ po_number: 'STNCPWEBP271026-01', channel_name: 'myntra' });
-    expect([...objects.keys()].some((k) => k.endsWith('/STNCPWEBP271026-01/STNCPWEBP271026-01-summary.csv'))).toBe(true);
+    // the same files as an Amazon / Flipkart PO folder: metadata.json, api-raw.json, the original CSV, processed.json
+    const files = [...objects.keys()].filter((k) => k.includes('/STNCPWEBP271026-01/')).map((k) => k.split('/').pop()).sort();
+    expect(files).toEqual(['STNCPWEBP271026-01-summary.csv', 'api-raw.json', 'metadata.json', 'processed.json']);
+    const meta = JSON.parse(objects.get(folder.replace('processed.json', 'metadata.json'))!);
+    expect(meta).toMatchObject({ provider: 'channel-api', channel: 'myntra', poNumber: 'STNCPWEBP271026-01', sourceSystem: 'myntra_str', sourceFile: 'STNCPWEBP271026-01-summary.csv', strEmail: { subject: SUBJECT } });
     let r = await items();
     expect(r.map((i) => i.status)).toEqual(['stored', 'stored', null, 'stored']);
     expect(dataOf(r[0].data)).toMatchObject({ summary: { units: 102 } });
@@ -168,7 +172,7 @@ describe('the robot run', () => {
     expect(r[2].status).toBe('failed');
     expect(dataOf(r[2].data)).toMatchObject({ runs: 3, lastError: 'not found on the Myntra portal' });
     expect(asked.slice(1)).toEqual([['STNCPWEMYNT271026-02'], ['STNCPWEMYNT271026-02']]);
-    expect((await runStrRobot('nothing left', fetcher)).asked).toBe(0);
+    expect((await runStrRobot('nothing left', fetcher)).listed).toBe(0);
     expect(await rows('SELECT id FROM po_uploads')).toHaveLength(0);
   });
 

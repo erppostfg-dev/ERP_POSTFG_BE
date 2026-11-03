@@ -3,7 +3,7 @@ import path from 'path';
 import { In, IsNull } from 'typeorm';
 import { AppDataSource } from '../../../config/data-source';
 import { env } from '../../../config/env';
-import { APP_STATE_KEY, FILES, FOLDERS, monthFolder, MYNTRA_STR, SOURCE_SYSTEM, yearFolder } from '../../../constants';
+import { APP_STATE_KEY, FILES, FOLDERS, monthFolder, MYNTRA_STR, PROVIDERS, SOURCE_SYSTEM, yearFolder } from '../../../constants';
 import { LOG_SOURCE } from '../../../constants/logging';
 import { AppState, ChannelPullItem } from '../../../entities';
 import { log } from '../../../utils/logger';
@@ -38,14 +38,16 @@ export interface StrItemData {
   summary?: StrSummary;
 }
 
+/** A robot run, in the same shape as the Flipkart robot's (Channel Pulls shows both alike): listed = STRs asked for. */
 export interface StrRun {
   startedAt: string;
   finishedAt: string | null;
   ok: boolean | null;
   trigger: string;
-  asked: number;
+  listed: number;
   stored: number;
-  failed: { str: string; error: string }[];
+  failed: { id: string; error: string }[];
+  completed: number;
   error: string | null;
   log: string[];
 }
@@ -62,7 +64,8 @@ const saveRun = (run: StrRun) => stateRepo().save({ key: APP_STATE_KEY.MYNTRA_ST
 
 /** S3 folder (no trailing slash) of one STR, by the date in its code. */
 export const strS3Folder = (str: string, date: string): string => {
-  const d = new Date(`${date}T06:00:00Z`);
+  // the same day as the runner's channel-api folders (receivedAt = <date>T00:00Z), so step 2 lands in this folder
+  const d = new Date(`${date}T00:00:00.000Z`);
   return `${env.s3.prefix}${FOLDERS.CHANNEL_API}/${yearFolder(d)}/${monthFolder(d)}/${MYNTRA_STR.CHANNEL}/${str}`;
 };
 
@@ -122,8 +125,28 @@ const storeOne = async (item: ChannelPullItem, csv: string): Promise<void> => {
   const ref = { str: item.externalId, date: item.createdOn ?? '', destination: data.destination, group: data.group, priority: data.priority };
   const { po, summary } = strToProcessed(ref, csv);
   const folder = strS3Folder(item.externalId, ref.date);
-  await writeS3Text(s3UrlOfKey(`${folder}/${MYNTRA_STR.CSV_FILE(item.externalId)}`), csv);
+  const csvFile = MYNTRA_STR.CSV_FILE(item.externalId);
+  // the same files as an Amazon / Flipkart PO folder (runner.writeFolder): metadata.json, api-raw.json, the original
+  // download, processed.json; the email it came from is kept in both
+  const meta = {
+    messageId: `${S}:${item.externalId}`,
+    provider: PROVIDERS.CHANNEL_API,
+    channel: MYNTRA_STR.CHANNEL,
+    poNumber: item.externalId,
+    sourceSystem: S,
+    externalId: item.externalId,
+    externalStatus: MYNTRA_STR.STATUS.STORED,
+    subject: item.label,
+    receivedAt: `${ref.date}T00:00:00.000Z`,
+    sourceFile: csvFile,
+    strEmail: data.email,
+    storedAt: new Date().toISOString(),
+  };
+  const raw = { str: item.externalId, order: data.order, group: data.group, priority: data.priority, destination: data.destination, date: ref.date, email: data.email, summary };
+  await writeS3Text(s3UrlOfKey(`${folder}/${csvFile}`), csv);
+  await writeS3Text(s3UrlOfKey(`${folder}/${FILES.API_RAW}`), `${JSON.stringify(raw, null, 2)}\n`);
   await writeS3Text(s3UrlOfKey(`${folder}/${FILES.PROCESSED}`), `${JSON.stringify(po, null, 2)}\n`);
+  await writeS3Text(s3UrlOfKey(`${folder}/${FILES.METADATA}`), `${JSON.stringify(meta, null, 2)}\n`);
   const next: StrItemData = { ...data, s3Folder: folder, summary, lastError: null };
   await repo().save({ ...item, status: MYNTRA_STR.STATUS.STORED, data: { ...next } });
 };
@@ -143,10 +166,10 @@ const workerFetch: StrFetcher = (strs, onLog) =>
   runSellerHubJob<FetchedStr[]>(MYNTRA_STR.ROBOT_JOB, (cacheDir) => ({ kind: MYNTRA_STR.ROBOT_JOB, myntra: env.intransit.myntra, cacheDir, strs }), MYNTRA_STR.ROBOT_TIMEOUT_MS, onLog);
 
 export const runStrRobot = async (trigger: string, fetcher: StrFetcher = workerFetch): Promise<StrRun> => {
-  const out: StrRun = { startedAt: new Date().toISOString(), finishedAt: null, ok: null, trigger, asked: 0, stored: 0, failed: [], error: null, log: [] };
+  const out: StrRun = { startedAt: new Date().toISOString(), finishedAt: null, ok: null, trigger, listed: 0, stored: 0, failed: [], completed: 0, error: null, log: [] };
   const line = (l: string) => { out.log.push(l); if (out.log.length > MYNTRA_STR.LOG_LINES) out.log.shift(); };
   const waiting = await repo().find({ where: { sourceSystem: S, status: IsNull() }, order: { id: 'ASC' } });
-  out.asked = waiting.length;
+  out.listed = waiting.length;
   if (!waiting.length) return out;
   await saveRun(out);
   try {
@@ -160,16 +183,16 @@ export const runStrRobot = async (trigger: string, fetcher: StrFetcher = workerF
           out.stored++;
         } else {
           const error = r?.error ?? 'not downloaded';
-          out.failed.push({ str: item.externalId, error: (await failOne(item, error)) ? `${error} (failed: no more tries)` : error });
+          out.failed.push({ id: item.externalId, error: (await failOne(item, error)) ? `${error} (failed: no more tries)` : error });
         }
       } catch (err) {
         const error = `S3: ${err instanceof Error ? err.message : String(err)}`;
         await failOne(item, error);
-        out.failed.push({ str: item.externalId, error });
+        out.failed.push({ id: item.externalId, error });
       }
     }
     out.ok = true;
-    log.info(LOG_SOURCE.APP, `[myntra-str] ${trigger}: ${out.asked} asked, ${out.stored} stored in S3, ${out.failed.length} failed`);
+    log.info(LOG_SOURCE.APP, `[myntra-str] ${trigger}: ${out.listed} asked, ${out.stored} stored in S3, ${out.failed.length} failed`);
   } catch (err) {
     out.ok = false;
     out.error = (err instanceof Error ? err.message : String(err)).slice(0, 500);
@@ -186,6 +209,8 @@ let running: Promise<StrRun> | null = null;
 let again = false;
 
 /** Starts a run unless one is going (then one more run follows it, for STRs that came meanwhile). */
+export const strRunning = (): boolean => running !== null;
+
 export const startStrRun = (trigger: string): Promise<StrRun> | null => {
   if (!strRobotConfigured()) {
     log.warn(LOG_SOURCE.APP, `[myntra-str] ${trigger}: not run, MYNTRA_PARTNER_USER / _PASSWORD missing`);

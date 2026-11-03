@@ -191,10 +191,17 @@ export const MYNTRA_STR = {
     DOWNLOAD: /^\s*Download CSV\s*$/i,
   },
   /** Tries per STR in one run (one click timed out once in 45 on 2 Nov), and runs before an STR is marked failed. */
-  TRIES_PER_RUN: 2,
+  TRIES_PER_RUN: 3,
+  /** How long the STR's row may take to show after Apply, and after a second Apply. */
+  ROW_WAIT_MS: 90_000,
+  ROW_WAIT_AGAIN_MS: 45_000,
+  NOT_FOUND: 'not found on the Myntra portal',
   MAX_RUNS: 3,
   ROBOT_TIMEOUT_MS: 60 * 60_000,
   ROBOT_JOB: 'myntra-strs',
+  /** Step 2 (STR -> PO -> sale order) is not built: the connector lists nothing and Process now is refused. */
+  PROCESSING: false,
+  POLL_MINUTES: 60,
   /** channel_pull_items.status. */
   STATUS: { WAITING: null, STORED: 'stored', FAILED: 'failed' },
   /** The STR CSV's columns (by name; IGST or SGST + CGST by the destination's state). */
