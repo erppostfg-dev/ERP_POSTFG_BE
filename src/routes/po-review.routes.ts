@@ -27,6 +27,7 @@ import { reviewEvents, reviewVersion } from '../modules/po-review/po-review.live
 import { recheckInReview } from '../modules/po-review/recheck.service';
 import { downloadCombined, downloadOne, markUploaded } from '../modules/po-review/uniware-handoff.service';
 import { lineItems } from '../modules/po-review/line-items.service';
+import { getRejection, reopenRejected } from '../modules/po-review/po-review-reopen.service';
 import { LineCorrection, rejectPo, ResubmitBody, submitForApproval } from '../modules/po-review/po-review-actions.service';
 import { appError } from '../utils/AppError';
 
@@ -282,6 +283,32 @@ router.post('/:uploadId/reject', requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS
     const remark = bodyReader(problems).remark((req.body as Record<string, unknown> | undefined)?.[B.REMARK], B.REMARK, true);
     if (problems.length || !remark) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails(problems);
     res.json({ data: await rejectPo(uploadId, remark, { id: req.auth!.user.id, email: req.auth!.user.email }) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---- Rejected POs: why, and reopen (2026-11-03, user) ---------------------------------------------------------------
+
+/** GET /po-review/:uploadId/rejection: why it was rejected (who / where / reason), the errors rejected with it, what the
+ *  reviewer had changed (approver rejections) and every earlier reopen. Viewer. */
+router.get('/:uploadId/rejection', requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.VIEWER), async (req, res, next) => {
+  try {
+    res.json({ data: await getRejection(uploadIdOf(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /po-review/:uploadId/reopen { remark }: a rejected PO back to In Review (checks again against today's masters +
+ *  one issue to accept), to be fixed and submitted for approval again. Editor; any number of times. */
+router.post('/:uploadId/reopen', requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
+  try {
+    const uploadId = uploadIdOf(req);
+    const problems: Problem[] = [];
+    const remark = bodyReader(problems).remark((req.body as Record<string, unknown> | undefined)?.[B.REMARK], B.REMARK, true);
+    if (problems.length || !remark) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails(problems);
+    res.json({ data: await reopenRejected(uploadId, remark, { id: req.auth!.user.id, email: req.auth!.user.email }) });
   } catch (err) {
     next(err);
   }

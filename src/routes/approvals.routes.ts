@@ -119,6 +119,7 @@ router.get('/po-reviews', requireAuth, requirePage(PAGE.APPROVALS, ACCESS_LEVEL.
     const { items, total, counts, filterOptions } = await listApprovals({
       status: status as ReviewSubmissionStatus, q: str(PO_REVIEW_QUERY.Q), channels: list(PO_REVIEW_QUERY.CHANNEL),
       kind: kind as ApprovalKind | undefined, issues: list(APPROVAL_QUERY.ISSUE), submittedBy: list(APPROVAL_QUERY.SUBMITTED_BY), from, to, page, pageSize,
+      reopened: str(APPROVAL_QUERY.REOPENED) === 'true',
     });
     const canDecide = !!req.auth?.roles.some((r) => (APPROVER_ROLES as readonly string[]).includes(r));
     res.json({ data: items, meta: { page, pageSize, total, counts, canDecide, filterOptions } });

@@ -177,6 +177,8 @@ export const ISSUE_FIELDS = {
   REVISED: 'revised',
   /** A processed PO sent back to review by the person verifying it (constants/po-verify.ts). */
   VERIFICATION: 'verification',
+  /** A rejected PO reopened (2026-11-03): one OTHER issue that a person must accept before it goes for approval. */
+  REOPENED: 'reopened',
 } as const;
 export type IssueField = (typeof ISSUE_FIELDS)[keyof typeof ISSUE_FIELDS];
 

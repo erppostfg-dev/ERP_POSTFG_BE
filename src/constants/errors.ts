@@ -173,6 +173,7 @@ export const ERRORS = {
   PROCESSED_JSON_MISSING: define(409, (uploadId: string) => `PO upload ${uploadId} has no processed.json in S3 yet`),
   PO_FILE_MISSING: define(404, (uploadId: string) => `PO upload ${uploadId} has no PO file in S3`),
   UPLOAD_NOT_IN_REVIEW: define(409, (uploadId: string, status: string) => `PO upload ${uploadId} is ${status}, not in review any more; reload it`),
+  UPLOAD_NOT_REJECTED: define(409, (uploadId: string, status: string) => `PO upload ${uploadId} is ${status}, not rejected; only a rejected PO can be reopened`),
   REVIEW_INCOMPLETE: define(422, (count: number) => `${count} issue(s) are still open: correct them, accept them (where allowed) or reject the PO`),
   // --- PO review approvals (2026-10-15) ---
   SUBMISSION_NOT_FOUND: define(404, (id: string) => `No PO review submission ${id}`),

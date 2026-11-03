@@ -31,6 +31,8 @@ export interface ApprovalListItem {
   fixedIssues: { type: string; fixed: number; accepted: number }[];
   /** Price check lines that change our master on approval (channel SKU rate / MRP). */
   masterUpdates: number;
+  /** Submitted after the PO was reopened from Rejected (2026-11-03): the tag + the rejection it undid. */
+  reopened: { rejectedReason: string | null; rejectedFrom: string | null } | null;
   /** Issues the reviewer resolved (fixed or accepted). */
   issueCount: number;
   /** Fields the reviewer changed (location + every line field). */
@@ -52,6 +54,8 @@ export interface ApprovalListQuery {
   issues?: string[];
   /** The submitters' emails. */
   submittedBy?: string[];
+  /** Only ones submitted after a reopen from Rejected. */
+  reopened?: boolean;
   /** Submitted on or after / on or before these days (YYYY-MM-DD, Indian time). */
   from?: string;
   to?: string;
@@ -62,16 +66,22 @@ export interface ApprovalListQuery {
 type Row = {
   id: string | number; upload_id: string | number; status: ReviewSubmissionStatus; po_number: string | null; channel: string | null; file_name: string | null;
   sub_name: string | null; sub_email: string | null; submitted_at: Date; submit_remark: string | null; fixes: ReviewFixes | string | null;
+  reopen_reason: string | null; reopen_from: string | null; reopen_id: string | number | null;
   dec_name: string | null; dec_email: string | null; decided_at: Date | null; decision_remark: string | null; sale_order_code: string | null; po_uid: string | number | null;
 };
 
+/** The latest reopen of the PO BEFORE this submission (a submission after a reopen = tag "Reopened"). */
+const REOPEN_JOIN = `LEFT JOIN ${TABLES.PO_REOPENS} ro ON ro.id = (SELECT MAX(r2.id) FROM ${TABLES.PO_REOPENS} r2 WHERE r2.upload_id = s.upload_id AND r2.reopened_at <= s.submitted_at)`;
+
 const SELECT = `
   SELECT s.id, s.upload_id, s.status, s.po_number, s.channel, u.file_name, su.name sub_name, su.email sub_email, s.submitted_at, s.submit_remark,
-         s.fixes, du.name dec_name, du.email dec_email, s.decided_at, s.decision_remark, s.sale_order_code, s.po_uid
+         s.fixes, du.name dec_name, du.email dec_email, s.decided_at, s.decision_remark, s.sale_order_code, s.po_uid,
+         ro.id reopen_id, ro.rejected_reason reopen_reason, ro.rejected_from reopen_from
     FROM ${TABLES.PO_REVIEW_SUBMISSIONS} s
     JOIN ${TABLES.PO_UPLOADS} u ON u.id = s.upload_id
     LEFT JOIN ${TABLES.USERS} su ON su.id = s.submitted_by
-    LEFT JOIN ${TABLES.USERS} du ON du.id = s.decided_by`;
+    LEFT JOIN ${TABLES.USERS} du ON du.id = s.decided_by
+    ${REOPEN_JOIN}`;
 
 const fixesOf = (v: Row['fixes']): ReviewFixes | null => (typeof v === 'string' ? (JSON.parse(v) as ReviewFixes) : v);
 
@@ -113,6 +123,7 @@ const toItem = (r: Row): ApprovalListItem => {
     kind: kindOf(fixes),
     fixedIssues: fixedIssuesOf(fixes),
     masterUpdates: masterUpdatesOf(fixes),
+    reopened: r.reopen_id === null || r.reopen_id === undefined ? null : { rejectedReason: r.reopen_reason, rejectedFrom: r.reopen_from },
     issueCount: fixes?.issues.length ?? 0,
     changeCount: (fixes?.location ? 1 : 0) + (fixes?.lines.reduce((n, l) => n + l.changes.length, 0) ?? 0),
     decidedBy: r.dec_email || r.dec_name ? { name: r.dec_name, email: r.dec_email } : null,
@@ -144,6 +155,7 @@ export const listApprovals = async (query: ApprovalListQuery) => {
     params.push(...query.issues);
   }
   anyOf(query.submittedBy, 'su.email');
+  if (query.reopened) where.push(`EXISTS (SELECT 1 FROM ${TABLES.PO_REOPENS} r3 WHERE r3.upload_id = s.upload_id AND r3.reopened_at <= s.submitted_at)`);
   if (query.from) { where.push('s.submitted_at >= ?'); params.push(istDayStart(query.from)); }
   if (query.to) { where.push('s.submitted_at < ?'); params.push(new Date(istDayStart(query.to).getTime() + DAY_MS)); }
   // Pending: oldest first (first come, first served); decided: latest decision first.

@@ -46,6 +46,8 @@ export const TABLES = {
   PO_ISSUE_ACTIONS: 'po_issue_actions',
   PO_REVIEW_SUBMISSIONS: 'po_review_submissions',
   PO_PRICE_DIFFERENCES: 'po_price_differences',
+  /** A rejected PO sent back to In Review to be fixed and approved after all (2026-11-03). */
+  PO_REOPENS: 'po_reopens',
   // Login and page access (2026-10-09, prefg's shape; created by our migration).
   USERS: 'users',
   USER_ROLES: 'user_roles',
