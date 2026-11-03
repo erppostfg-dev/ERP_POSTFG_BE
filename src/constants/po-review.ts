@@ -135,6 +135,8 @@ export const UNIWARE_HANDOFF = {
 export const LINE_ITEMS = {
   /** Route under /po-review. */
   ROUTE: '/line-items',
+  /** In Review POs' lines (2026-11-03): from processed.json + each line's open issues (nothing saved yet). */
+  REVIEW_ROUTE: '/review-line-items',
   MAX_IDS: 100,
   S3_PARALLEL: 20,
 } as const;

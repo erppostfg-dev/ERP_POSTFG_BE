@@ -140,6 +140,7 @@
   "POST /po-review/:uploadId/submit",
   "POST /po-review/line-items",
   "POST /po-review/recheck",
+  "POST /po-review/review-line-items",
   "POST /po-review/uniware-csv",
   "POST /po-review/uniware-uploaded",
   "POST /po-verify/:uploadId/send-back",

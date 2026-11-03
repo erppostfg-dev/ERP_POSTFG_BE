@@ -91,6 +91,7 @@ export const ERRORS = {
   // --- Line items download (2026-10-26) ---
   LINE_ITEMS_TOO_MANY: define(400, (max: number) => `Pick at most ${max} POs for one line items download`),
   LINE_ITEMS_NOT_PROCESSED: define(409, (ids: string) => `Only processed POs have saved line items: upload(s) ${ids} are not processed`),
+  LINE_ITEMS_NOT_IN_REVIEW: define(409, (ids: string) => `Only POs in review: upload(s) ${ids} are not in review`),
   // --- Manual upload (2026-10-22, constants/manual-upload.ts) ---
   MANUAL_CHANNEL_NOT_READABLE: define(400, (channel: string) => `Channel "${channel}" has no PO reader yet: only channels the app can read can be uploaded`),
   MANUAL_FILE_TYPE: define(400, (name: string) => `${name}: only PDF, Excel (.xlsx / .xls) or CSV files can be uploaded`),
