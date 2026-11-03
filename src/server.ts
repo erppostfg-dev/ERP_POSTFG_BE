@@ -26,6 +26,7 @@ import { logError } from './utils/classify-error';
 import { runJob } from './utils/log-call';
 import { log, logEvent } from './utils/logger';
 import { logCrashes, startProcessMonitor } from './utils/process-monitor';
+import { startStrRetry } from './modules/channel-api/myntra/str.service';
 
 const start = async (): Promise<void> => {
   logCrashes();
@@ -104,6 +105,8 @@ const start = async (): Promise<void> => {
   // The Flipkart consignments robot's schedule (Channel Pulls, 2026-10-30): a due run starts by itself. Not on a laptop
   // (laptop = code only; the dev EC2 owns the robots), not without a DB.
   const robotSchedule = AppDataSource.isInitialized && !env.laptopMode ? startRobotSchedule() : undefined;
+  // Myntra STRs waiting (a failed run, a restart) are tried again by themselves (2026-11-03); same rule.
+  const strRetry = AppDataSource.isInitialized && !env.laptopMode ? startStrRetry() : undefined;
 
   // PO jobs worker (2026-10-26): with QUEUE_MODE=sqs + WORKER_IN_SERVER=true this process also takes the queued jobs;
   // otherwise the separate `npm run worker` does (EC2: its own pm2 process).
@@ -169,6 +172,7 @@ const start = async (): Promise<void> => {
     await listener?.stop();
     channelApis?.stop();
     robotSchedule?.stop();
+    strRetry?.stop();
     await worker?.stop();
     if (recheckTimer) clearInterval(recheckTimer);
     if (releaseTimer) clearInterval(releaseTimer);

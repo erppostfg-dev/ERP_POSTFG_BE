@@ -4,14 +4,16 @@ import path from 'path';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 import { createGzip } from 'zlib';
-import { FLIPKART, IntransitSource, SHEET_FRAMES } from '../../constants';
+import { FLIPKART, IntransitSource, MYNTRA_STR, SHEET_FRAMES } from '../../constants';
 import { fetchScheduledConsignments } from '../channel-api/flipkart/consignments.robot';
+import { fetchMyntraStrs } from '../channel-api/myntra/str.robot';
 import { checkCombos } from './combo-check';
 import { ConnectorConfig, ConnectorDirs, ConnectorOptions, runConnector } from './connectors';
 import { IntransitSettings } from './context';
 import { runPipeline } from './pipeline';
 import { frameCsvChunks } from './sources/files';
 import { SellerHubConfig } from './sources/flipkart-seller-hub';
+import { MyntraConfig } from './sources/myntra-partner-portal';
 import { UniwareConfig } from './sources/uniware';
 
 /*
@@ -27,7 +29,9 @@ export type WorkerJob =
   | { kind: 'report'; settings: IntransitSettings; combo: { uniware: UniwareConfig | null; cacheDir: string }; sheets?: boolean }
   | { kind: IntransitSource; config: ConnectorConfig; dirs: ConnectorDirs; options: ConnectorOptions }
   /** Flipkart scheduled consignments (channel-api/flipkart, 2026-10-30): the same Seller Hub login, one browser job at a time. */
-  | { kind: typeof FLIPKART.ROBOT_JOB; seller: SellerHubConfig; cacheDir: string; known: string[] };
+  | { kind: typeof FLIPKART.ROBOT_JOB; seller: SellerHubConfig; cacheDir: string; known: string[] }
+  /** Myntra STRs (channel-api/myntra, 2026-11-03): the in-transit Myntra login, the STRs in the email's order. */
+  | { kind: typeof MYNTRA_STR.ROBOT_JOB; myntra: MyntraConfig; cacheDir: string; strs: string[] };
 
 export type WorkerMessage = { type: 'log'; line: string } | { type: 'done'; result: unknown } | { type: 'error'; message: string };
 
@@ -61,6 +65,7 @@ const run = async (job: WorkerJob): Promise<unknown> => {
     return { ...result, comboCheck };
   }
   if (job.kind === FLIPKART.ROBOT_JOB) return fetchScheduledConsignments(job.seller, job.cacheDir, job.known, log);
+  if (job.kind === MYNTRA_STR.ROBOT_JOB) return fetchMyntraStrs(job.myntra, job.cacheDir, job.strs, log);
   return runConnector(job.kind, job.config, job.dirs, job.options, log);
 };
 

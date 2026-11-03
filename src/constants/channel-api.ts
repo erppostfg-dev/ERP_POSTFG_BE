@@ -12,6 +12,8 @@ export const SOURCE_SYSTEM = {
   AMAZON_SPAPI: 'amazon_spapi',
   /** Flipkart Seller Hub, read by our robot (2026-10-30). */
   FLIPKART_SELLER_HUB: 'flipkart_seller_hub',
+  /** Myntra STRs: numbers from the "Request to Raise STRs" email, CSV by our robot on the partner portal (2026-11-03). */
+  MYNTRA_STR: 'myntra_str',
 } as const;
 export type SourceSystem = (typeof SOURCE_SYSTEM)[keyof typeof SOURCE_SYSTEM];
 
@@ -19,6 +21,7 @@ export type SourceSystem = (typeof SOURCE_SYSTEM)[keyof typeof SOURCE_SYSTEM];
 export const SOURCE_SYSTEM_LABEL: Record<SourceSystem, string> = {
   [SOURCE_SYSTEM.AMAZON_SPAPI]: 'Amazon SP-API',
   [SOURCE_SYSTEM.FLIPKART_SELLER_HUB]: 'Flipkart Seller Hub',
+  [SOURCE_SYSTEM.MYNTRA_STR]: 'Myntra STR (partner portal)',
 };
 
 /** The scheduler: a connector that fails this many runs in a row waits longer (MAX_BACKOFF_MS at most) before retrying. */
@@ -151,6 +154,61 @@ export const FLIPKART = {
   /** The Bulk Consignment File's rows kept for Manual Upload: consignments created in the last this many days. */
   BULK_KEEP_DAYS: 120,
 } as const;
+/*
+ * Myntra STRs (user 2026-11-03; G9): Myntra SJIT Ops replies in the "Request to Raise STRs" thread with "Please find the
+ * STR Numbers listed below" and a grid of STR codes (NON TC / TC, P0 - P3). A NEW such email in Po-Intake (Myntra ON in
+ * PO intake, after its start) -> each STR not seen before = a channel_pull_items row (waiting) -> the robot (the in-transit
+ * Myntra login, one browser job at a time) downloads each STR's CSV (STR filter -> open -> Download CSV, as
+ * dev-tools/myntra-str-pull-many.ts) -> the CSV + processed.json go to S3, the downloaded file is deleted at once.
+ * Validation / PO / sale order: later (user: "we do until there").
+ */
+export const MYNTRA_STR = {
+  CHANNEL: CHANNELS.MYNTRA,
+  /** The email: subject words and the line that starts the list (in the email's newest part only). */
+  SUBJECT: /Request to Raise STRs?/i,
+  LIST_START: /Please find the STR Numbers? listed below/i,
+  /** STN + CPWE (our Bhiwandi) + destination code + ddmmyy + -NN, e.g. STNCPWEBP271026-01. */
+  CODE: /\bSTN([A-Z]{4})([A-Z]{2,6})(\d{2})(\d{2})(\d{2})-(\d{2})\b/g,
+  /** Group headers of the grid, kept with each STR (label only). */
+  GROUP: /^(NON\s*TC|TC)$/i,
+  PRIORITY: /^P\d$/i,
+  /**
+   * Where the newest part of an email ends: a reply header ("On Mon, ... wrote:", possibly split over 2 lines), Outlook's
+   * "From: ... Sent:", "-----Original Message-----", or a quoted line (">").
+   */
+  QUOTE_START: [/^On .{6,200}(wrote:|<)\s*$/, /^-{2,}\s*Original Message\s*-{2,}/i, /^From:\s.+$/, /^>/],
+  /** A forwarded email starts with this block (its header lines are skipped, the forwarded text is read). */
+  FORWARD: /^-{5,}\s*Forwarded message\s*-{5,}/i,
+  FORWARD_HEADER: /^(From|Date|Sent|Subject|To|Cc):/i,
+  PORTAL: {
+    DASHBOARD: 'https://partners.myntrainfo.com/Dashboard',
+    /** FBM > Inventory movement (a hover menu that closes while the mouse travels): its page, opened directly. */
+    STR_PAGE: 'https://partners.myntrainfo.com/Growth/sjit-inventory/actions',
+    TEAM_CARD: 'FBM/PPMP/MDirect',
+    TAB: /STRs? And Actions/i,
+    FILTER: /Filter to Search STRs?/i,
+    DETAILS: /STR Details/i,
+    DOWNLOAD: /^\s*Download CSV\s*$/i,
+  },
+  /** Tries per STR in one run (one click timed out once in 45 on 2 Nov), and runs before an STR is marked failed. */
+  TRIES_PER_RUN: 2,
+  MAX_RUNS: 3,
+  ROBOT_TIMEOUT_MS: 60 * 60_000,
+  ROBOT_JOB: 'myntra-strs',
+  /** channel_pull_items.status. */
+  STATUS: { WAITING: null, STORED: 'stored', FAILED: 'failed' },
+  /** The STR CSV's columns (by name; IGST or SGST + CGST by the destination's state). */
+  CSV: {
+    GTIN: 'GTIN', SKU: 'SKU Code', QTY: 'Quantity', ARTICLE: 'Vendor Article No', NAME: 'Vendor Article Name', SIZE: 'Size',
+    BRAND: 'Brand Name', HSN: 'HSN Code', SOURCE: 'Source WH', DESTINATION: 'Destination WH', MRP: 'MRP',
+    IGST: 'IGST Rate', SGST: 'SGST Rate', CGST: 'CGST Rate',
+  },
+  CSV_FILE: (str: string) => `${str}-summary.csv`,
+  INPUT_TYPE: 'myntra_str_csv',
+  PO_TYPE: 'Myntra STR',
+  LOG_LINES: 200,
+} as const;
+
 /*
  * Channel Pulls page (2026-10-30, user: replaces Amazon Inbound in the sidebar; one place for every channel pulled by API
  * or robot, with buttons to pull and process). Same page key as Amazon Inbound (PAGE.AMAZON_INBOUND): nobody's access

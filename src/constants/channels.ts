@@ -29,6 +29,8 @@ export const CHANNELS = {
   SLIKK: 'slikk',
   /** Pop Tech (Curioso Fashions): its Unicommerce PO PDF, by Manual Upload only (no email yet; OCR PDF pipeline; 2026-11-02). */
   POP_TECH: 'pop_tech',
+  /** Myntra STRs (= POs): the STR numbers come by email, our robot downloads each STR's CSV (no OCR; 2026-11-03). */
+  MYNTRA: 'myntra',
 } as const;
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS];
@@ -56,6 +58,7 @@ export const OCR_CHANNELS: Record<ChannelName, string> = {
   [CHANNELS.NYKAA]: 'nykaa',
   /** Not OCR'd: Flipkart consignments come from Seller Hub. */
   [CHANNELS.FLIPKART]: 'flipkart',
+  [CHANNELS.MYNTRA]: 'myntra',
   [CHANNELS.AVENUE]: 'avenue',
   /** The OCR reads lines and totals with Python; only the header block goes to its model. */
   [CHANNELS.FLIPKART_QCOM]: 'flipkart_quickcomm',
