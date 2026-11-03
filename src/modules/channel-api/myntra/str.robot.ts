@@ -14,7 +14,8 @@ import { MyntraConfig, withMyntraPortal } from '../../intransit/sources/myntra-p
  *   1. Dashboard (saved session, else email + password: withMyntraPortal) -> FBM/PPMP/MDirect + DONE when asked.
  *   2. Inventory movement page (opened directly) -> STRs And Actions -> Filter to Search STRs.
  *   3. Per STR, in the email's order: STR -> Apply -> wait for its row -> open -> STR Details -> Download CSV.
- * An STR that fails is tried once more in the same run; still failing -> reported (the next run tries again).
+ * An STR that fails (or is "not found": a slow list) is tried once more in the same run; still failing -> reported
+ * (the next run tries again).
  */
 
 export interface FetchedStr {
@@ -102,7 +103,8 @@ export const fetchMyntraStrs = (cfg: MyntraConfig, cacheDir: string, strs: strin
           log(`  ${i + 1}/${strs.length} ${str}: ${r.csv !== null ? 'downloaded' : r.error} (${Math.round((Date.now() - started) / 1000)} s${t > 1 ? `, try ${t}` : ''})`);
           // a fresh tab for the next try / STR (closes the details panel)
           await openStrTab(page).catch(() => undefined);
-          if (r.csv !== null || r.error === 'not found on the Myntra portal') break;
+          // "not found" is tried again too: the list was slow once (3 Nov, STNCPWEBW271026-04: found on the next look)
+          if (r.csv !== null) break;
         }
         out.push(r);
       }
