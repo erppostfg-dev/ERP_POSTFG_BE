@@ -195,7 +195,7 @@ export interface VerifyLine {
   rate: number;
   value: number;
   /** What the PO says (processed.json); null when the PO has no such line. */
-  po: { description: string; qty: number; rate: number | null; mrp: number | null; channelSkuCode: string } | null;
+  po: { description: string; qty: number; rate: number | null; /** A PO priced before GST: its unit cost as read (rate = with GST). */ rateBeforeGst: number | null; mrp: number | null; channelSkuCode: string } | null;
   qtyDiffers: boolean;
   rateDiffers: boolean;
 }
@@ -220,7 +220,15 @@ export interface VerifyDetail {
     uniwareChannel: string | null;
   };
   lines: VerifyLine[];
-  totals: { po: { lines: number; units: number; value: number }; saved: { lines: number; units: number; value: number } };
+  /**
+   * po.value = the PO's own total as processed.json has it; valueBasis says whether that is with GST or before GST (Purplle
+   * sends unit costs before GST, 2026-11-03); valueWithGst = the PO with GST worked out as the total check does (the PO's
+   * GST, else our master's), the number to compare with saved.value. null when it cannot be worked out.
+   */
+  totals: {
+    po: { lines: number; units: number; value: number; valueBasis: 'with_gst' | 'before_gst'; valueWithGst: number | null };
+    saved: { lines: number; units: number; value: number };
+  };
   /** processed.json as the OCR / API made it: the panel shows it next to the PO and finds each value on the PO. */
   processed: ProcessedPo;
 }
@@ -277,6 +285,10 @@ export const verifyDetail = async (uploadId: string): Promise<VerifyDetail> => {
   const saved = await AppDataSource.getRepository(DetailsPurchaseOrder).findBy({ shipmentOrderId: u.poUid });
   const master = await AppDataSource.getRepository(MasterPurchaseOrder).findOneBy({ uid: u.poUid });
   const verified = (await verifiedRows([u])).get(String(u.id));
+  // The PO with GST as the checks see it (a PO priced before GST gets the GST added here, line by line)
+  const checked = await validatePo(po, await new MasterDataReader(AppDataSource).forChannel(po.channel_name as ChannelName));
+  const withGst = new Map(checked.lines.map((l) => [String(l.lineNo), l.poUnitPrice]));
+  const beforeGst = /before GST/i.test(String(po.field_sources?.po_value ?? '')) || (po.line_items.length > 0 && po.line_items.every((l) => l.landing_rate === '' && l.unit_cost !== ''));
 
   // CSV rows follow the PO's lines in order (csvOf); by channel SKU when the counts differ.
   const poLines = po.line_items;
@@ -289,7 +301,9 @@ export const verifyDetail = async (uploadId: string): Promise<VerifyDetail> => {
     const p = j >= 0 ? poLines[j] : undefined;
     const qty = n(r[col.QTY]);
     const rate = n(r[col.PRICE]);
-    const poRate = p && p.landing_rate !== '' ? n(p.landing_rate) : null;
+    // the PO's unit price with GST: as read, or (a PO priced before GST) its unit cost + GST as the checks work it out
+    const gstRate = p ? withGst.get(String(p.line_no)) : undefined;
+    const poRate = p && p.landing_rate !== '' ? n(p.landing_rate) : typeof gstRate === 'number' ? gstRate : null;
     const name = saved.find((d) => d.skuCode === r[col.SKU])?.skuName ?? null;
     return {
       lineNo: i + 1,
@@ -299,7 +313,7 @@ export const verifyDetail = async (uploadId: string): Promise<VerifyDetail> => {
       qty,
       rate,
       value: Math.round(qty * rate * 100) / 100,
-      po: p ? { description: p.description, qty: n(p.qty), rate: poRate, mrp: p.channel_mrp !== '' ? n(p.channel_mrp) : null, channelSkuCode: p.channel_sku_code } : null,
+      po: p ? { description: p.description, qty: n(p.qty), rate: poRate, rateBeforeGst: p.landing_rate === '' && p.unit_cost !== '' ? n(p.unit_cost) : null, mrp: p.channel_mrp !== '' ? n(p.channel_mrp) : null, channelSkuCode: p.channel_sku_code } : null,
       qtyDiffers: !p || n(p.qty) !== qty,
       rateDiffers: poRate !== null && Math.abs(poRate - rate) > PO_VERIFY.RATE_TOLERANCE,
     };
@@ -329,7 +343,11 @@ export const verifyDetail = async (uploadId: string): Promise<VerifyDetail> => {
     },
     lines,
     totals: {
-      po: { lines: poLines.length, units: poLines.reduce((s, l) => s + n(l.qty), 0), value: n(po.po_value) },
+      po: {
+        lines: poLines.length, units: poLines.reduce((s, l) => s + n(l.qty), 0), value: n(po.po_value),
+        valueBasis: beforeGst ? 'before_gst' : 'with_gst',
+        valueWithGst: beforeGst ? (typeof checked.totals.poValue === 'number' ? checked.totals.poValue : null) : n(po.po_value),
+      },
       saved: { lines: lines.length, units: lines.reduce((s, l) => s + l.qty, 0), value: Math.round(lines.reduce((s, l) => s + l.value, 0) * 100) / 100 },
     },
     processed: po,
