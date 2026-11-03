@@ -22,6 +22,7 @@ import { openS3File, readS3Json, s3DownloadLink } from '../email-intake/s3-mirro
 import { Num, ProcessedPo } from '../po-processing/common/processed-po';
 import { MasterDataReader, matchKey } from '../po-validation/master-data';
 import { validatePo } from '../po-validation/validate-po';
+import { verifyStatesOf, type VerifyStateItem } from '../po-verify/po-verify.service';
 
 /*
  * GET /po-review (API contract "PO review"): po_uploads of one status, newest first, with what the review screens
@@ -77,6 +78,11 @@ export interface PoReviewListItem {
   failure: { step: string | null; code: string | null; reason: string | null; at: string | null; ocrAttempts: number } | null;
   /** Rejected POs: the latest rejection: by the reviewer (from PO review) or the approver (Approvals), who, when, why. */
   rejection: { by: string | null; byEmail: string | null; at: string | null; reason: string | null; from: 'review' | 'approval' } | null;
+  /**
+   * Processed POs (2026-11-03): the verification state (To verify / Verified / In Uniware / not required), whether its
+   * channel needs it, who verified and when; null for the other lists. Replaces the screen's GET /po-verify?uploadIds.
+   */
+  verify: Omit<VerifyStateItem, 'uploadId'> | null;
   /** Reopened after a rejection (2026-11-03): the latest reopen (when, why) and the rejection it undid; null = never. */
   reopened: { at: string; remark: string; rejectedReason: string | null; rejectedFrom: string | null; times: number } | null;
 }
@@ -191,6 +197,10 @@ export const listPoReview = async (query: PoReviewListQuery): Promise<{ items: P
     ...uploads.flatMap((u) => [u.csvDownloadedBy, u.uniwareUploadedBy]),
     ...[...rejectionOf.values()].map((r) => r.decidedBy),
   ].filter((v): v is number => v !== null))];
+  // Processed: each PO's verification state, worked out here (no separate call with every id from the screen)
+  const verifyOf = new Map(
+    query.status === UPLOAD_STATUS.COMPLETED ? (await verifyStatesOf(uploads)).items.map(({ uploadId, ...v }) => [uploadId, v] as const) : [],
+  );
   const people = userIds.length ? await AppDataSource.getRepository(User).findBy({ id: In(userIds) }) : [];
   const names = new Map(people.map((x) => [x.id, x.name] as const));
   const emails = new Map(people.map((x) => [x.id, x.email] as const));
@@ -228,6 +238,7 @@ export const listPoReview = async (query: PoReviewListQuery): Promise<{ items: P
       failure: failureOf(u),
       rejection: rejectionFor(u, rejectionOf.get(String(u.id)), who, (id) => (id === null ? null : emails.get(id) ?? null)),
       reopened: reopenedFor(reopenOf.get(String(u.id))),
+      verify: verifyOf.get(String(u.id)) ?? null,
     };
   });
   return { items, total };

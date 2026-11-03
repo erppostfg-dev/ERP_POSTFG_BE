@@ -158,8 +158,14 @@ const stateOf = (u: PoUpload, verified: PoVerification | undefined, required: bo
     : u.uniwareUploadedAt ? PO_VERIFY_STATE.NOT_NEEDED
       : required ? PO_VERIFY_STATE.TO_VERIFY : PO_VERIFY_STATE.NOT_REQUIRED;
 
-export const verifyStates = async (ids: string[]): Promise<{ required: boolean; items: VerifyStateItem[] }> => {
-  const uploads = ids.length ? await AppDataSource.getRepository(PoUpload).findBy({ id: In(ids) }) : [];
+export const verifyStates = async (ids: string[]): Promise<{ required: boolean; items: VerifyStateItem[] }> =>
+  verifyStatesOf(ids.length ? await AppDataSource.getRepository(PoUpload).findBy({ id: In(ids) }) : []);
+
+/**
+ * The states of uploads already read (2026-11-03: the Processed list carries them itself, so the screen no longer asks
+ * GET /po-verify?uploadIds=<every PO>, whose address grew with every PO). Two small reads: verified rows + who.
+ */
+export const verifyStatesOf = async (uploads: PoUpload[]): Promise<{ required: boolean; items: VerifyStateItem[] }> => {
   const verified = await verifiedRows(uploads);
   const isOn = await switches();
   const userIds = [...new Set([...verified.values()].map((v) => v.doneBy))];
