@@ -17,6 +17,8 @@ const AMZ_EXCLUDE_LOCATIONS = new Set(['rso6', 'rso7', 'rso8', 'rsoc']);
 const FACILITY_LOCATION_OVERRIDE = new Map([
   ['mum_warehouse2', 'mumbai'], ['ggn_warehouse', 'gurgaon'], ['hyp_b2b_ggn', 'gurgaon'],
   ['hyp_b2b_mum2', 'mumbai'], ['return_mum2', 'mumbai'], ['return_ggn', 'gurgaon'],
+  // the Kolkata warehouse keeps its code as Final Location (reference report); listed so it is not "no Final Location"
+  ['kol_warehouse', 'KOL_WAREHOUSE'],
 ]);
 /** Warehouses reported under their own channel (name and type) instead of "MWH". */
 const FC_CHANNEL_OVERRIDE = new Map([
