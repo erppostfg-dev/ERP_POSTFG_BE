@@ -9,7 +9,7 @@ import { readSheets } from './sheet-reader';
 import { submitJob, usesSqs } from '../po-jobs/po-jobs.queue';
 import { syncEmailToS3 } from '../email-intake/s3-mirror.service';
 import { ocrFinished, ocrStarted } from '../po-pipeline/pipeline.service';
-import { ErrorArgs, ErrorCode, ERROR_CODES, errorMessage, FILES, PO_JOB_TYPE, RESULT_STATUS, ResultStatus } from '../../constants';
+import { ErrorArgs, ErrorCode, ERROR_CODES, errorMessage, FILES, PO_JOB_TYPE, PROVIDERS, RESULT_STATUS, ResultStatus } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
 import { log } from '../../utils/logger';
 import { logError } from '../../utils/classify-error';
@@ -90,9 +90,11 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
 
   const filenames = (meta.files ?? []).map((f) => (typeof f === 'string' ? f : f.filename));
 
-  // 2. Channels that send links instead of attachments: download them into the folder first.
+  // 2. Channels that send links instead of attachments: download them into the folder first. A Manual Upload that
+  //    already holds the file the channel needs (Firstcry's .xls, 2026-11-04) has no email and no link: read it as it is.
   let links: DownloadedLink[] | undefined;
-  if (config.links) {
+  const uploadedByHand = meta.provider === PROVIDERS.MANUAL && !('reason' in pickFiles(config, filenames));
+  if (config.links && !uploadedByHand) {
     const dl = await step('download linked files', async () => downloadLinkedFiles(config, dir, await fs.readdir(dir)));
     links = dl.downloaded;
     for (const d of dl.downloaded) if (d.filename && !filenames.includes(d.filename)) filenames.push(d.filename);
