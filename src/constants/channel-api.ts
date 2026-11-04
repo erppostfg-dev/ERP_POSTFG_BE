@@ -257,4 +257,9 @@ export const CHANNEL_PULLS = {
   POLL_KEY: (key: string) => `channel-pull:${key}:poll`,
   /** Recent consignments listed on the page. */
   ITEMS_MAX: 200,
+  /** ?status=failed (the failed-STR list): every one up to this many. */
+  FAILED_MAX: 2000,
+  QUERY_STATUS: 'status',
+  /** The statuses the items list may be filtered by. */
+  ITEM_STATUSES: ['stored', 'failed'] as readonly string[],
 } as const;

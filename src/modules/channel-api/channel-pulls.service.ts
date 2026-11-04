@@ -160,22 +160,33 @@ export interface PullItemView {
   takenAt: string | null;
   /** The PO it became (newest upload of that id), if any. */
   upload: { id: string; status: string; poNumber: string | null } | null;
+  /** Myntra STRs (2026-11-04): robot runs tried and the email it came from (the failed-STR list for the team). */
+  runs: number | null;
+  email: { subject: string | null; receivedAt: string | null } | null;
 }
 
-/** The robot's recent fetches (newest first) with the PO each became; one query. */
-export const listPullItems = async (key: string): Promise<PullItemView[]> => {
+/**
+ * The robot's recent fetches (newest first) with the PO each became; one query. `status` = only those (e.g. failed: the
+ * Myntra STRs the robot gave up on, all of them up to FAILED_MAX, for the team to download and upload by hand).
+ */
+export const listPullItems = async (key: string, status?: string): Promise<PullItemView[]> => {
   const c = connectorOrThrow(key);
   if (!hasRobot(c.key)) return [];
-  const rows = await AppDataSource.query<{ external_id: string; label: string; status: string | null; error: string | null; warehouse: string | null; created_on: string | null; fetched_at: Date; taken_at: Date | null; upload_id: string | null; upload_status: string | null; po_number: string | null }[]>(
-    `SELECT p.external_id, p.label, p.status, JSON_UNQUOTE(JSON_EXTRACT(p.data, '$.lastError')) error, p.warehouse, DATE_FORMAT(p.created_on, '%Y-%m-%d') created_on, p.fetched_at, p.taken_at, u.id upload_id, u.status upload_status, u.po_number
+  const j = (path: string) => `JSON_UNQUOTE(JSON_EXTRACT(p.data, '${path}'))`;
+  const rows = await AppDataSource.query<{ external_id: string; label: string; status: string | null; error: string | null; warehouse: string | null; created_on: string | null; fetched_at: Date; taken_at: Date | null; upload_id: string | null; upload_status: string | null; po_number: string | null; runs: string | null; subject: string | null; received_at: string | null }[]>(
+    `SELECT p.external_id, p.label, p.status, ${j('$.lastError')} error, p.warehouse, DATE_FORMAT(p.created_on, '%Y-%m-%d') created_on, p.fetched_at, p.taken_at, u.id upload_id, u.status upload_status, u.po_number,
+            ${j('$.runs')} runs, ${j('$.email.subject')} subject, ${j('$.email.receivedAt')} received_at
        FROM ${TABLES.CHANNEL_PULL_ITEMS} p
        LEFT JOIN ${TABLES.PO_UPLOADS} u ON u.id = (SELECT MAX(x.id) FROM ${TABLES.PO_UPLOADS} x WHERE x.source_system = p.source_system AND x.external_id = p.external_id)
-      WHERE p.source_system = ? ORDER BY p.id DESC LIMIT ${CHANNEL_PULLS.ITEMS_MAX}`,
-    [c.key],
+      WHERE p.source_system = ?${status ? ' AND p.status = ?' : ''} ORDER BY p.id DESC LIMIT ${status ? CHANNEL_PULLS.FAILED_MAX : CHANNEL_PULLS.ITEMS_MAX}`,
+    status ? [c.key, status] : [c.key],
   );
+  const text = (v: string | null) => (v && v !== 'null' ? v : null);
   return rows.map((r) => ({
     externalId: r.external_id, label: r.label, status: r.status, error: r.error && r.error !== 'null' ? r.error : null, warehouse: r.warehouse, createdOn: r.created_on, fetchedAt: r.fetched_at.toISOString(), takenAt: iso(r.taken_at),
     upload: r.upload_id ? { id: String(r.upload_id), status: r.upload_status ?? '', poNumber: r.po_number } : null,
+    runs: text(r.runs) === null ? null : Number(r.runs),
+    email: text(r.subject) || text(r.received_at) ? { subject: text(r.subject), receivedAt: text(r.received_at) } : null,
   }));
 };
 

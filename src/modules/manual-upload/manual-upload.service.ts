@@ -453,7 +453,9 @@ const processFlipkart = async (u: ManualUpload): Promise<string | null> => {
 const myntraTakenBy = async (str: string, exceptManualId?: string): Promise<string | null> => {
   const pulled = await AppDataSource.getRepository(ChannelPullItem).findOneBy({ sourceSystem: SOURCE_SYSTEM.MYNTRA_STR, externalId: str });
   const mine = !!exceptManualId && (pulled?.data as Partial<StrItemData> | undefined)?.manualUploadId === exceptManualId;
-  if (pulled && !mine) return `taken from an STR email (Channel Pulls > Myntra: ${pulled.status ?? 'waiting for the robot'})`;
+  // the robot gave up on it (2026-11-04, user): the team downloads it from the portal and uploads it here
+  const robotFailed = pulled?.status === MYNTRA_STR.STATUS.FAILED;
+  if (pulled && !mine && !robotFailed) return `taken from an STR email (Channel Pulls > Myntra: ${pulled.status ?? 'waiting for the robot'})`;
   const [po] = await AppDataSource.query<{ id: string | number; status: string; so: string | null }[]>(
     `SELECT u.id, u.status, m.orderNo1 so FROM po_uploads u LEFT JOIN master_purchase_orders m ON m.uid = u.po_uid
       WHERE u.source_system = ? AND u.external_id = ? AND u.status <> ? ORDER BY u.id DESC LIMIT 1`,
@@ -542,22 +544,26 @@ const processMyntra = async (u: ManualUpload): Promise<string | null> => {
   const where = await myntraTakenBy(ref.str, String(u.id));
   if (where) throw appError(ERROR_CODES.MANUAL_DUPLICATE, ref.str, where);
   const now = new Date();
+  const pulls = AppDataSource.getRepository(ChannelPullItem);
+  const was = await pulls.findOneBy({ sourceSystem: SOURCE_SYSTEM.MYNTRA_STR, externalId: ref.str });
+  // an STR the robot gave up on keeps its email, place and group; the manual upload now stands for it
+  const before = (was?.data ?? {}) as Partial<StrItemData>;
   const data: StrItemData = {
-    email: { folder: `manual upload #${u.id}`, subject: 'Manual Upload', receivedAt: now.toISOString() },
-    order: 1, group: '', priority: '', destination: ref.destination, runs: 0, lastError: null, summary, manualUploadId: String(u.id),
+    email: before.email ?? { folder: `manual upload #${u.id}`, subject: 'Manual Upload', receivedAt: now.toISOString() },
+    order: before.order ?? 1, group: before.group ?? '', priority: before.priority ?? '', destination: ref.destination,
+    runs: before.runs ?? 0, lastError: null, summary, manualUploadId: String(u.id),
     ...(u.s3Folder ? { s3Folder: u.s3Folder } : {}),
   };
-  const pulls = AppDataSource.getRepository(ChannelPullItem);
   const values = {
     status: MYNTRA_STR.STATUS.STORED, warehouse: ref.destination, createdOn: ref.date,
-    label: `${ref.str} · manual upload #${u.id} · ${ref.destination}`.slice(0, 300), data: { ...data }, takenAt: now,
+    label: `${ref.str} · ${[before.group, before.priority].filter(Boolean).join(' ') || 'manual upload'} · ${ref.destination} · manual upload #${u.id}`.slice(0, 300),
+    data: { ...data }, takenAt: now,
   };
-  const was = await pulls.findOneBy({ sourceSystem: SOURCE_SYSTEM.MYNTRA_STR, externalId: ref.str });
   // a retry finds its own row; an STR email taking the same STR meanwhile hits the unique key and is refused
   await pulls.save(was ? { ...was, ...values } : pulls.create({ sourceSystem: SOURCE_SYSTEM.MYNTRA_STR, externalId: ref.str, fetchedAt: now, ...values }));
 
   const po: ProcessedPo = {
-    ...strToProcessed({ ...ref, group: '', priority: '' }, csv).po,
+    ...strToProcessed({ ...ref, group: data.group, priority: data.priority }, csv).po,
     input_type: MYNTRA_STR.MANUAL_INPUT_TYPE,
     ref_file_urls: [s3UrlFor(u.folder, JSON.parse(await fs.readFile(path.join(u.folder, FILES.METADATA), 'utf8')), meta.sourceFile)],
   };
