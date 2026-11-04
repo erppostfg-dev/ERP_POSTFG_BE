@@ -31,7 +31,7 @@ import { lineItems, reviewLineItems } from '../modules/po-review/line-items.serv
 import { getRejection, reopenRejected } from '../modules/po-review/po-review-reopen.service';
 import { LineCorrection, rejectPo, ResubmitBody, submitForApproval } from '../modules/po-review/po-review-actions.service';
 import { appError } from '../utils/AppError';
-import { dismissFailed, reopenMany, retryFailed } from '../modules/po-review/po-review-failed.service';
+import { dismissFailed, reopenMany, rereadUploads, retryFailed } from '../modules/po-review/po-review-failed.service';
 
 /*
  * PO review routes (API contract "PO review", 2026-10-09):
@@ -164,6 +164,16 @@ router.post(FAILED_ACTIONS.ROUTES.RETRY, requireAuth, requirePage(PAGE.PO_REVIEW
   try {
     const { ids } = bulkBody(req.body, false);
     res.json({ data: await retryFailed(ids, who(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /po-review/bulk-reread { uploadIds }: POs in review / failed rebuilt from their stored OCR output (no OCR cost). Editor. */
+router.post(FAILED_ACTIONS.ROUTES.REREAD, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
+  try {
+    const { ids } = bulkBody(req.body, false);
+    res.json({ data: await rereadUploads(ids, who(req)) });
   } catch (err) {
     next(err);
   }

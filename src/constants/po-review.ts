@@ -91,7 +91,7 @@ export const APPROVAL_BULK_RESULT = { APPROVED: 'approved', REJECTED: 'rejected'
 /** Failed + Rejected, many at once (2026-11-04): routes under /po-review and the most POs per call. */
 export const FAILED_ACTIONS = {
   MAX_IDS: 50,
-  ROUTES: { RETRY: '/bulk-retry', DISMISS: '/bulk-dismiss', REOPEN: '/bulk-reopen' },
+  ROUTES: { RETRY: '/bulk-retry', DISMISS: '/bulk-dismiss', REOPEN: '/bulk-reopen', REREAD: '/bulk-reread' },
   BODY_IDS: 'uploadIds',
   BODY_REMARK: 'remark',
 } as const;

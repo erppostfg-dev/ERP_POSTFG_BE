@@ -173,6 +173,7 @@
   "POST /po-review/:uploadId/submit",
   "POST /po-review/bulk-dismiss",
   "POST /po-review/bulk-reopen",
+  "POST /po-review/bulk-reread",
   "POST /po-review/bulk-retry",
   "POST /po-review/line-items",
   "POST /po-review/recheck",

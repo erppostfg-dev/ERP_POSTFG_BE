@@ -133,6 +133,42 @@ export const retryFailed = async (ids: string[], by: Actor): Promise<BulkResult[
   return out;
 };
 
+/**
+ * Read again, no OCR (2026-11-04, user: after a reader fix, e.g. Gluzo's column names): a PO in review or failed is
+ * rebuilt from its STORED OCR output (S3) with today's reader, then checked again (issues no longer found are closed,
+ * new ones opened). Refused per PO with the reason: not in review / failed, made by a channel API (its connector reads
+ * it), no stored OCR output (use Try again). Same queue, same restart safety (status processing first) as Try again.
+ */
+export const rereadUploads = async (ids: string[], by: Actor): Promise<BulkResult[]> => {
+  if (!ids.length || ids.length > FAILED_ACTIONS.MAX_IDS) throw appError(ERROR_CODES.FIELD_NOT_ID_LIST, 'uploadIds', FAILED_ACTIONS.MAX_IDS);
+  const out: BulkResult[] = [];
+  const seenMessages = new Set<string>();
+  for (const u of await repo().findBy({ id: In(ids) })) {
+    const skip = (reason: string) => out.push({ uploadId: String(u.id), result: 'skipped', reason });
+    if (u.status !== UPLOAD_STATUS.NEEDS_REVIEW && u.status !== UPLOAD_STATUS.FAILED) { skip(`it is ${u.status} now: only a PO in review or failed is read again`); continue; }
+    if (u.source === UPLOAD_SOURCE.API) { skip('made by a channel pull: its connector reads it again'); continue; }
+    if (!u.emailMessageId || seenMessages.has(u.emailMessageId)) { skip(u.emailMessageId ? 'its email is already in this run' : 'no email to read again'); continue; }
+    seenMessages.add(u.emailMessageId);
+    const folder = await folderOf(u).catch(() => null);
+    if (!folder) { skip('its files are not on this server or in S3'); continue; }
+    const hasRaw = await fs.access(path.join(folder, FILES.OCR_RAW_JSON)).then(() => true, () => false);
+    if (!hasRaw) { skip('no stored OCR output: use Try again (OCR again)'); continue; }
+    const rows = await repo().findBy({ emailMessageId: u.emailMessageId });
+    // restart safety: processing in the DB first (the start-up resume finishes it)
+    await repo().update({ emailMessageId: u.emailMessageId, status: In([UPLOAD_STATUS.NEEDS_REVIEW, UPLOAD_STATUS.FAILED]) }, {
+      status: UPLOAD_STATUS.PROCESSING,
+      errorDetails: { ...(u.errorDetails ?? {}), rereadBy: by.email, rereadAt: new Date().toISOString() },
+    });
+    queue.push({ messageId: u.emailMessageId, folder, rows, action: RESUME_ACTION.PROCESS, reason: 'read again from the stored OCR output' });
+    out.push({ uploadId: String(u.id), result: 'queued', reason: 'read again from the stored OCR output (no OCR cost)' });
+  }
+  for (const id of ids) if (!out.some((o) => o.uploadId === id)) out.push({ uploadId: id, result: 'skipped', reason: 'no such PO' });
+  log.info(LOG_SOURCE.APP, `[reread] ${by.email}: ${out.filter((o) => o.result === 'queued').length} queued, ${out.filter((o) => o.result === 'skipped').length} skipped`);
+  void drain();
+  bumpReview();
+  return out;
+};
+
 /** Dismiss: off the Failed list with who / when / why; the row and its files are kept. */
 export const dismissFailed = async (ids: string[], remark: string, by: Actor): Promise<BulkResult[]> => {
   if (!ids.length || ids.length > FAILED_ACTIONS.MAX_IDS) throw appError(ERROR_CODES.FIELD_NOT_ID_LIST, 'uploadIds', FAILED_ACTIONS.MAX_IDS);
