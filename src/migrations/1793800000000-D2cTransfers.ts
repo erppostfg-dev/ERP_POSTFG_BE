@@ -91,9 +91,12 @@ export class D2cTransfers1793800000000 implements MigrationInterface {
             PRIMARY KEY (\`id\`)) ENGINE=InnoDB`);
         await queryRunner.query(`ALTER TABLE \`po_invoices\` ADD CONSTRAINT \`fk_po_invoices_po\` FOREIGN KEY (\`po_uid\`) REFERENCES \`master_purchase_orders\`(\`uid\`) ON DELETE RESTRICT ON UPDATE CASCADE`);
 
-        // transfer channels: inactive (kept out of PO Verify settings, Manual Upload, intake), only the missing ones
+        // transfer channels: inactive (kept out of PO Verify settings, Manual Upload, intake), only the missing ones.
+        // Only on a database that already has its channel list (dev / prod): a database built empty from the
+        // migrations (the test DB in CI) loads its channels itself, and rows added here would take its ids.
         const insertedChannelSlugs: string[] = [];
-        for (const [slug, name] of CHANNELS) {
+        const [{ n: channelRows }] = await queryRunner.query(`SELECT COUNT(*) AS n FROM \`master_channels\``);
+        for (const [slug, name] of Number(channelRows) > 0 ? CHANNELS : []) {
             const r = await queryRunner.query(
                 `INSERT INTO \`master_channels\` (\`slug\`, \`display_name\`, \`db_aliases\`, \`has_processor\`, \`is_active\`)
                  SELECT ?, ?, ?, 0, 0 FROM DUAL
