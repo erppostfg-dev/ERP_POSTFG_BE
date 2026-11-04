@@ -23,11 +23,15 @@ let version = '';
 let watcher: NodeJS.Timeout | undefined;
 let checking: Promise<string> | undefined;
 
-/** The current version of the review data (one cheap query). */
+/**
+ * The current version of the review data. Load (2026-11-04, audit K8): no COUNT(*) any more (a full scan every few
+ * seconds): the newest id (a new row) + the newest updated_at (any change; the DB sets it on every update), both read
+ * straight from an index (primary key, idx_*_updated), so the check costs next to nothing however big the tables grow.
+ */
 export const reviewVersion = async (): Promise<string> => {
   const [r] = (await AppDataSource.query(
-    `SELECT (SELECT CONCAT(COUNT(*), '.', COALESCE(UNIX_TIMESTAMP(MAX(updated_at)), 0)) FROM ${TABLES.PO_UPLOADS}) u,
-            (SELECT CONCAT(COUNT(*), '.', COALESCE(MAX(id), 0), '.', COALESCE(UNIX_TIMESTAMP(MAX(updated_at)), 0)) FROM ${TABLES.PO_REVIEW_SUBMISSIONS}) s`,
+    `SELECT (SELECT CONCAT(COALESCE(MAX(id), 0), '.', COALESCE(UNIX_TIMESTAMP(MAX(updated_at)), 0)) FROM ${TABLES.PO_UPLOADS}) u,
+            (SELECT CONCAT(COALESCE(MAX(id), 0), '.', COALESCE(UNIX_TIMESTAMP(MAX(updated_at)), 0)) FROM ${TABLES.PO_REVIEW_SUBMISSIONS}) s`,
   )) as { u: string; s: string }[];
   return `${r.u}-${r.s}`;
 };

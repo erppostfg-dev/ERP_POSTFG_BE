@@ -6,6 +6,8 @@ import { PoUpload } from './po-upload.entity';
 /** po_issues: every problem found while reading or checking an upload, before the PO is saved. */
 @Entity({ name: TABLES.PO_ISSUES })
 @Index('idx_po_issues_open', ['status', 'issueType'])
+// a PO's open issues (2026-11-04, migration ListIndexes)
+@Index('idx_po_issues_upload_status', ['uploadId', 'status'])
 export class PoIssue {
   @PrimaryGeneratedColumn({ name: 'id', type: 'bigint' })
   id: string;

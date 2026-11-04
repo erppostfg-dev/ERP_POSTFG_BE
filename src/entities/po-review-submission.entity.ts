@@ -30,6 +30,9 @@ export interface ReviewFixes {
 @Entity({ name: TABLES.PO_REVIEW_SUBMISSIONS })
 @Index('idx_po_review_submissions_list', ['type', 'status', 'submittedAt'])
 @Index('idx_po_review_submissions_upload', ['uploadId', 'id'])
+// Approvals decided tabs + the live check (2026-11-04, migration ListIndexes)
+@Index('idx_po_review_submissions_decided', ['type', 'status', 'decidedAt'])
+@Index('idx_po_review_submissions_updated', ['updatedAt'])
 export class PoReviewSubmission {
   @PrimaryGeneratedColumn({ name: 'id', type: 'bigint' })
   id: string;

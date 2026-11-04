@@ -22,6 +22,11 @@ import type { PoIssue } from './po-issue.entity';
 @Entity({ name: TABLES.PO_UPLOADS })
 @Index('idx_po_uploads_status', ['status', 'createdAt'])
 @Index('idx_po_uploads_po_number', ['poNumber'])
+// load (2026-11-04, migration ListIndexes): the live check and the lists, newest first
+@Index('idx_po_uploads_updated', ['updatedAt'])
+@Index('idx_po_uploads_status_completed', ['status', 'completedAt'])
+@Index('idx_po_uploads_status_updated', ['status', 'updatedAt'])
+@Index('idx_po_uploads_status_received', ['status', 'emailReceivedAt'])
 @Index('uq_po_uploads_message_po', ['emailMessageId', 'poNumber'], { unique: true })
 @Index('uq_po_uploads_source_external', ['sourceSystem', 'externalId'], { unique: true })
 export class PoUpload {
