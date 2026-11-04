@@ -380,6 +380,9 @@ const withPortal = async <T>(cfg: MyntraConfig, cacheDir: string, log: Log, work
   }
 };
 
+/** The same browser + login for another module's robot (channel-api/myntra STRs, 2026-11-03). */
+export const withMyntraPortal = withPortal;
+
 /** Where the browser was and what it showed (for a failed step's log: on a server nobody sees the window). */
 const pageState = async (page: Page): Promise<string> => {
   const title = await page.title().catch(() => '');

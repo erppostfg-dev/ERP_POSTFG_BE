@@ -2,7 +2,7 @@ import path from 'path';
 import { AppDataSource } from '../../config/data-source';
 import { env } from '../../config/env';
 import { In } from 'typeorm';
-import { FOLDERS, LABELS, PO_JOB_TYPE, UPLOAD_SOURCE, UPLOAD_STATUS } from '../../constants';
+import { FOLDERS, LABELS, PIPELINE_STEP, PO_JOB_TYPE, UPLOAD_SOURCE, UPLOAD_STATUS } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
 import { PoUpload } from '../../entities';
 import { logError } from '../../utils/classify-error';
@@ -39,7 +39,7 @@ const releaseOne = async (u: PoUpload): Promise<void> => {
   const repo = AppDataSource.getRepository(PoUpload);
   const folder = await folderOf(u);
   if (!folder) {
-    await repo.update({ id: u.id }, { status: UPLOAD_STATUS.FAILED, errorDetails: { step: 'release', reason: 'held PO: its stored folder was not found' } });
+    await repo.update({ id: u.id }, { status: UPLOAD_STATUS.FAILED, errorDetails: { step: PIPELINE_STEP.RELEASE, reason: 'held PO: its stored folder was not found' } });
     return;
   }
   // released_at: it counts against TODAY's limit (it arrived on an earlier day, or while the channel was off).

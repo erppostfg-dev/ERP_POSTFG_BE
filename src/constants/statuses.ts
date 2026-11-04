@@ -16,6 +16,8 @@ export const PIPELINE_STEP = {
   PROCESSING: 'processing',
   SAVE_PO: 'save_po',
   UNIWARE_CSV: 'uniware_csv',
+  /** A held PO released by PO intake whose stored folder was gone (intake-release.service). */
+  RELEASE: 'release',
 } as const;
 
 /**

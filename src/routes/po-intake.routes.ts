@@ -12,6 +12,7 @@ import { ERROR_CODES, errorMessage, FILES, FOLDERS, INTAKE_STATUS, PROVIDERS } f
 import { appError } from '../utils/AppError';
 import { LOG_SOURCE } from '../constants/logging';
 import { log } from '../utils/logger';
+import { takeStrEmail } from '../modules/channel-api/myntra/str.service';
 
 const router = Router();
 
@@ -102,6 +103,11 @@ router.post('/email', requireWebhookSecret, upload.array('files', MAX_FILES), as
       sort = await sortStoredEmail(stored.folder);
       folder = sort.folder;
       if (!sort.isPo) log.info(LOG_SOURCE.APP, `[sort] not a PO (${sort.code}): ${sort.reason} -> ${sort.folder}`);
+      // Myntra STR list (2026-11-03): not a PO itself; its STRs go to the Myntra robot (never blocks this answer)
+      if (!sort.isPo) {
+        const strFolder = sort.folder;
+        void takeStrEmail(strFolder).catch((err: unknown) => log.error(LOG_SOURCE.APP, `[myntra-str] ${strFolder}: ${err instanceof Error ? err.message : String(err)}`));
+      }
     }
 
     // Copy to S3 after sorting, so it goes straight to its final folder (S3 can't move without delete rights).

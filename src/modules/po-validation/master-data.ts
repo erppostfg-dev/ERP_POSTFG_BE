@@ -15,6 +15,8 @@ export interface ChannelMasterData {
   skusByCode: Map<string, MasterChannelSku[]>;
   /** The same rows by pep_code: what a reviewer can map a line to. */
   skusByPep: Map<string, MasterChannelSku[]>;
+  /** The same rows by ean_code (SKU_ANY_CODE channels, e.g. Slikk sending an EAN its channel_code row does not hold). */
+  skusByEan: Map<string, MasterChannelSku[]>;
   /** details_channels rows (delivery locations) of this channel that are active. */
   locations: DetailsChannel[];
   /** master_facilities by id, code and alias: the Uniware facility code of a location. */
@@ -58,6 +60,7 @@ export class MasterDataReader {
       channel,
       skusByCode: groupBy(channelSkus, (s) => matchKey(s.channelCode)),
       skusByPep: groupBy(channelSkus, (s) => matchKey(s.pepCode)),
+      skusByEan: groupBy(channelSkus.filter((s) => s.eanCode), (s) => matchKey(s.eanCode)),
       locations,
       facilities: this.facilities,
       skus: this.skus,

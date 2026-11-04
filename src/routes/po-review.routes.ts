@@ -26,7 +26,8 @@ import { getPoFile, getPoReview, listPoReview, PoReviewListQuery } from '../modu
 import { reviewEvents, reviewVersion } from '../modules/po-review/po-review.live';
 import { recheckInReview } from '../modules/po-review/recheck.service';
 import { downloadCombined, downloadOne, markUploaded } from '../modules/po-review/uniware-handoff.service';
-import { lineItems } from '../modules/po-review/line-items.service';
+import { lineItems, reviewLineItems } from '../modules/po-review/line-items.service';
+import { getRejection, reopenRejected } from '../modules/po-review/po-review-reopen.service';
 import { LineCorrection, rejectPo, ResubmitBody, submitForApproval } from '../modules/po-review/po-review-actions.service';
 import { appError } from '../utils/AppError';
 
@@ -287,6 +288,32 @@ router.post('/:uploadId/reject', requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS
   }
 });
 
+// ---- Rejected POs: why, and reopen (2026-11-03, user) ---------------------------------------------------------------
+
+/** GET /po-review/:uploadId/rejection: why it was rejected (who / where / reason), the errors rejected with it, what the
+ *  reviewer had changed (approver rejections) and every earlier reopen. Viewer. */
+router.get('/:uploadId/rejection', requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.VIEWER), async (req, res, next) => {
+  try {
+    res.json({ data: await getRejection(uploadIdOf(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /po-review/:uploadId/reopen { remark }: a rejected PO back to In Review (checks again against today's masters +
+ *  one issue to accept), to be fixed and submitted for approval again. Editor; any number of times. */
+router.post('/:uploadId/reopen', requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
+  try {
+    const uploadId = uploadIdOf(req);
+    const problems: Problem[] = [];
+    const remark = bodyReader(problems).remark((req.body as Record<string, unknown> | undefined)?.[B.REMARK], B.REMARK, true);
+    if (problems.length || !remark) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails(problems);
+    res.json({ data: await reopenRejected(uploadId, remark, { id: req.auth!.user.id, email: req.auth!.user.email }) });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ---- Re-check after a master fix (2026-10-22, REVIEW_RECHECK) ------------------------------------------------------
 
 /** POST /po-review/recheck: re-check every PO in review now (the timer does it every RECHECK_MINUTES too). Editor. */
@@ -330,6 +357,19 @@ router.get(UNIWARE_HANDOFF.CSV_ONE, requireAuth, requirePage(PAGE.PO_REVIEW, ACC
 router.post(UNIWARE_HANDOFF.CSV_MANY, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
   try {
     sendCsv(res, await downloadCombined(idsOf(req.body), actorOf(req)));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---- In Review line items (2026-11-03): each line as read + its open issues, for the In Review download ------------
+
+/** POST /po-review/review-line-items { uploadIds } (POs in review, at most LINE_ITEMS.MAX_IDS). Read-only: viewer. */
+router.post(LINE_ITEMS.REVIEW_ROUTE, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.VIEWER), async (req, res, next) => {
+  try {
+    const v = (req.body as Record<string, unknown> | undefined)?.[UNIWARE_HANDOFF.BODY_IDS];
+    const ids = Array.isArray(v) ? [...new Set(v.map(String).filter((x) => UPLOAD_ID_PATTERN.test(x)))] : [];
+    res.json({ data: await reviewLineItems(ids) });
   } catch (err) {
     next(err);
   }

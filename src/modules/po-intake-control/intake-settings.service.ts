@@ -26,6 +26,8 @@ const intakeChannels = (): { channel: ChannelName; source: 'email' | 'api' }[] =
   { channel: CHANNELS.AMAZON, source: 'api' as const },
   // Flipkart scheduled consignments, from the Seller Hub robot (2026-10-30): switched like Amazon
   { channel: CHANNELS.FLIPKART, source: 'api' as const },
+  // Myntra STRs (2026-11-03): the STR list comes by email, the CSVs by our robot; switched like Flipkart
+  { channel: CHANNELS.MYNTRA, source: 'api' as const },
 ];
 
 /** po_uploads.channel holds master_channels.display_name. */

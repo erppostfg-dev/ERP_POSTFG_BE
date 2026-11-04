@@ -33,6 +33,7 @@ export const ERRORS = {
   FIELD_NOT_TEXT: define(400, (field: string) => `${field} must be text`),
   FIELD_NOT_NUMBER: define(400, (field: string) => `${field} must be a number of 0 or more`),
   FIELD_NOT_LIST: define(400, (field: string) => `${field} must be a list`),
+  FIELD_NOT_ID_LIST: define(400, (field: string, max: number) => `${field} must be a list of 1 to ${max} ids`),
   FIELD_NOT_BOOLEAN: define(400, (field: string) => `${field} must be true or false`),
   FIELD_NOT_OBJECT: define(400, (field: string) => `${field} must be an object`),
   FIELD_BAD_FORMAT: define(400, (field: string, rule: string) => `${field} must be ${rule}`),
@@ -90,6 +91,7 @@ export const ERRORS = {
   // --- Line items download (2026-10-26) ---
   LINE_ITEMS_TOO_MANY: define(400, (max: number) => `Pick at most ${max} POs for one line items download`),
   LINE_ITEMS_NOT_PROCESSED: define(409, (ids: string) => `Only processed POs have saved line items: upload(s) ${ids} are not processed`),
+  LINE_ITEMS_NOT_IN_REVIEW: define(409, (ids: string) => `Only POs in review: upload(s) ${ids} are not in review`),
   // --- Manual upload (2026-10-22, constants/manual-upload.ts) ---
   MANUAL_CHANNEL_NOT_READABLE: define(400, (channel: string) => `Channel "${channel}" has no PO reader yet: only channels the app can read can be uploaded`),
   MANUAL_FILE_TYPE: define(400, (name: string) => `${name}: only PDF, Excel (.xlsx / .xls) or CSV files can be uploaded`),
@@ -99,9 +101,12 @@ export const ERRORS = {
   // Channel Pulls (2026-10-30)
   CHANNEL_PULL_NOT_CONFIGURED: define(409, (what: string) => `${what} is not set up on this server (its login is missing in the settings)`),
   CHANNEL_PULL_NOT_FOUND: define(404, (key: string) => `No channel pull ${key}`),
+  CHANNEL_PULL_NO_PROCESSING: define(409, (label: string) => `${label}: making POs from these is not switched on yet`),
+  CHANNEL_PULL_NO_SCHEDULE: define(400, (label: string) => `${label}: its robot starts when its email comes; it has no schedule`),
   CHANNEL_PULL_NO_ROBOT: define(400, (key: string) => `${key} has no robot to run (it is pulled by its API)`),
   CHANNEL_PULL_RUNNING: define(409, (what: string) => `${what} is already running: wait for it to finish`),
   MANUAL_AMAZON_STATUS: define(409, (id: string, status: string) => `${id} is ${status} at Amazon: cancelled / deleted / closed shipments are not made into POs`),
+  MANUAL_MYNTRA_FILE: define(400, (name: string, why: string) => `${name} is not a Myntra STR file (${why}): upload the STR's CSV from the partner portal (STR Details > Download CSV), named <STR>-summary.csv`),
   MANUAL_FLIPKART_FILE: define(400, (name: string, why: string) => `${name} is not a Flipkart consignment file (${why}): upload the CSV from Seller Hub > Consignments > Download CSV, named Consignment_Details_<id>_<date>.csv`),
   MANUAL_FLIPKART_STATUS: define(409, (id: string, status: string) => `${id} is ${status} at Flipkart: cancelled consignments are not made into POs`),
   MANUAL_UPLOAD_NOT_FOUND: define(404, (id: string) => `No manual upload ${id}`),
@@ -172,12 +177,14 @@ export const ERRORS = {
   PROCESSED_JSON_MISSING: define(409, (uploadId: string) => `PO upload ${uploadId} has no processed.json in S3 yet`),
   PO_FILE_MISSING: define(404, (uploadId: string) => `PO upload ${uploadId} has no PO file in S3`),
   UPLOAD_NOT_IN_REVIEW: define(409, (uploadId: string, status: string) => `PO upload ${uploadId} is ${status}, not in review any more; reload it`),
+  UPLOAD_NOT_REJECTED: define(409, (uploadId: string, status: string) => `PO upload ${uploadId} is ${status}, not rejected; only a rejected PO can be reopened`),
   REVIEW_INCOMPLETE: define(422, (count: number) => `${count} issue(s) are still open: correct them, accept them (where allowed) or reject the PO`),
   // --- PO review approvals (2026-10-15) ---
   SUBMISSION_NOT_FOUND: define(404, (id: string) => `No PO review submission ${id}`),
   SUBMISSION_NOT_PENDING: define(409, (id: string, status: string) => `Submission ${id} is ${status}, not pending any more; reload it`),
   NOT_AN_APPROVER: define(403, (roles: string) => `Only ${roles} can approve or reject PO reviews`),
   REVIEW_RETURNED: define(409, (count: number) => `The PO no longer passes the checks (${count} issue(s)); it went back to In Review with the reason`),
+  MASTER_UPDATE_NOT_CONFIRMED: define(409, (count: number) => `${count} of the selected approval(s) update the master on approval: confirm to go on`),
   ISSUE_REMARK_REQUIRED: define(422, (issueId: string, type: string) => `Issue ${issueId} (${type}) is accepted only with a remark: say why`),
   PRICE_DIFF_IDS_REQUIRED: define(400, () => 'Send the ids of the price difference lines to mark as sent'),
   PRICE_DIFF_SCOPE_REQUIRED: define(400, () => 'Name a PO (uploadId) or a channel'),

@@ -1,5 +1,5 @@
 import { AppDataSource } from '../../config/data-source';
-import { ERROR_CODES, REVIEW_SUBMISSION_STATUS, REVIEW_SUBMISSION_TYPE, ReviewSubmissionStatus, TABLES } from '../../constants';
+import { APPROVAL_KIND, ApprovalKind, ERROR_CODES, IST_OFFSET_MS, REVIEW_SUBMISSION_STATUS, REVIEW_SUBMISSION_TYPE, ReviewSubmissionStatus, TABLES } from '../../constants';
 import { ReviewFixes } from '../../entities';
 import { appError } from '../../utils/AppError';
 import { getPoReview, PoReviewDetail } from './po-review.service';
@@ -25,6 +25,14 @@ export interface ApprovalListItem {
   submittedBy: ApprovalPerson;
   submittedAt: string;
   submitRemark: string | null;
+  /** What kind of approval (APPROVAL_KIND): from review only, or it updates the master too. */
+  kind: ApprovalKind;
+  /** The errors the reviewer resolved, per issue type: how many fixed / accepted (user 2026-11-02). */
+  fixedIssues: { type: string; fixed: number; accepted: number }[];
+  /** Price check lines that change our master on approval (channel SKU rate / MRP). */
+  masterUpdates: number;
+  /** Submitted after the PO was reopened from Rejected (2026-11-03): the tag + the rejection it undid. */
+  reopened: { rejectedReason: string | null; rejectedFrom: string | null } | null;
   /** Issues the reviewer resolved (fixed or accepted). */
   issueCount: number;
   /** Fields the reviewer changed (location + every line field). */
@@ -39,6 +47,18 @@ export interface ApprovalListItem {
 export interface ApprovalListQuery {
   status: ReviewSubmissionStatus;
   q?: string;
+  /** Any of these (exact names); the same for the next lists. */
+  channels?: string[];
+  kind?: ApprovalKind;
+  /** Issue types the reviewer resolved (fixed or accepted): any of them. */
+  issues?: string[];
+  /** The submitters' emails. */
+  submittedBy?: string[];
+  /** Only ones submitted after a reopen from Rejected. */
+  reopened?: boolean;
+  /** Submitted on or after / on or before these days (YYYY-MM-DD, Indian time). */
+  from?: string;
+  to?: string;
   page: number;
   pageSize: number;
 }
@@ -46,18 +66,47 @@ export interface ApprovalListQuery {
 type Row = {
   id: string | number; upload_id: string | number; status: ReviewSubmissionStatus; po_number: string | null; channel: string | null; file_name: string | null;
   sub_name: string | null; sub_email: string | null; submitted_at: Date; submit_remark: string | null; fixes: ReviewFixes | string | null;
+  reopen_reason: string | null; reopen_from: string | null; reopen_id: string | number | null;
   dec_name: string | null; dec_email: string | null; decided_at: Date | null; decision_remark: string | null; sale_order_code: string | null; po_uid: string | number | null;
 };
 
+/** The latest reopen of the PO BEFORE this submission (a submission after a reopen = tag "Reopened"). */
+const REOPEN_JOIN = `LEFT JOIN ${TABLES.PO_REOPENS} ro ON ro.id = (SELECT MAX(r2.id) FROM ${TABLES.PO_REOPENS} r2 WHERE r2.upload_id = s.upload_id AND r2.reopened_at <= s.submitted_at)`;
+
 const SELECT = `
   SELECT s.id, s.upload_id, s.status, s.po_number, s.channel, u.file_name, su.name sub_name, su.email sub_email, s.submitted_at, s.submit_remark,
-         s.fixes, du.name dec_name, du.email dec_email, s.decided_at, s.decision_remark, s.sale_order_code, s.po_uid
+         s.fixes, du.name dec_name, du.email dec_email, s.decided_at, s.decision_remark, s.sale_order_code, s.po_uid,
+         ro.id reopen_id, ro.rejected_reason reopen_reason, ro.rejected_from reopen_from
     FROM ${TABLES.PO_REVIEW_SUBMISSIONS} s
     JOIN ${TABLES.PO_UPLOADS} u ON u.id = s.upload_id
     LEFT JOIN ${TABLES.USERS} su ON su.id = s.submitted_by
-    LEFT JOIN ${TABLES.USERS} du ON du.id = s.decided_by`;
+    LEFT JOIN ${TABLES.USERS} du ON du.id = s.decided_by
+    ${REOPEN_JOIN}`;
 
 const fixesOf = (v: Row['fixes']): ReviewFixes | null => (typeof v === 'string' ? (JSON.parse(v) as ReviewFixes) : v);
+
+/** Price check lines that update our master when approved (the channel's value is taken AND "update master" ticked). */
+const masterUpdatesOf = (f: ReviewFixes | null): number => (f?.choices ?? []).filter((c) => c.updateMaster).length;
+
+/** The approval's kind (APPROVAL_KIND); later kinds (appointment change, qty update ...) are added here. */
+export const kindOf = (f: ReviewFixes | null): ApprovalKind => (masterUpdatesOf(f) > 0 ? APPROVAL_KIND.MASTER_UPDATE : APPROVAL_KIND.REVIEW);
+
+/** SQL for the same kind test on po_review_submissions.fixes (s.fixes), so the filter covers every page. */
+const MASTER_UPDATE_SQL = `JSON_CONTAINS(COALESCE(JSON_EXTRACT(s.fixes, '$.choices[*].updateMaster'), JSON_ARRAY()), 'true')`;
+
+const fixedIssuesOf = (f: ReviewFixes | null): ApprovalListItem['fixedIssues'] => {
+  const by = new Map<string, { type: string; fixed: number; accepted: number }>();
+  for (const i of f?.issues ?? []) {
+    const e = by.get(i.type) ?? { type: i.type, fixed: 0, accepted: 0 };
+    if (i.how === 'accepted') e.accepted++;
+    else e.fixed++;
+    by.set(i.type, e);
+  }
+  return [...by.values()];
+};
+
+const DAY_MS = 86_400_000;
+const istDayStart = (day: string): Date => new Date(Date.parse(`${day}T00:00:00Z`) - IST_OFFSET_MS);
 
 const toItem = (r: Row): ApprovalListItem => {
   const fixes = fixesOf(r.fixes);
@@ -71,6 +120,10 @@ const toItem = (r: Row): ApprovalListItem => {
     submittedBy: { name: r.sub_name, email: r.sub_email },
     submittedAt: new Date(r.submitted_at).toISOString(),
     submitRemark: r.submit_remark,
+    kind: kindOf(fixes),
+    fixedIssues: fixedIssuesOf(fixes),
+    masterUpdates: masterUpdatesOf(fixes),
+    reopened: r.reopen_id === null || r.reopen_id === undefined ? null : { rejectedReason: r.reopen_reason, rejectedFrom: r.reopen_from },
     issueCount: fixes?.issues.length ?? 0,
     changeCount: (fixes?.location ? 1 : 0) + (fixes?.lines.reduce((n, l) => n + l.changes.length, 0) ?? 0),
     decidedBy: r.dec_email || r.dec_name ? { name: r.dec_name, email: r.dec_email } : null,
@@ -90,6 +143,21 @@ export const listApprovals = async (query: ApprovalListQuery) => {
     const like = `%${query.q}%`;
     params.push(like, like, like, like);
   }
+  const anyOf = (list: string[] | undefined, column: string) => {
+    if (!list?.length) return;
+    where.push(`${column} IN (${list.map(() => '?').join(', ')})`);
+    params.push(...list);
+  };
+  anyOf(query.channels, 's.channel');
+  if (query.kind) where.push(query.kind === APPROVAL_KIND.MASTER_UPDATE ? MASTER_UPDATE_SQL : `NOT ${MASTER_UPDATE_SQL}`);
+  if (query.issues?.length) {
+    where.push(`(${query.issues.map(() => `JSON_CONTAINS(COALESCE(JSON_EXTRACT(s.fixes, '$.issues[*].type'), JSON_ARRAY()), JSON_QUOTE(?))`).join(' OR ')})`);
+    params.push(...query.issues);
+  }
+  anyOf(query.submittedBy, 'su.email');
+  if (query.reopened) where.push(`EXISTS (SELECT 1 FROM ${TABLES.PO_REOPENS} r3 WHERE r3.upload_id = s.upload_id AND r3.reopened_at <= s.submitted_at)`);
+  if (query.from) { where.push('s.submitted_at >= ?'); params.push(istDayStart(query.from)); }
+  if (query.to) { where.push('s.submitted_at < ?'); params.push(new Date(istDayStart(query.to).getTime() + DAY_MS)); }
   // Pending: oldest first (first come, first served); decided: latest decision first.
   const order = query.status === REVIEW_SUBMISSION_STATUS.PENDING ? 's.submitted_at ASC, s.id ASC' : 's.decided_at DESC, s.id DESC';
   const rows = (await AppDataSource.query(`${SELECT} WHERE ${where.join(' AND ')} ORDER BY ${order} LIMIT ? OFFSET ?`, [
@@ -105,10 +173,21 @@ export const listApprovals = async (query: ApprovalListQuery) => {
     `SELECT status, COUNT(*) n FROM ${TABLES.PO_REVIEW_SUBMISSIONS} WHERE type = ? GROUP BY status`,
     [REVIEW_SUBMISSION_TYPE.APPROVAL],
   )) as { status: string; n: string | number }[];
+  // The Filters panel's choices for this tab: channels and people that have submissions in it (two small DISTINCTs).
+  const channels = await AppDataSource.query<{ channel: string }[]>(
+    `SELECT DISTINCT s.channel FROM ${TABLES.PO_REVIEW_SUBMISSIONS} s WHERE s.type = ? AND s.status = ? AND s.channel IS NOT NULL ORDER BY s.channel`,
+    [REVIEW_SUBMISSION_TYPE.APPROVAL, query.status],
+  );
+  const people = await AppDataSource.query<{ email: string; name: string | null }[]>(
+    `SELECT DISTINCT su.email, su.name FROM ${TABLES.PO_REVIEW_SUBMISSIONS} s JOIN ${TABLES.USERS} su ON su.id = s.submitted_by
+      WHERE s.type = ? AND s.status = ? ORDER BY su.email`,
+    [REVIEW_SUBMISSION_TYPE.APPROVAL, query.status],
+  );
   return {
     items: rows.map(toItem),
     total: Number(total),
     counts: Object.fromEntries(counts.map((c) => [c.status, Number(c.n)])) as Record<string, number>,
+    filterOptions: { channels: channels.map((c) => c.channel), submitters: people.map((p) => ({ email: p.email, name: p.name })) },
   };
 };
 

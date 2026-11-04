@@ -4,7 +4,7 @@ import path from 'path';
 import { In, Not } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
 import { env } from '../../config/env';
-import { CHANNEL_MASTER_IDS, CHANNELS, ChannelName, ERROR_CODES, FILES, FLIPKART, SOURCE_SYSTEM, UPLOAD_STATUS, IST_OFFSET_MS, MANUAL_UPLOAD, MANUAL_UPLOAD_STATUS, ManualUploadStatus, PO_JOB_TYPE, PROVIDERS, RESULT_STATUS } from '../../constants';
+import { CHANNEL_MASTER_IDS, CHANNELS, ChannelName, ERROR_CODES, FILES, FLIPKART, MYNTRA_STR, SOURCE_SYSTEM, UPLOAD_STATUS, IST_OFFSET_MS, MANUAL_UPLOAD, MANUAL_UPLOAD_STATUS, ManualUploadStatus, PO_JOB_TYPE, PROVIDERS, RESULT_STATUS } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
 import { ActivityLog, ChannelPullItem, ManualUpload, ManualUploadFile, MasterChannel, PoUpload } from '../../entities';
 import { appError } from '../../utils/AppError';
@@ -16,6 +16,9 @@ import { amazonConnector } from '../channel-api/amazon/amazon.connector';
 import { shipmentsByIds } from '../channel-api/amazon/inbound-api';
 import { ConsignmentData, ConsignmentHeader, consignmentToProcessed, parseConsignmentCsv } from '../channel-api/flipkart/consignments.parse';
 import { lastBulkHeader } from '../channel-api/flipkart/consignments.service';
+import { refOfStr } from '../channel-api/myntra/str-email';
+import { destinationOf, strToProcessed } from '../channel-api/myntra/str.parse';
+import type { StrItemData } from '../channel-api/myntra/str.types';
 import { ProcessedPo } from '../po-processing/common/processed-po';
 import { s3UrlFor } from '../po-processing/common/processed-store';
 import { MasterDataReader } from '../po-validation/master-data';
@@ -86,7 +89,7 @@ export const uploadChannels = async (): Promise<UploadChannel[]> => {
         : null;
     })
     .filter((x): x is UploadChannel => x !== null)
-    .concat(amazonMaster(masters), flipkartMaster(masters))
+    .concat(amazonMaster(masters), flipkartMaster(masters), myntraMaster(masters))
     .sort((a, b) => a.name.localeCompare(b.name));
 };
 
@@ -100,6 +103,12 @@ const amazonMaster = (masters: MasterChannel[]): UploadChannel[] => {
 const flipkartMaster = (masters: MasterChannel[]): UploadChannel[] => {
   const m = masters.find((x) => x.id === masterIdOf(CHANNELS.FLIPKART));
   return m ? [{ channel: CHANNELS.FLIPKART, name: m.displayName, needs: MANUAL_UPLOAD.FLIPKART_NEEDS, twoFiles: false, group: 'api' }] : [];
+};
+
+/** Myntra STRs (2026-11-03): an STR's CSV, for STRs that did not come by the STR email. */
+const myntraMaster = (masters: MasterChannel[]): UploadChannel[] => {
+  const m = masters.find((x) => x.id === masterIdOf(CHANNELS.MYNTRA));
+  return m ? [{ channel: CHANNELS.MYNTRA, name: `${m.displayName} STR`, needs: MANUAL_UPLOAD.MYNTRA_NEEDS, twoFiles: false, group: 'api' }] : [];
 };
 
 // ---- Upload ---------------------------------------------------------------------------------------------------------
@@ -147,6 +156,7 @@ const groupFiles = (c: ChannelConfig, files: UploadedFile[], channelName: string
 export const uploadFiles = async (channel: string, files: UploadedFile[], by: Actor): Promise<{ ids: string[] }> => {
   if (channel === CHANNELS.AMAZON) return uploadAmazon(files, by);
   if (channel === CHANNELS.FLIPKART) return uploadFlipkart(files, by);
+  if (channel === CHANNELS.MYNTRA) return uploadMyntra(files, by);
   const config = channelConfigs.find((c) => c.channel === channel);
   const id = masterIdOf(channel);
   const master = config && id ? await AppDataSource.getRepository(MasterChannel).findOneBy({ id, isActive: true }) : null;
@@ -433,6 +443,134 @@ const processFlipkart = async (u: ManualUpload): Promise<string | null> => {
   return [flipkartNote(header), ...out.map((o) => `${o.poNumber}: ${o.status}${o.saleOrder ? ` (${o.saleOrder})` : ''}`)].join('; ');
 };
 
+// ---- Myntra STR files (.csv, 2026-11-03) ----------------------------------------------------------------------------
+
+/**
+ * Where this STR already is, if anywhere: taken from an STR email (Channel Pulls: the robot fetches it / fetched it), a PO
+ * in POST_FG (any status but failed), or another manual upload still open or done. The row this upload wrote itself does
+ * not count.
+ */
+const myntraTakenBy = async (str: string, exceptManualId?: string): Promise<string | null> => {
+  const pulled = await AppDataSource.getRepository(ChannelPullItem).findOneBy({ sourceSystem: SOURCE_SYSTEM.MYNTRA_STR, externalId: str });
+  const mine = !!exceptManualId && (pulled?.data as Partial<StrItemData> | undefined)?.manualUploadId === exceptManualId;
+  if (pulled && !mine) return `taken from an STR email (Channel Pulls > Myntra: ${pulled.status ?? 'waiting for the robot'})`;
+  const [po] = await AppDataSource.query<{ id: string | number; status: string; so: string | null }[]>(
+    `SELECT u.id, u.status, m.orderNo1 so FROM po_uploads u LEFT JOIN master_purchase_orders m ON m.uid = u.po_uid
+      WHERE u.source_system = ? AND u.external_id = ? AND u.status <> ? ORDER BY u.id DESC LIMIT 1`,
+    [SOURCE_SYSTEM.MYNTRA_STR, str, UPLOAD_STATUS.FAILED],
+  );
+  if (po && !mine) return `a PO in POST_FG (upload ${po.id}, ${po.status}${po.so ? `, sale order ${po.so}` : ''})`;
+  const open = await repo().find({
+    where: { channel: CHANNELS.MYNTRA, externalId: str, status: In([MANUAL_UPLOAD_STATUS.UPLOADED, MANUAL_UPLOAD_STATUS.QUEUED, MANUAL_UPLOAD_STATUS.PROCESSING, MANUAL_UPLOAD_STATUS.DONE]) },
+  });
+  const other = open.find((r) => String(r.id) !== exceptManualId);
+  return other ? `in the upload queue (#${other.id}, ${other.status})` : null;
+};
+
+/** The STR from the portal's file name (+ its destination and date), and its lines; refused when either is not right. */
+const readMyntraFile = (name: string, text: string) => {
+  const m = path.basename(name).match(MYNTRA_STR.MANUAL_FILE);
+  const ref = m ? refOfStr(m[1]) : null;
+  if (!ref) throw appError(ERROR_CODES.MANUAL_MYNTRA_FILE, name, 'the file name has no STR number');
+  const { summary } = strToProcessed({ ...ref, group: '', priority: '' }, text);
+  if (summary.missingColumns.length) throw appError(ERROR_CODES.MANUAL_MYNTRA_FILE, name, `columns missing: ${summary.missingColumns.join(', ')}`);
+  if (!summary.rows) throw appError(ERROR_CODES.MANUAL_MYNTRA_FILE, name, 'no lines');
+  return { ref, summary, location: destinationOf(summary.destination, ref.destination)?.location ?? null };
+};
+
+/** Each file = one STR: checked (name, columns, duplicates), then stored + S3 as "uploaded". All or nothing. */
+const uploadMyntra = async (files: UploadedFile[], by: Actor): Promise<{ ids: string[] }> => {
+  if (!files.length) throw appError(ERROR_CODES.NO_FILES_UPLOADED);
+  const parsed: { file: UploadedFile; str: string; date: string; note: string }[] = [];
+  for (const f of files) {
+    const { ref, summary, location } = readMyntraFile(f.originalname, f.buffer.toString('utf8'));
+    if (parsed.some((p) => p.str === ref.str)) throw appError(ERROR_CODES.MANUAL_DUPLICATE, ref.str, 'in this upload twice');
+    const where = await myntraTakenBy(ref.str);
+    if (where) throw appError(ERROR_CODES.MANUAL_DUPLICATE, ref.str, where);
+    parsed.push({ file: f, str: ref.str, date: ref.date, note: MANUAL_UPLOAD.MYNTRA_NOTE(summary.destination, location) });
+  }
+
+  const ids: string[] = [];
+  for (const { file, str, date, note } of parsed) {
+    const name = safeName(file.originalname);
+    const now = new Date();
+    const row = await repo().save(repo().create({
+      channel: CHANNELS.MYNTRA, externalId: str, folder: '', status: MANUAL_UPLOAD_STATUS.UPLOADED, uploadedBy: by.id, uploadedAt: now,
+      files: [{ filename: name, size: file.buffer.length, sha1: sha1(file.buffer) }], note,
+    }));
+    const folder = path.resolve(env.storage.emailDir, MANUAL_UPLOAD.FOLDER, `${now.toISOString().slice(0, 10)}_${row.id}`);
+    await fs.mkdir(folder, { recursive: true });
+    await fs.writeFile(path.join(folder, name), file.buffer);
+    await fs.writeFile(path.join(folder, FILES.METADATA), `${JSON.stringify({
+      messageId: MANUAL_UPLOAD.MESSAGE_ID(row.id),
+      provider: PROVIDERS.MANUAL,
+      structured: true,
+      sourceFile: name,
+      channel: CHANNELS.MYNTRA,
+      poNumber: str,
+      poDate: date,
+      sourceSystem: SOURCE_SYSTEM.MYNTRA_STR,
+      externalId: str,
+      subject: `Myntra STR ${str}`,
+      uploadedBy: by.email,
+      receivedAt: now.toISOString(),
+      files: [{ filename: name, size: file.buffer.length }],
+      storedAt: now.toISOString(),
+    }, null, 2)}\n`);
+    let s3Folder: string | null = null;
+    try {
+      s3Folder = (await syncEmailToS3(folder)).s3Folder || null;
+    } catch (err) {
+      logError(LOG_SOURCE.S3, `manual upload ${row.id}: S3 copy failed (retried at Process)`, err);
+    }
+    await repo().update({ id: row.id }, { folder, s3Folder });
+    ids.push(String(row.id));
+  }
+  await audit(by, `manual upload: Myntra STR, ${parsed.map((p) => p.str).join(',')} -> upload(s) ${ids.join(',')}`);
+  bumpReview();
+  return { ids };
+};
+
+/**
+ * Process a Myntra STR file: duplicate check again, a channel_pull_items row (stored + taken) so an STR email / the robot
+ * never takes it a second time and Channel Pulls shows it, the same processed.json the robot's STRs get, the same chain.
+ */
+const processMyntra = async (u: ManualUpload): Promise<string | null> => {
+  const meta = JSON.parse(await fs.readFile(path.join(u.folder, FILES.METADATA), 'utf8')) as { sourceFile: string; poDate: string };
+  const csv = await fs.readFile(path.join(u.folder, meta.sourceFile), 'utf8');
+  const { ref, summary, location } = readMyntraFile(meta.sourceFile, csv);
+  const where = await myntraTakenBy(ref.str, String(u.id));
+  if (where) throw appError(ERROR_CODES.MANUAL_DUPLICATE, ref.str, where);
+  const now = new Date();
+  const data: StrItemData = {
+    email: { folder: `manual upload #${u.id}`, subject: 'Manual Upload', receivedAt: now.toISOString() },
+    order: 1, group: '', priority: '', destination: ref.destination, runs: 0, lastError: null, summary, manualUploadId: String(u.id),
+    ...(u.s3Folder ? { s3Folder: u.s3Folder } : {}),
+  };
+  const pulls = AppDataSource.getRepository(ChannelPullItem);
+  const values = {
+    status: MYNTRA_STR.STATUS.STORED, warehouse: ref.destination, createdOn: ref.date,
+    label: `${ref.str} · manual upload #${u.id} · ${ref.destination}`.slice(0, 300), data: { ...data }, takenAt: now,
+  };
+  const was = await pulls.findOneBy({ sourceSystem: SOURCE_SYSTEM.MYNTRA_STR, externalId: ref.str });
+  // a retry finds its own row; an STR email taking the same STR meanwhile hits the unique key and is refused
+  await pulls.save(was ? { ...was, ...values } : pulls.create({ sourceSystem: SOURCE_SYSTEM.MYNTRA_STR, externalId: ref.str, fetchedAt: now, ...values }));
+
+  const po: ProcessedPo = {
+    ...strToProcessed({ ...ref, group: '', priority: '' }, csv).po,
+    input_type: MYNTRA_STR.MANUAL_INPUT_TYPE,
+    ref_file_urls: [s3UrlFor(u.folder, JSON.parse(await fs.readFile(path.join(u.folder, FILES.METADATA), 'utf8')), meta.sourceFile)],
+  };
+  po.unmapped = { ...po.unmapped, source_file: meta.sourceFile };
+  po.field_sources = { ...po.field_sources, po_date: 'STR code (file name)' };
+  await fs.writeFile(path.join(u.folder, FILES.PROCESSED), `${JSON.stringify(po, null, 2)}\n`);
+  await syncEmailToS3(u.folder);
+  const out = await runChainFor(u.folder);
+  const failed = out.find((o) => o.error);
+  if (failed) throw new Error(failed.error);
+  return [MANUAL_UPLOAD.MYNTRA_NOTE(summary.destination, location), ...out.map((o) => `${o.poNumber}: ${o.status}${o.saleOrder ? ` (${o.saleOrder})` : ''}`)].join('; ');
+};
+
 // ---- The queue: one at a time ---------------------------------------------------------------------------------------
 
 let running = false;
@@ -444,8 +582,8 @@ const runOne = async (u: ManualUpload): Promise<void> => {
   let status: ManualUploadStatus = MANUAL_UPLOAD_STATUS.DONE;
   let note: string | null = u.note;
   try {
-    if (u.channel === CHANNELS.AMAZON || u.channel === CHANNELS.FLIPKART) {
-      note = u.channel === CHANNELS.AMAZON ? await processAmazon(u) : await processFlipkart(u);
+    if (u.channel === CHANNELS.AMAZON || u.channel === CHANNELS.FLIPKART || u.channel === CHANNELS.MYNTRA) {
+      note = u.channel === CHANNELS.AMAZON ? await processAmazon(u) : u.channel === CHANNELS.FLIPKART ? await processFlipkart(u) : await processMyntra(u);
       await repo().update({ id: u.id }, { status, note: note?.slice(0, 500) ?? null, finishedAt: new Date() });
       bumpReview();
       return;

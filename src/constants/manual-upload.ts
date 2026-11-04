@@ -45,6 +45,9 @@ export const MANUAL_UPLOAD = {
   FLIPKART_NEEDS: 'Flipkart consignment CSV (Consignment_Details_<id>_<date>.csv)',
   /** Its note when the robot's last Bulk Consignment File did not list it: the reviewer picks the location. */
   FLIPKART_NO_HEADER: 'not in the last Bulk Consignment File: warehouse to pick in review',
+  /** Myntra STRs (2026-11-03): an STR's CSV from the Myntra partner portal, one file = one STR = one PO (no OCR). */
+  MYNTRA_NEEDS: 'Myntra STR CSV (<STR>-summary.csv from the partner portal, e.g. STNCPWEBP271026-01-summary.csv)',
+  MYNTRA_NOTE: (destination: string, location: string | null) => `Myntra STR: ${destination || '?'} -> ${location ?? 'location to pick in review'}`,
   /** The queue list: newest first, at most this many. */
   LIST_LIMIT: 200,
   /** messageId of a manual upload's folder (links it to its po_uploads rows). */

@@ -1,9 +1,13 @@
 import {
   CHANNEL_LOCATION_MATCH,
   CHANNEL_TOLERANCES, poTotalAllowed,
+  EXPECTED_UNIWARE_CHANNEL,
+  OUR_PRICE_ONLY_CHANNELS,
   PRICE_CHOICE,
   PriceChoice,
   PUNCH_S,
+  SKU_ANY_CODE,
+  SKU_EAN_TIEBREAK,
   ChannelName,
   IST_OFFSET_MS,
   ISSUE_FIELDS,
@@ -18,7 +22,9 @@ import {
   ValidationStatus,
 } from '../../constants';
 import { DetailsChannel, MasterSku } from '../../entities';
+import { pincodeFrom } from '../po-processing/common/parse';
 import { Num, ProcessedLine, ProcessedPo } from '../po-processing/common/processed-po';
+import { pickOneLocation } from './location-tiebreak';
 import { ChannelMasterData, matchKey } from './master-data';
 
 /*
@@ -149,12 +155,22 @@ const findLocation =(po: ProcessedPo, master: ChannelMasterData, issues: Validat
     rows = master.locations.filter((l) => matchKey(l.consigneePinCode) === pin);
     matchedBy = 'pincode';
     by = `${by ? `${by} or ` : ''}pincode ${po.delivery_pincode}`;
+    // Every channel (user 2026-11-02): a location that keeps its pincode only in final_shipping_address (consignee_pin_code
+    // empty) is matched by the address's last 6 digits; a filled consignee_pin_code always wins (never its address).
+    const noPin = master.locations.filter((l) => !matchKey(l.consigneePinCode));
+    if (noPin.length) {
+      if (!rows.length) rows = noPin.filter((l) => pincodeFrom(l.finalShippingAddress ?? '') === pin);
+      by += VALIDATION_TEXT.LOCATION_BY_ADDRESS;
+    }
   }
 
   const issue = (detail: string) =>
     issues.push(validationIssue(ISSUE_TYPE.LOCATION_NOT_MAPPED, { field: ISSUE_FIELDS.DELIVERY_LOCATION, actual: po.delivery_facility_code || po.delivery_pincode }, detail));
   if (!picked && !code && !pin) return issue(VALIDATION_TEXT.NO_LOCATION_KEY), null;
   if (!rows.length) return issue(VALIDATION_TEXT.LOCATION_NONE(by)), null;
+  // Several match (a shared pincode): the PO's facility name, GSTIN or address may name exactly one (location-tiebreak.ts).
+  const one = !picked && rows.length > 1 ? pickOneLocation(rows, po) : null;
+  if (one) rows = [one.row];
   if (rows.length > 1) {
     const codes = rows.map((r) => r.channelLocationCode ?? r.uniwareCustomerCode ?? r.id).join(', ');
     return issue(VALIDATION_TEXT.LOCATION_MANY(by, rows.length, codes)), null;
@@ -227,7 +243,23 @@ const validateLine = (
   // A reviewer's mapping replaces the lookup: the channel's row for that pep_code (one is enough, they share the rate).
   const byPep = pickedPep ? (master.skusByPep.get(matchKey(pickedPep)) ?? []) : [];
   const chosen = byPep.find((r) => r.rateAfterMargin !== null) ?? byPep[0];
-  const candidates = pickedPep ? (chosen ? [chosen] : []) : (master.skusByCode.get(matchKey(line.channel_sku_code)) ?? []);
+  const allByCode = master.skusByCode.get(matchKey(line.channel_sku_code)) ?? [];
+  // Pop Tech (SKU_EAN_TIEBREAK): a code on rows of several of our codes -> only the rows whose ean_code is the line's EAN
+  const byEanToo = SKU_EAN_TIEBREAK.has(channel) && line.ean && new Set(allByCode.map((r) => matchKey(r.pepCode))).size > 1
+    ? allByCode.filter((r) => matchKey(r.eanCode) === matchKey(line.ean)) : [];
+  const eanRow = new Set(byEanToo.map((r) => matchKey(r.pepCode))).size === 1 ? (byEanToo.find((r) => r.rateAfterMargin !== null) ?? byEanToo[0]) : undefined;
+  const byCode = eanRow ? [eanRow] : allByCode;
+  // Slikk's "SKU Id" is a channel code, our pep code or an EAN (SKU_ANY_CODE): then the channel's rows by pep code
+  // (one is enough, they share the rate), else by ean_code (rows of different pep codes = ambiguous, as for a code).
+  const anyCode = !byCode.length && SKU_ANY_CODE.has(channel);
+  const asPep = anyCode ? (master.skusByPep.get(matchKey(line.channel_sku_code)) ?? []) : [];
+  const asEan = anyCode && !asPep.length ? (master.skusByEan.get(matchKey(line.channel_sku_code)) ?? []) : [];
+  const oneRow = (rows: typeof byCode) => {
+    if (new Set(rows.map((r) => matchKey(r.pepCode))).size > 1) return rows;
+    const r = rows.find((x) => x.rateAfterMargin !== null) ?? rows[0];
+    return r ? [r] : [];
+  };
+  const candidates = pickedPep ? (chosen ? [chosen] : []) : byCode.length ? byCode : asPep.length ? oneRow(asPep) : oneRow(asEan);
   const skuIssue = (detail: string) =>
     add(validationIssue(ISSUE_TYPE.SKU_NOT_MAPPED, { field: ISSUE_FIELDS.CHANNEL_SKU_CODE, lineNo, actual: line.channel_sku_code }, where, detail));
   if (pickedPep && !candidates.length) skuIssue(VALIDATION_TEXT.SKU_NONE(pickedPep));
@@ -261,7 +293,9 @@ const validateLine = (
       poUnit = unitCost * (1 + gst / 100);
       poValue = lineTotal !== null ? lineTotal * (1 + gst / 100) : chargedQty === null ? null : chargedQty * poUnit;
     }
-  } else add(validationIssue(ISSUE_TYPE.OTHER, { field: ISSUE_FIELDS.UNIT_PRICE, lineNo }, `${where}: ${VALIDATION_TEXT.PRICE_MISSING}`));
+  } else if (!OUR_PRICE_ONLY_CHANNELS.includes(channel)) {
+    add(validationIssue(ISSUE_TYPE.OTHER, { field: ISSUE_FIELDS.UNIT_PRICE, lineNo }, `${where}: ${VALIDATION_TEXT.PRICE_MISSING}`));
+  }
   out.poUnitPrice = orEmpty(poUnit);
   out.poLineValue = orEmpty(poValue);
 
@@ -342,6 +376,11 @@ export const validatePo = async (
     issues.push(validationIssue(ISSUE_TYPE.PO_EXPIRED, { field: ISSUE_FIELDS.EXPIRY_DATE, actual: po.expiry_date }, po.expiry_date, today));
   }
   const location = findLocation(po, master, issues, overrides.locationId);
+  // The location's Uniware channel differs from the channel's own location sheet (Myntra, 2026-11-03): review (OTHER)
+  const expectedUniware = location ? EXPECTED_UNIWARE_CHANNEL[channel]?.[location.locationCode] : undefined;
+  if (location && expectedUniware && location.uniwareChannel !== expectedUniware) {
+    issues.push(validationIssue(ISSUE_TYPE.OTHER, { field: ISSUE_FIELDS.CHANNEL }, VALIDATION_TEXT.UNIWARE_CHANNEL_DIFFERS(location.locationCode, location.uniwareChannel, expectedUniware)));
+  }
 
   // Line checks.
   const lines = po.line_items.map((l) => {

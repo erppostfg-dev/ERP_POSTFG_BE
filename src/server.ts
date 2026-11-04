@@ -27,6 +27,7 @@ import { logError } from './utils/classify-error';
 import { runJob } from './utils/log-call';
 import { log, logEvent } from './utils/logger';
 import { logCrashes, startProcessMonitor } from './utils/process-monitor';
+import { startStrRetry } from './modules/channel-api/myntra/str.service';
 
 const start = async (): Promise<void> => {
   logCrashes();
@@ -105,6 +106,8 @@ const start = async (): Promise<void> => {
   // The Flipkart consignments robot's schedule (Channel Pulls, 2026-10-30): a due run starts by itself. Not on a laptop
   // (laptop = code only; the dev EC2 owns the robots), not without a DB.
   const robotSchedule = AppDataSource.isInitialized && !env.laptopMode ? startRobotSchedule() : undefined;
+  // Myntra STRs waiting (a failed run, a restart) are tried again by themselves (2026-11-03); same rule.
+  const strRetry = AppDataSource.isInitialized && !env.laptopMode ? startStrRetry() : undefined;
 
   // D2C internal transfers (2026-11-03, phase 6): the Uniware SO status sync every d2c:settings.syncMinutes (read-only on
   // Uniware; one server at a time through a MySQL lock). Not on a laptop, not without a DB, not with D2C_SYNC_ENABLED=false.
@@ -175,6 +178,7 @@ const start = async (): Promise<void> => {
     channelApis?.stop();
     robotSchedule?.stop();
     d2cSync?.stop();
+    strRetry?.stop();
     await worker?.stop();
     if (recheckTimer) clearInterval(recheckTimer);
     if (releaseTimer) clearInterval(releaseTimer);

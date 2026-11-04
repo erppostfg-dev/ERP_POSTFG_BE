@@ -87,6 +87,9 @@ export const readS3Json = async <T>(s3Url: string): Promise<T | undefined> => {
   return text === undefined ? undefined : (JSON.parse(text) as T);
 };
 
+/** A text file from S3 by its s3:// URL, or undefined when it isn't there (Myntra STR CSVs, 2026-11-03). */
+export const readS3Text = async (s3Url: string): Promise<string | undefined> => getText(keyOfS3Url(s3Url));
+
 /** The key of an s3://<our bucket>/<key> URL (S3 must be on, and the bucket ours). */
 const keyOfS3Url = (s3Url: string): string => {
   if (!env.s3.enabled) throw appError(ERROR_CODES.S3_DISABLED);

@@ -9,6 +9,7 @@ import {
   ISSUE_FIELDS,
   ISSUE_STATUS,
   ISSUE_TYPE,
+  OUR_PRICE_ONLY_CHANNELS,
   PO_ACTIVE_STATUS,
   PO_VERIFY,
   PO_VERIFY_ACTION,
@@ -158,8 +159,14 @@ const stateOf = (u: PoUpload, verified: PoVerification | undefined, required: bo
     : u.uniwareUploadedAt ? PO_VERIFY_STATE.NOT_NEEDED
       : required ? PO_VERIFY_STATE.TO_VERIFY : PO_VERIFY_STATE.NOT_REQUIRED;
 
-export const verifyStates = async (ids: string[]): Promise<{ required: boolean; items: VerifyStateItem[] }> => {
-  const uploads = ids.length ? await AppDataSource.getRepository(PoUpload).findBy({ id: In(ids) }) : [];
+export const verifyStates = async (ids: string[]): Promise<{ required: boolean; items: VerifyStateItem[] }> =>
+  verifyStatesOf(ids.length ? await AppDataSource.getRepository(PoUpload).findBy({ id: In(ids) }) : []);
+
+/**
+ * The states of uploads already read (2026-11-03: the Processed list carries them itself, so the screen no longer asks
+ * GET /po-verify?uploadIds=<every PO>, whose address grew with every PO). Two small reads: verified rows + who.
+ */
+export const verifyStatesOf = async (uploads: PoUpload[]): Promise<{ required: boolean; items: VerifyStateItem[] }> => {
   const verified = await verifiedRows(uploads);
   const isOn = await switches();
   const userIds = [...new Set([...verified.values()].map((v) => v.doneBy))];
@@ -195,7 +202,7 @@ export interface VerifyLine {
   rate: number;
   value: number;
   /** What the PO says (processed.json); null when the PO has no such line. */
-  po: { description: string; qty: number; rate: number | null; mrp: number | null; channelSkuCode: string } | null;
+  po: { description: string; qty: number; rate: number | null; /** A PO priced before GST: its unit cost as read (rate = with GST). */ rateBeforeGst: number | null; /** Information only (Myntra STRs): the channel's own price + GST %, not used. */ channelPrice?: number | null; channelGst?: number | null; mrp: number | null; channelSkuCode: string } | null;
   qtyDiffers: boolean;
   rateDiffers: boolean;
 }
@@ -220,7 +227,20 @@ export interface VerifyDetail {
     uniwareChannel: string | null;
   };
   lines: VerifyLine[];
-  totals: { po: { lines: number; units: number; value: number }; saved: { lines: number; units: number; value: number } };
+  /**
+   * po.value = the PO's own total as processed.json has it; valueBasis says whether that is with GST or before GST (Purplle
+   * sends unit costs before GST, 2026-11-03); valueWithGst = the PO with GST worked out as the total check does (the PO's
+   * GST, else our master's), the number to compare with saved.value. null when it cannot be worked out.
+   */
+  totals: {
+    po: { lines: number; units: number; value: number; valueBasis: 'with_gst' | 'before_gst'; valueWithGst: number | null };
+    /**
+     * A channel whose own price is NOT used (Myntra STRs, OUR_PRICE_ONLY_CHANNELS; 2026-11-03): what its PO says (with
+     * GST) next to ours, for information; null for the others.
+     */
+    channelPrice: { value: number | null; note: string } | null;
+    saved: { lines: number; units: number; value: number };
+  };
   /** processed.json as the OCR / API made it: the panel shows it next to the PO and finds each value on the PO. */
   processed: ProcessedPo;
 }
@@ -265,6 +285,9 @@ const lastAction = async (u: PoUpload) => {
   return r ? { action: r.action, by: r.user?.name ?? r.user?.email ?? null, at: r.doneAt.toISOString(), remark: r.remark } : null;
 };
 
+/** A number from processed.json's unmapped text, else null. */
+const num = (v: unknown): number | null => (v === undefined || v === null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+
 export const verifyDetail = async (uploadId: string): Promise<VerifyDetail> => {
   const u = await AppDataSource.getRepository(PoUpload).findOneBy({ id: uploadId });
   if (!u) throw appError(ERROR_CODES.UPLOAD_NOT_FOUND, uploadId);
@@ -277,6 +300,10 @@ export const verifyDetail = async (uploadId: string): Promise<VerifyDetail> => {
   const saved = await AppDataSource.getRepository(DetailsPurchaseOrder).findBy({ shipmentOrderId: u.poUid });
   const master = await AppDataSource.getRepository(MasterPurchaseOrder).findOneBy({ uid: u.poUid });
   const verified = (await verifiedRows([u])).get(String(u.id));
+  // The PO with GST as the checks see it (a PO priced before GST gets the GST added here, line by line)
+  const checked = await validatePo(po, await new MasterDataReader(AppDataSource).forChannel(po.channel_name as ChannelName));
+  const withGst = new Map(checked.lines.map((l) => [String(l.lineNo), l.poUnitPrice]));
+  const beforeGst = /before GST/i.test(String(po.field_sources?.po_value ?? '')) || (po.line_items.length > 0 && po.line_items.every((l) => l.landing_rate === '' && l.unit_cost !== ''));
 
   // CSV rows follow the PO's lines in order (csvOf); by channel SKU when the counts differ.
   const poLines = po.line_items;
@@ -289,7 +316,9 @@ export const verifyDetail = async (uploadId: string): Promise<VerifyDetail> => {
     const p = j >= 0 ? poLines[j] : undefined;
     const qty = n(r[col.QTY]);
     const rate = n(r[col.PRICE]);
-    const poRate = p && p.landing_rate !== '' ? n(p.landing_rate) : null;
+    // the PO's unit price with GST: as read, or (a PO priced before GST) its unit cost + GST as the checks work it out
+    const gstRate = p ? withGst.get(String(p.line_no)) : undefined;
+    const poRate = p && p.landing_rate !== '' ? n(p.landing_rate) : typeof gstRate === 'number' ? gstRate : null;
     const name = saved.find((d) => d.skuCode === r[col.SKU])?.skuName ?? null;
     return {
       lineNo: i + 1,
@@ -299,7 +328,7 @@ export const verifyDetail = async (uploadId: string): Promise<VerifyDetail> => {
       qty,
       rate,
       value: Math.round(qty * rate * 100) / 100,
-      po: p ? { description: p.description, qty: n(p.qty), rate: poRate, mrp: p.channel_mrp !== '' ? n(p.channel_mrp) : null, channelSkuCode: p.channel_sku_code } : null,
+      po: p ? { channelPrice: num(p.unmapped?.myntra_landed_price), channelGst: num(p.unmapped?.myntra_gst), description: p.description, qty: n(p.qty), rate: poRate, rateBeforeGst: p.landing_rate === '' && p.unit_cost !== '' ? n(p.unit_cost) : null, mrp: p.channel_mrp !== '' ? n(p.channel_mrp) : null, channelSkuCode: p.channel_sku_code } : null,
       qtyDiffers: !p || n(p.qty) !== qty,
       rateDiffers: poRate !== null && Math.abs(poRate - rate) > PO_VERIFY.RATE_TOLERANCE,
     };
@@ -329,8 +358,15 @@ export const verifyDetail = async (uploadId: string): Promise<VerifyDetail> => {
     },
     lines,
     totals: {
-      po: { lines: poLines.length, units: poLines.reduce((s, l) => s + n(l.qty), 0), value: n(po.po_value) },
+      po: {
+        lines: poLines.length, units: poLines.reduce((s, l) => s + n(l.qty), 0), value: n(po.po_value),
+        valueBasis: beforeGst ? 'before_gst' : 'with_gst',
+        valueWithGst: beforeGst ? (typeof checked.totals.poValue === 'number' ? checked.totals.poValue : null) : n(po.po_value),
+      },
       saved: { lines: lines.length, units: lines.reduce((s, l) => s + l.qty, 0), value: Math.round(lines.reduce((s, l) => s + l.value, 0) * 100) / 100 },
+      channelPrice: OUR_PRICE_ONLY_CHANNELS.includes(po.channel_name as ChannelName)
+        ? { value: num(po.unmapped?.myntra_landed_total), note: String(po.unmapped?.price_basis ?? '') }
+        : null,
     },
     processed: po,
   };
