@@ -9,6 +9,7 @@ import { AppDataSource } from '../../config/data-source';
 import { env } from '../../config/env';
 import {
   blockingMissing,
+  CHANNEL_PULLS,
   COMBO_CHECK,
   ERROR_CODES,
   errorMessage,
@@ -510,7 +511,11 @@ export const reportsOfDays = async (dates: string[]): Promise<Map<string, { id: 
  */
 let workersBusy = 0;
 const workerWaiters: (() => void)[] = [];
-const withWorkerSlot = async <T>(onLog: (line: string) => void, work: () => Promise<T>, signal?: AbortSignal): Promise<T> => {
+/** When the last worker job ended (2026-11-04, load: robots spaced out, ROBOT_GAP). */
+let lastWorkerEnd = 0;
+/** How long a job asking for `gapMs` still has to wait after the last job ended. */
+export const robotGapWaitMs = (gapMs: number, now = Date.now()): number => Math.max(0, lastWorkerEnd + gapMs - now);
+const withWorkerSlot = async <T>(onLog: (line: string) => void, work: () => Promise<T>, signal?: AbortSignal, gapMs = 0): Promise<T> => {
   signal?.throwIfAborted();
   if (workersBusy >= env.intransit.maxWorkers) {
     onLog('waiting for another in-transit job to finish (one at a time on this server) ...');
@@ -530,8 +535,16 @@ const withWorkerSlot = async <T>(onLog: (line: string) => void, work: () => Prom
     });
   } else workersBusy++;
   try {
+    // a browser robot right after another job: a short pause first (the server catches its breath; no two browsers
+    // back to back). The place is kept meanwhile, so nothing else slips in.
+    const wait = robotGapWaitMs(gapMs);
+    if (wait > 0) {
+      onLog(`spacing robots: starting in ${Math.ceil(wait / 1000)} s (another job just ended)`);
+      await new Promise((resolve) => setTimeout(resolve, wait));
+    }
     return await work();
   } finally {
+    lastWorkerEnd = Date.now();
     // hand the place straight to the next waiter, else free it
     const next = workerWaiters.shift();
     if (next) next();
@@ -540,8 +553,8 @@ const withWorkerSlot = async <T>(onLog: (line: string) => void, work: () => Prom
 };
 
 /** Fork run-worker with the job (when a place is free); resolves with its result (or rejects with its error). */
-const runInWorker = (job: WorkerJob, timeoutMs: number, onLog: (line: string) => void, signal?: AbortSignal): Promise<unknown> =>
-  withWorkerSlot(onLog, () => forkWorker(job, timeoutMs, onLog, signal), signal);
+const runInWorker = (job: WorkerJob, timeoutMs: number, onLog: (line: string) => void, signal?: AbortSignal, gapMs = 0): Promise<unknown> =>
+  withWorkerSlot(onLog, () => forkWorker(job, timeoutMs, onLog, signal), signal, gapMs);
 
 /** A stopped worker gets this long to close what it opened (browsers, Xvfb) before it is killed. */
 const STOP_GRACE_MS = 10_000;
@@ -608,7 +621,8 @@ export const runSellerHubJob = async <T>(name: string, makeJob: (cacheDir: strin
   const dir = stored ? path.join(DIR(), INTRANSIT_FOLDERS.CACHE, 'jobs', `${name}-${Date.now()}`) : cacheDir();
   const loaded = stored ? await cachesIn(dir) : null;
   try {
-    return (await runInWorker(makeJob(dir), timeoutMs, onLog)) as T;
+    // our browser robots (Flipkart consignments, Myntra STRs) keep ROBOT_GAP after the last worker job (2026-11-04)
+    return (await runInWorker(makeJob(dir), timeoutMs, onLog, undefined, robotGapMs())) as T;
   } finally {
     if (loaded) {
       await cachesOut(dir, loaded).catch((err: unknown) => onLog(`(the saved login was not stored back: ${err instanceof Error ? err.message : String(err)})`));
@@ -616,6 +630,12 @@ export const runSellerHubJob = async <T>(name: string, makeJob: (cacheDir: strin
     }
   }
 };
+/** The gap between browser robots: ROBOT_GAP_SECONDS, else CHANNEL_PULLS.ROBOT_GAP_MS (2 min). */
+const robotGapMs = (): number => {
+  const s = Number(process.env.ROBOT_GAP_SECONDS);
+  return Number.isFinite(s) && process.env.ROBOT_GAP_SECONDS !== undefined && process.env.ROBOT_GAP_SECONDS !== '' ? Math.max(0, s) * 1000 : CHANNEL_PULLS.ROBOT_GAP_MS;
+};
+
 /** A connector run's log lines, forwarded to the report run that started it. */
 const forwards = new Map<string, (line: string) => void>();
 

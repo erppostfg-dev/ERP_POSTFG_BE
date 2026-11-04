@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import { env } from '../../src/config/env';
 import { amazonConnector } from '../../src/modules/channel-api/amazon/amazon.connector';
 import { pollMinutesOf } from '../../src/modules/channel-api/poll-schedule';
+import { setFlipkartAfterStored } from '../../src/modules/channel-api/flipkart/consignments.service';
 import { api, loginAs, type TestLogin } from '../helpers/auth';
 import { closeDb, count, resetDb, rows } from '../helpers/db';
 import { clearS3 } from '../helpers/fake-s3';
@@ -51,6 +52,8 @@ beforeEach(async () => {
   robotJob.calls = 0;
   robotJob.error = null;
   robotJob.result = fkRobot([{ id: '205149516', row: 'ID: 205149516', csv: fkCsv([{ qty: 10, cost: 74.85 }]) }], fkBulk([{ id: '205149516', qty: 10 }]));
+  // the process run right after a robot run that stored something is tested in test/flows/robot-load.test.ts
+  setFlipkartAfterStored(() => undefined);
   // the robot's Seller Hub login is "set" (a test value; the browser never runs here)
   Object.assign(seller, { user: 'test-seller', password: 'test-password' });
 });
