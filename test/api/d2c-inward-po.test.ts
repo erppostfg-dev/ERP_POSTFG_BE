@@ -3,7 +3,7 @@ import { setUniwareClient } from '../../src/modules/d2c-transfers/uniware-transf
 import type { UniwareApi } from '../../src/modules/intransit/sources/uniware';
 import { api, loginAs, type TestLogin } from '../helpers/auth';
 import { closeDb, insert, resetDb, rows } from '../helpers/db';
-import { seedMasters, type Masters } from '../helpers/fixtures';
+import { seedMasters, seedTransferChannel, type Masters } from '../helpers/fixtures';
 import { covers } from '../helpers/routes';
 
 /*
@@ -50,7 +50,7 @@ beforeEach(async () => {
   const receivingId = await insert('master_facilities', { code: 'TEST_RECV', name: 'Receiver', is_active: 1, source: 'manual', uniware_export: 0, allow_internal_transfer: 1 });
   // gate closed: sender AND receiving facility must both be test facilities
   await rows("UPDATE app_state SET value = JSON_SET(value, '$.testFacilities', JSON_ARRAY('TEST_FACILITY', 'TEST_RECV')) WHERE state_key = 'd2c:settings'");
-  const [ch] = await rows<{ id: number }>("SELECT id FROM master_channels WHERE display_name = 'McaffeineB2C'");
+  const ch = { id: await seedTransferChannel() };
   locationId = await insert('details_channels', {
     channel_id: ch.id, channel_name: 'McaffeineB2C', channel_location_code: 'TestLoc', transfer_facility_id: receivingId, transfer_po_prefix: 'TEST_PFX',
     channel_category: 'D2C', is_active: 1, created_at: new Date(), updated_at: new Date(),
