@@ -20,6 +20,12 @@ const FACILITY_LOCATION_OVERRIDE = new Map([
   // the Kolkata warehouse keeps its code as Final Location (reference report); listed so it is not "no Final Location"
   ['kol_warehouse', 'KOL_WAREHOUSE'],
 ]);
+/**
+ * D2C hubs and stock in transit to them keep their own code as Final Location (mCaff_Gurgaon3; Gurgaon3 for a transfer
+ * to it): the WH table (wh-summary.ts) sorts D2C stock by that code, so a city from the Location Master ("Website"
+ * rows) must not replace it, and it is never "no Final Location" (user, 2026-11-04).
+ */
+const OWN_CODE_CHANNELS = new Set(['d2c', 'mcaffeineb2c', 'hyp_website']);
 /** Warehouses reported under their own channel (name and type) instead of "MWH". */
 const FC_CHANNEL_OVERRIDE = new Map([
   ['hyp_b2b_mum2', 'MUMMWH'], ['mum_warehouse2', 'MUMMWH'], ['mumbai', 'MUMMWH'],
@@ -182,7 +188,8 @@ const locationResolver = (lm: Frame): Resolver => {
   return (channel, fcCol) => {
     const kCh = lowerAll(stripped(channel));
     const kFc = lowerAll(stripped(fcCol));
-    const res = kFc.map((f, i) => FACILITY_LOCATION_OVERRIDE.get(f) ?? byPair.get(keyOf([kCh[i], f])) ?? byFc.get(f) ?? null);
+    const res = kFc.map((f, i) => (OWN_CODE_CHANNELS.has(kCh[i]) && f !== '' ? fcCol[i] : null)
+      ?? FACILITY_LOCATION_OVERRIDE.get(f) ?? byPair.get(keyOf([kCh[i], f])) ?? byFc.get(f) ?? null);
     return [fillna(res, fcCol), res.map((r) => r === null)];
   };
 };
