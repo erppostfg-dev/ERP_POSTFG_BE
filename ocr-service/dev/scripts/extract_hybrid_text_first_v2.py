@@ -700,8 +700,20 @@ def call_model_json(bedrock, content_blocks: list, label: str) -> dict:
     }
 
 
-def call_model_for_line_items(bedrock, tables_text: str, source: str, label: str = "Line items") -> dict:
+def line_notes_block(line_notes: str = None) -> str:
+    """Per-channel line-item notes (channels.json "line_notes", POST_FG 2026-11-04): fixed column names by MEANING."""
+    if not line_notes:
+        return ""
+    return ("CHANNEL-SPECIFIC NOTES for this document type. They OVERRIDE the rules above where they differ "
+            "(including 'copy the header row exactly'):\n" + line_notes.strip() + "\n\n")
+
+
+def call_model_for_line_items(bedrock, tables_text: str, source: str, label: str = "Line items",
+                              line_notes: str = None) -> dict:
     prompt = LINE_ITEMS_PROMPT_TEMPLATE.format(source_name=TABLE_SOURCE_NAMES[source], tables_text=tables_text)
+    if line_notes:
+        marker = "--- EVERY TABLE DETECTED ---"
+        prompt = prompt.replace(marker, line_notes_block(line_notes) + marker, 1)
     result = call_model_json(bedrock, [{"text": prompt}], label)
     parsed = result["parsed"]
     return {
@@ -713,12 +725,13 @@ def call_model_for_line_items(bedrock, tables_text: str, source: str, label: str
     }
 
 
-def run_line_items_stage(bedrock, all_tables: list, source: str) -> dict:
-    """Send all detected tables to the model in one call."""
+def run_line_items_stage(bedrock, all_tables: list, source: str, line_notes: str = None) -> dict:
+    """Send all detected tables to the model in one call (with the channel's line_notes, if any)."""
     tables_text = all_tables_to_text(all_tables)
     print(f"Calling {BEDROCK_MODEL_ID} for line items ({source} tables, "
-          f"{len(tables_text)} chars)")
-    return call_model_for_line_items(bedrock, tables_text, source, label=f"Line items | {source} tables")
+          f"{len(tables_text)} chars{', channel line notes' if line_notes else ''})")
+    return call_model_for_line_items(bedrock, tables_text, source, label=f"Line items | {source} tables",
+                                     line_notes=line_notes)
 
 
 def align_row_confidences(original_tables: list, final_columns: list, final_rows: list) -> list:
@@ -1576,10 +1589,11 @@ def process_stacked(pdf_path: str, pdf_bytes: bytes, text_info: dict, clients: d
 
 def process(pdf_path: str, clients: dict = None, header_notes: str = None,
             split_value_rate_cells_enabled: bool = False, unlabeled_total_row: bool = False,
-            stacked_table: dict = None) -> dict:
+            stacked_table: dict = None, line_notes: str = None) -> dict:
     """
     Run the full pipeline on one PO and return the extracted data as a dict. Raises PipelineError.
-    header_notes are optional per-channel notes added to the header prompt.
+    header_notes are optional per-channel notes added to the header prompt; line_notes the same for
+    the line-items prompt (fixed column names by meaning, POST_FG 2026-11-04).
     split_value_rate_cells_enabled and unlabeled_total_row are per-channel layout settings,
     see split_value_rate_cells() and find_table_totals(). stacked_table switches the line
     items to read_stacked_table() (no model call), see process_stacked().
@@ -1645,7 +1659,7 @@ def process(pdf_path: str, clients: dict = None, header_notes: str = None,
         print("  [Textract] not used, $0.0000\n")
 
     try:
-        line_result = run_line_items_stage(clients["bedrock"], all_tables, table_source)
+        line_result = run_line_items_stage(clients["bedrock"], all_tables, table_source, line_notes)
     except Exception as e:
         pool.shutdown(wait=False, cancel_futures=True)
         raise PipelineError(f"calling Bedrock (line items): {e}") from e

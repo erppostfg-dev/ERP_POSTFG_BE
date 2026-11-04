@@ -124,7 +124,8 @@ def route(channel: str, files: list) -> dict:
         result = pdf_only_pipeline.process(pdf, header_notes=cfg.get("header_notes"),
                                            split_value_rate_cells_enabled=bool(cfg.get("split_value_rate_cells")),
                                            unlabeled_total_row=bool(cfg.get("unlabeled_total_row")),
-                                           stacked_table=cfg.get("stacked_table"))
+                                           stacked_table=cfg.get("stacked_table"),
+                                           line_notes=cfg.get("line_notes"))
     else:
         result = sheet_only_pipeline.process(sheet)
     return {"channel": channel, "input": received, "pdf": pdf, "sheet": sheet, **result}
