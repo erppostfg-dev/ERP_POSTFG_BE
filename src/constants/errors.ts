@@ -127,6 +127,7 @@ export const ERRORS = {
   SPAPI_NOT_CONFIGURED: define(503, () => 'Amazon SP-API keys are not set on the server (SPAPI_* in .env)'),
   CONNECTOR_UNKNOWN: define(400, (key: string, known: string) => `No channel API connector "${key}" (known: ${known})`),
   // --- Users & Roles admin (2026-10-15) ---
+  DEVELOPER_ONLY: define(403, () => 'Only developers see the server page'),
   NOT_A_USER_ADMIN: define(403, (roles: string) => `Only ${roles} can add or change users and roles`),
   MASTER_ADD_NOT_ALLOWED: define(403, (roles: string) => `Only ${roles} can add to the masters`),
   MASTER_HISTORY_BAD_REQUEST: define(400, (what: string) => `Masters history: ${what}`),

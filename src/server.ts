@@ -28,6 +28,7 @@ import { runJob } from './utils/log-call';
 import { log, logEvent } from './utils/logger';
 import { logCrashes, startProcessMonitor } from './utils/process-monitor';
 import { startStrRetry } from './modules/channel-api/myntra/str.service';
+import { startDiskCheck } from './modules/admin/server-health.service';
 
 const start = async (): Promise<void> => {
   logCrashes();
@@ -106,6 +107,8 @@ const start = async (): Promise<void> => {
   // The Flipkart consignments robot's schedule (Channel Pulls, 2026-10-30): a due run starts by itself. Not on a laptop
   // (laptop = code only; the dev EC2 owns the robots), not without a DB.
   const robotSchedule = AppDataSource.isInitialized && !env.laptopMode ? startRobotSchedule() : undefined;
+  // How full the disk is, every hour (2026-11-04; warning / error in the log for CloudWatch). Not on a laptop.
+  const diskCheck = !env.laptopMode ? startDiskCheck() : undefined;
   // Myntra STRs waiting (a failed run, a restart) are tried again by themselves (2026-11-03); same rule.
   const strRetry = AppDataSource.isInitialized && !env.laptopMode ? startStrRetry() : undefined;
 
@@ -179,6 +182,7 @@ const start = async (): Promise<void> => {
     robotSchedule?.stop();
     d2cSync?.stop();
     strRetry?.stop();
+    diskCheck?.stop();
     await worker?.stop();
     if (recheckTimer) clearInterval(recheckTimer);
     if (releaseTimer) clearInterval(releaseTimer);

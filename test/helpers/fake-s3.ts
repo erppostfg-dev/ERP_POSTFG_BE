@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { Readable } from 'stream';
 import { s3Client } from '../../src/config/s3';
 
@@ -33,7 +34,7 @@ const handle = async (name: string, input: Record<string, unknown>): Promise<unk
   switch (name) {
     case 'PutObjectCommand': {
       const body = await toBuffer(input.Body);
-      store.set(key, { body, contentType: input.ContentType as string | undefined, etag: `"${body.length.toString(16)}-${store.size}"`, at: new Date() });
+      store.set(key, { body, contentType: input.ContentType as string | undefined, etag: `"${crypto.createHash('md5').update(body).digest('hex')}"`, at: new Date() });
       return { ETag: store.get(key)!.etag, $metadata: { httpStatusCode: 200 } };
     }
     case 'GetObjectCommand': {

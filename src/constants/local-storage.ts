@@ -9,6 +9,20 @@ export const LOCAL_CLEANUP = {
   /** How often the server runs it (when LOCAL_CLEANUP_ENABLED=true), and the first run after start. */
   EVERY_HOURS: 24,
   FIRST_DELAY_MS: 5 * 60_000,
+  /**
+   * Disk (2026-11-04, user): a PO that is failed (or dismissed), in review or waiting for approval this many days loses its
+   * LOCAL copy too (S3 keeps everything; review / approval read S3, Try again copies it back): the disk never fills with
+   * POs that never finish.
+   */
+  STALE_DAYS: 7,
+  STALE_STATUSES: ['failed', 'needs_review', 'pending_approval'] as readonly string[],
+} as const;
+
+/** The server disk check (2026-11-04): every hour; a warning / an error in the log at these % used. */
+export const DISK_CHECK = {
+  EVERY_MS: 60 * 60_000,
+  WARN_PCT: 80,
+  ERROR_PCT: 90,
 } as const;
 
 /** intake_emails.kind */
@@ -24,6 +38,9 @@ export const APP_STATE_KEY = {
   GMAIL: 'gmail',
   /** The Flipkart consignments robot's last run and schedule (Channel Pulls, 2026-10-30). */
   FLIPKART_ROBOT: 'channel-pull:flipkart',
+  /** The local cleanup's last run and the last disk check (Admin > Server, 2026-11-04). */
+  LOCAL_CLEANUP_LAST: 'server:local-cleanup',
+  DISK_LAST: 'server:disk',
   /** The Myntra STR robot's last run (2026-11-03). */
   MYNTRA_STR_ROBOT: 'channel-pull:myntra-str',
   /** Its schedule: { everyHours, updatedBy, updatedAt } (Channel Pulls). */

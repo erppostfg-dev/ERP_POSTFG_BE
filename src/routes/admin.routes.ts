@@ -5,6 +5,7 @@ import {
   errorMessage,
   PAGE,
   USER_ADMIN_ROLES,
+  ROLES,
   USER_BODY,
   USER_ID_PATTERN,
   USER_NAME_MAX,
@@ -18,6 +19,7 @@ import { Grants, listRoles, rolePages, updateRole } from '../modules/admin/roles
 import { createUser, listUsers, sendWelcome, updateUser, UserInput, userOptions } from '../modules/admin/users.service';
 import { appError } from '../utils/AppError';
 import { Problem } from './po-review.routes';
+import { runCleanupNow, serverView } from '../modules/admin/server-health.service';
 
 /*
  * Users & Roles (2026-10-15, user). Admin / developer only (USER_ADMIN_ROLES) and editor on /admin.
@@ -80,6 +82,24 @@ const userIdOf = (req: Request) => {
 const wrap = (fn: (req: Request, res: Response) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => {
   fn(req, res).then((data) => res.json({ data })).catch(next);
 };
+
+// ---- Server: disk + local cleanup (2026-11-04; developers only) ----
+
+const requireDeveloper = (req: Request, _res: Response, next: NextFunction) =>
+  next(req.auth?.roles.includes(ROLES.DEVELOPER) ? undefined : appError(ERROR_CODES.DEVELOPER_ONLY));
+const devGuard = [requireAuth, requirePage(PAGE.ADMIN, ACCESS_LEVEL.EDITOR), requireDeveloper];
+
+/** GET /admin/server: disk used, the cleanup's switch / rules / last run. */
+router.get('/server', ...devGuard, wrap(() => serverView()));
+
+/** POST /admin/server/cleanup { apply?: boolean }: dry run (what it would remove) or remove now. */
+router.post('/server/cleanup', ...devGuard, wrap(async (req) => {
+  const apply = (req.body as Record<string, unknown> | undefined)?.apply;
+  if (apply !== undefined && typeof apply !== 'boolean') {
+    throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails([{ field: 'apply', code: ERROR_CODES.FIELD_NOT_BOOLEAN, message: 'apply: true or false' }]);
+  }
+  return runCleanupNow(apply === true);
+}));
 
 // ---- Users ----
 

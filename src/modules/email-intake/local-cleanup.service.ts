@@ -2,8 +2,8 @@ import fs from 'fs/promises';
 import path from 'path';
 import { AppDataSource } from '../../config/data-source';
 import { env } from '../../config/env';
-import { FILES, LOCAL_CLEANUP, UPLOAD_STATUS } from '../../constants';
-import { PoUpload } from '../../entities';
+import { APP_STATE_KEY, FILES, LOCAL_CLEANUP, UPLOAD_STATUS } from '../../constants';
+import { AppState, PoUpload } from '../../entities';
 import { LOG_SOURCE } from '../../constants/logging';
 import { log } from '../../utils/logger';
 import { groupOfFolder, markLocal, messageKey, recordEmail } from './intake-emails.service';
@@ -14,12 +14,23 @@ import type { EmailMetadata } from './s3-layout';
  * Local disk = short-term working area (user, 2026-10-23). Removes the local folder of a FINISHED email once every one
  * of its files is confirmed in S3 and it finished at least LOCAL_CLEANUP.MIN_AGE_HOURS ago; the DB (intake_emails)
  * remembers it, so it is never downloaded again and the not-PO report still lists it. Finished = not a PO, or every
- * po_uploads row of it completed / rejected. Everything else keeps its folder (held, queued, reading, in review,
+ * po_uploads row of it completed / rejected; or (2026-11-04) failed / in review / waiting for approval for STALE_DAYS. Everything else keeps its folder (held, queued, reading, in review,
  * waiting for approval, failed, not in the chain yet). Only files under EMAIL_STORAGE_DIR; S3 and Gmail never touched.
  * Dry run by default (npm run storage:cleanup); the server runs it with apply when LOCAL_CLEANUP_ENABLED=true.
  */
 
 const FINISHED: string[] = [UPLOAD_STATUS.COMPLETED, UPLOAD_STATUS.REJECTED];
+
+export interface CleanupSummary {
+  at: string;
+  apply: boolean;
+  folders: number;
+  removed: number;
+  removedBytes: number;
+  keptBytes: number;
+  /** Why folders were kept (top reasons). */
+  kept: { reason: string; n: number }[];
+}
 
 export interface CleanupItem {
   folder: string;
@@ -58,6 +69,10 @@ const keepReason = async (dir: string, meta: EmailMetadata): Promise<{ keep: str
   const rows = await AppDataSource.getRepository(PoUpload).find({ where: { emailMessageId: meta.messageId }, select: ['id', 'status', 'updatedAt'] });
   if (!rows.length) return { keep: 'not in the chain yet (no po_uploads row)', finishedAt: null };
   const open = rows.filter((r) => !FINISHED.includes(r.status));
+  // failed / in review / waiting for approval for STALE_DAYS (2026-11-04): only S3 needs it from now on
+  const staleMs = LOCAL_CLEANUP.STALE_DAYS * 86_400_000;
+  const stale = open.length > 0 && open.every((r) => LOCAL_CLEANUP.STALE_STATUSES.includes(r.status) && Date.now() - r.updatedAt.getTime() >= staleMs);
+  if (stale) return { keep: null, finishedAt: new Date(Math.max(...rows.map((r) => r.updatedAt.getTime()))) };
   if (open.length) return { keep: `PO still ${[...new Set(open.map((r) => r.status))].join(' / ')}`, finishedAt: null };
   return { keep: null, finishedAt: new Date(Math.max(...rows.map((r) => r.updatedAt.getTime()))) };
 };
@@ -100,6 +115,14 @@ export const runLocalCleanup = async (opts: { apply: boolean }): Promise<Cleanup
   }
   const removed = items.filter((i) => i.remove);
   log.info(LOG_SOURCE.APP, `[cleanup] ${opts.apply ? 'removed' : 'would remove'} ${removed.length} of ${items.length} local folder(s), ${(removed.reduce((n, i) => n + i.bytes, 0) / 1_048_576).toFixed(1)} MB`);
+  // Admin > Server shows the last run (2026-11-04)
+  const summary: CleanupSummary = {
+    at: new Date().toISOString(), apply: opts.apply, folders: items.length, removed: removed.length,
+    removedBytes: removed.reduce((n, i) => n + i.bytes, 0), keptBytes: items.filter((i) => !i.remove).reduce((n, i) => n + i.bytes, 0),
+    kept: Object.entries(items.filter((i) => !i.remove).reduce<Record<string, number>>((m, i) => ({ ...m, [i.reason.replace(/\(.*$/, '').trim()]: (m[i.reason.replace(/\(.*$/, '').trim()] ?? 0) + 1 }), {}))
+      .map(([reason, n]) => ({ reason, n })).sort((a, b) => b.n - a.n).slice(0, 8),
+  };
+  await AppDataSource.getRepository(AppState).save({ key: APP_STATE_KEY.LOCAL_CLEANUP_LAST, value: { ...summary }, updatedAt: new Date() }).catch(() => undefined);
   return items;
 };
 
