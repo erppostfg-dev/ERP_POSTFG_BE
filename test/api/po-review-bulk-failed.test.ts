@@ -50,6 +50,10 @@ describe('Failed: try again, dismiss', () => {
     expect(r.find((x) => x.uploadId === a.id)).toMatchObject({ result: 'queued' });
     expect(r.find((x) => x.uploadId === done.id)).toMatchObject({ result: 'skipped', reason: 'it is completed now' });
     expect(r.find((x) => x.uploadId === '999999')).toMatchObject({ result: 'skipped' });
+    // written to the DB at once (a restart's resume finishes it): no longer failed, who asked kept
+    const [now] = await rows<{ status: string; error_details: string | Record<string, unknown> }>('SELECT status, error_details FROM po_uploads WHERE id = ?', [a.id]);
+    expect(now.status).not.toBe('failed');
+    expect(typeof now.error_details === 'string' ? JSON.parse(now.error_details) as Record<string, unknown> : now.error_details).toMatchObject({ retriedBy: editor.email });
     // runs after the answer: back through validation (still the unknown location -> In Review)
     await vi.waitFor(async () => expect(await statusOf(a)).toBe('needs_review'), { timeout: 15_000 });
   });

@@ -27,7 +27,8 @@ import { bumpReview } from './po-review.live';
  *     the Uniware CSV). A Manual Upload's PO = that upload's own Retry. Refused per PO with the reason: not failed any more,
  *     dismissed, the same PO already made / in review / waiting (it came again meanwhile), OCR tried MAX times.
  *     LOAD (user): nothing runs in the request; the chosen POs go into ONE in-process queue, run one after another
- *     (OCR through the existing one-at-a-time OCR queue), within PIPELINE_LIMIT.
+ *     (OCR through the existing one-at-a-time OCR queue), within PIPELINE_LIMIT. Each PO is first marked queued /
+ *     processing in the DB, so a restart never loses the queue (the start-up resume finishes it).
  *   Dismiss (failed): leaves the Failed list with who / when / why (error_details.dismissed); nothing is deleted.
  *   Reopen (rejected): each exactly like the single Reopen (back to In Review with one issue to accept).
  */
@@ -115,7 +116,14 @@ export const retryFailed = async (ids: string[], by: Actor): Promise<BulkResult[
     const step = (u.errorDetails as { step?: string } | null)?.step;
     const hasProcessed = await fs.access(path.join(folder, FILES.PROCESSED)).then(() => true, () => false);
     const chainOnly = plan.action === RESUME_ACTION.PROCESS && hasProcessed && step !== PIPELINE_STEP.OCR && step !== PIPELINE_STEP.PROCESSING;
-    queue.push({ messageId: u.emailMessageId, folder, rows, ...plan, chainOnly });
+    // Self-healing (2026-11-04): the retry is written to the DB first (queued for OCR / processing), so a restart or
+    // deploy in the middle does not lose it: the server's start-up resume finishes what this queue had not reached.
+    await repo().update({ emailMessageId: u.emailMessageId, status: UPLOAD_STATUS.FAILED }, {
+      status: plan.action === RESUME_ACTION.OCR ? UPLOAD_STATUS.QUEUED : UPLOAD_STATUS.PROCESSING,
+      errorDetails: { ...(u.errorDetails ?? {}), retriedBy: by.email, retriedAt: new Date().toISOString() },
+    });
+    const queuedRows = await repo().findBy({ emailMessageId: u.emailMessageId });
+    queue.push({ messageId: u.emailMessageId, folder, rows: queuedRows, ...plan, chainOnly });
     out.push({ uploadId: String(u.id), result: 'queued', reason: plan.action === RESUME_ACTION.OCR ? `OCR again (try ${u.ocrAttempts + 1} of ${MAX_OCR_ATTEMPTS})` : plan.reason });
   }
   for (const id of ids) if (!out.some((o) => o.uploadId === id)) out.push({ uploadId: id, result: 'skipped', reason: 'no such PO' });
