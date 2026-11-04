@@ -39,6 +39,9 @@ const MESSAGES = {
     `po_value: ${source} ${value} differs from ${other} ${otherValue}${tolerance !== undefined ? ` by more than ${tolerance}` : ''}`,
   BASE_VALUE_MISMATCH: (source: string, value: number, other: string, otherValue: number) =>
     `${source} ${value} differs from ${other} ${otherValue}`,
+
+  /** A line value the OCR left out or put under the wrong name, worked out from the line's other values (Gluzo first). */
+  LINE_VALUE_FIXED: (where: string, field: string, how: string) => `${where}: ${field} ${how}`,
 };
 
 export type WarningCode = keyof typeof MESSAGES;
