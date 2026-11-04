@@ -2,6 +2,7 @@ import { Request, Response, Router } from 'express';
 import {
   ACCESS_LEVEL,
   CAPABILITY,
+  FAILED_ACTIONS,
   DAY_PATTERN,
   ERROR_CODES,
   errorMessage,
@@ -30,6 +31,7 @@ import { lineItems, reviewLineItems } from '../modules/po-review/line-items.serv
 import { getRejection, reopenRejected } from '../modules/po-review/po-review-reopen.service';
 import { LineCorrection, rejectPo, ResubmitBody, submitForApproval } from '../modules/po-review/po-review-actions.service';
 import { appError } from '../utils/AppError';
+import { dismissFailed, reopenMany, retryFailed } from '../modules/po-review/po-review-failed.service';
 
 /*
  * PO review routes (API contract "PO review", 2026-10-09):
@@ -134,6 +136,54 @@ router.get(REVIEW_LIVE.EVENTS, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_L
 router.get(REVIEW_LIVE.STATE, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.VIEWER), async (_req, res, next) => {
   try {
     res.json({ data: { version: await reviewVersion() } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---- Failed + Rejected, many at once (2026-11-04) -------------------------------------------------------------------
+
+/** { uploadIds: [1..50], remark? (required for dismiss / reopen) }: every bad field reported at once. */
+const bulkBody = (body: unknown, remarkRequired: boolean): { ids: string[]; remark: string } => {
+  const problems: Problem[] = [];
+  const r = bodyReader(problems);
+  const b = r.object(body, 'body') ?? {};
+  const raw = b[FAILED_ACTIONS.BODY_IDS];
+  const ids = Array.isArray(raw) ? [...new Set(raw.map((v) => r.id(v, FAILED_ACTIONS.BODY_IDS)).filter((v): v is string => !!v))] : [];
+  if (!ids.length || ids.length > FAILED_ACTIONS.MAX_IDS || !Array.isArray(raw)) {
+    problems.push({ field: FAILED_ACTIONS.BODY_IDS, code: ERROR_CODES.FIELD_NOT_ID_LIST, message: errorMessage(ERROR_CODES.FIELD_NOT_ID_LIST, FAILED_ACTIONS.BODY_IDS, FAILED_ACTIONS.MAX_IDS) });
+  }
+  const remark = r.remark(b[FAILED_ACTIONS.BODY_REMARK], FAILED_ACTIONS.BODY_REMARK, remarkRequired) ?? '';
+  if (problems.length) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails(problems);
+  return { ids, remark };
+};
+const who = (req: Request) => ({ id: req.auth!.user.id, email: req.auth!.user.email });
+
+/** POST /po-review/bulk-retry { uploadIds }: failed POs from the step they failed at, one at a time after the answer. Editor. */
+router.post(FAILED_ACTIONS.ROUTES.RETRY, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
+  try {
+    const { ids } = bulkBody(req.body, false);
+    res.json({ data: await retryFailed(ids, who(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /po-review/bulk-dismiss { uploadIds, remark }: failed POs off the Failed list (kept, with who / why). Editor. */
+router.post(FAILED_ACTIONS.ROUTES.DISMISS, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
+  try {
+    const { ids, remark } = bulkBody(req.body, true);
+    res.json({ data: await dismissFailed(ids, remark, who(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /po-review/bulk-reopen { uploadIds, remark }: rejected POs back to In Review, each like Reopen. Editor. */
+router.post(FAILED_ACTIONS.ROUTES.REOPEN, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
+  try {
+    const { ids, remark } = bulkBody(req.body, true);
+    res.json({ data: await reopenMany(ids, remark, who(req)) });
   } catch (err) {
     next(err);
   }

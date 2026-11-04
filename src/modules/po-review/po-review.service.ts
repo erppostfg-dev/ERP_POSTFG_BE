@@ -129,6 +129,8 @@ export const listPoReview = async (query: PoReviewListQuery): Promise<{ items: P
     .createQueryBuilder('u')
     .leftJoinAndSelect('u.purchaseOrder', 'po')
     .where('u.status = :status', { status: query.status });
+  // Failed: a dismissed PO (Failed tab "Dismiss", 2026-11-04) is kept but not listed
+  if (query.status === UPLOAD_STATUS.FAILED) qb.andWhere("JSON_EXTRACT(u.errorDetails, '$.dismissed') IS NULL");
   if (query.channel) qb.andWhere('u.channel = :channel', { channel: query.channel });
   if (query.q) qb.andWhere('(u.poNumber LIKE :q OR u.fileName LIKE :q)', { q: `%${query.q}%` });
   // Completed POs not yet uploaded into Uniware always show, whatever the date range (user, 2026-10-19).

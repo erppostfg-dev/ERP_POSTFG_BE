@@ -88,6 +88,14 @@ export const APPROVAL_BULK_RESULT = { APPROVED: 'approved', REJECTED: 'rejected'
  * Reopen a rejected PO (2026-11-03, user): back to In Review with the checks run again against today's masters, plus
  * one OTHER issue a person accepts (so it always goes through Approvals, never saved by the timed re-check alone).
  */
+/** Failed + Rejected, many at once (2026-11-04): routes under /po-review and the most POs per call. */
+export const FAILED_ACTIONS = {
+  MAX_IDS: 50,
+  ROUTES: { RETRY: '/bulk-retry', DISMISS: '/bulk-dismiss', REOPEN: '/bulk-reopen' },
+  BODY_IDS: 'uploadIds',
+  BODY_REMARK: 'remark',
+} as const;
+
 export const REOPEN = {
   ISSUE_TEXT: (reason: string | null) => `Reopened after rejection${reason ? ` ("${reason}")` : ''}: check every value, fix what is wrong and submit for approval`,
 } as const;
