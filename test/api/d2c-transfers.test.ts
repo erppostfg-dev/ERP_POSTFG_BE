@@ -159,7 +159,8 @@ describe('form + reads', () => {
     expect(d).toMatchObject({ reference: ref(1), priority: 'P2', type: 'Regular', stage: 'draft', source: 'screen', remarks: 'BOGO', poDate: today });
     expect(d.expiryDate > today).toBe(true);
     expect(d.lines).toHaveLength(1);
-    expect(d.can).toEqual({ edit: true, cancel: true, changeExpiry: true });
+    // TEST_SEND / TEST_RECV are not test facilities and the gate is closed: Uniware writes off, Create SO still offered
+    expect(d.can).toEqual({ edit: true, cancel: true, changeExpiry: true, createSo: true, closeShort: false, uniwareWrite: false });
     expect(d.route).toMatchObject({ customerCode: 'CUST_T', vendorCode: 'VEND_T' });
     expect(d.timeline.map((t: { action: string; tag: string }) => [t.action, t.tag])).toEqual([['created', 'TOOL']]);
     const bad = await api().post(P).set('Cookie', admin.cookie).send({ senderId, channel: 'McaffeineB2C', locationId: String(locationId), lines: [{ skuCode: 'COMBO_TEST', qty: 1 }] });

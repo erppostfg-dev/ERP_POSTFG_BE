@@ -143,6 +143,8 @@ describe('catch-ups: one pass, each email read once', () => {
   it('Pub/Sub reads the whole email at once; an OFF channel email is remembered for its catch-up', async () => {
     await switchOn('bigbasket', '2026-10-25T00:00:00Z');
     await settle();
+    // the catch-up row can read done while its last posts are still on the way (slow CI): wait for all 3
+    await expect.poll(() => posted.filter((id) => id.startsWith('bb')).sort(), { timeout: 5000 }).toEqual(['bb1', 'bb2', 'bb3']);
     box.emails.push(bb(4, '2026-10-29T05:00:00Z'), zepto(3, '2026-10-29T06:00:00Z'));
     box.history = ['bb4', 'ze3'];
     await writeState({ historyId: '100' });
