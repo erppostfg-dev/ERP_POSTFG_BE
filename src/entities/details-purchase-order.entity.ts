@@ -68,6 +68,14 @@ export class DetailsPurchaseOrder {
   @Column({ name: 'poNumber', type: 'varchar', length: 255, nullable: true })
   poNumber: string | null;
 
+  /** D2C internal transfers (2026-11-03): units of this line dispatched (sum over po_invoices.sku_qty); null on channel POs. */
+  @Column({ name: 'dispatchedQty', type: 'int', nullable: true })
+  dispatchedQty: number | null;
+
+  /** D2C internal transfers: units of this line's SO items allocated / in process but not dispatched (read by the in-transit feed). */
+  @Column({ name: 'allocatedQty', type: 'int', nullable: true })
+  allocatedQty: number | null;
+
   /** fk_details_master_po: shipmentOrderId -> master_purchase_orders.uid. */
   @ManyToOne(() => MasterPurchaseOrder, (po) => po.lines)
   @JoinColumn({ name: 'shipmentOrderId', referencedColumnName: 'uid', foreignKeyConstraintName: 'fk_details_master_po' })

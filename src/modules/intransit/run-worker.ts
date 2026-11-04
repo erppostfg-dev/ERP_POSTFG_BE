@@ -10,11 +10,13 @@ import { fetchMyntraStrs } from '../channel-api/myntra/str.robot';
 import { checkCombos } from './combo-check';
 import { ConnectorConfig, ConnectorDirs, ConnectorOptions, runConnector } from './connectors';
 import { IntransitSettings } from './context';
+import { BookInput, writeInputsBook } from './inputs-book';
 import { runPipeline } from './pipeline';
 import { frameCsvChunks } from './sources/files';
 import { SellerHubConfig } from './sources/flipkart-seller-hub';
 import { MyntraConfig } from './sources/myntra-partner-portal';
 import { UniwareConfig } from './sources/uniware';
+import { runStopHooks } from './worker-stop';
 
 /*
  * The child process that does one in-transit job (forked by runs.service.ts), so a ~20 s CPU-heavy report build or
@@ -28,6 +30,8 @@ export type WorkerJob =
   /** sheets: also write each sheet as <outputDir>/sheets/<sheet>.csv.gz (sheet previews and the Daily Snapshot). */
   | { kind: 'report'; settings: IntransitSettings; combo: { uniware: UniwareConfig | null; cacheDir: string }; sheets?: boolean }
   | { kind: IntransitSource; config: ConnectorConfig; dirs: ConnectorDirs; options: ConnectorOptions }
+  /** Every daily input of a build in one workbook, a dated tab per file (2026-11-02, inputs-book.ts). */
+  | { kind: 'inputs-book'; inputDir: string; files: BookInput[]; outFile: string }
   /** Flipkart scheduled consignments (channel-api/flipkart, 2026-10-30): the same Seller Hub login, one browser job at a time. */
   | { kind: typeof FLIPKART.ROBOT_JOB; seller: SellerHubConfig; cacheDir: string; known: string[] }
   /** Myntra STRs (channel-api/myntra, 2026-11-03): the in-transit Myntra login, the STRs in the email's order. */
@@ -49,6 +53,8 @@ const log = (line: string): void => void send({ type: 'log', line });
 const run = async (job: WorkerJob): Promise<unknown> => {
   if (job.kind === 'report') {
     const { ctx, result } = await runPipeline(job.settings, log);
+    // paused for new SKUs / issues: nothing else is written (the server runs the build again once they are answered)
+    if (result.paused) return { ...result, comboCheck: ctx.comboCheck };
     if (job.sheets) {
       // one gzipped CSV per sheet, from the frames (a preview then needs that sheet only, not the whole workbook)
       const dir = path.join(job.settings.outputDir, 'sheets');
@@ -60,14 +66,18 @@ const run = async (job: WorkerJob): Promise<unknown> => {
       log(`sheets: ${SHEET_FRAMES.length} saved for previews`);
     }
     // Combos missing from Split1, checked against Uniware's item master; never fails the report.
-    const comboCheck = await checkCombos(ctx.get('df_gap_split1'), job.combo.uniware, { cacheDir: job.combo.cacheDir, outDir: job.settings.outputDir }, log)
+    const comboCheck = ctx.comboCheck ?? await checkCombos(ctx.get('df_gap_split1'), job.combo.uniware, { cacheDir: job.combo.cacheDir, outDir: job.settings.outputDir }, log)
       .catch((err: unknown) => ({ status: 'failed' as const, reason: err instanceof Error ? err.message : String(err), checked: 0, combos: [], unknownInUniware: 0, lookedUp: 0 }));
     return { ...result, comboCheck };
   }
+  if (job.kind === 'inputs-book') return writeInputsBook(job.inputDir, job.files, job.outFile, log);
   if (job.kind === FLIPKART.ROBOT_JOB) return fetchScheduledConsignments(job.seller, job.cacheDir, job.known, log);
   if (job.kind === MYNTRA_STR.ROBOT_JOB) return fetchMyntraStrs(job.myntra, job.cacheDir, job.strs, log);
   return runConnector(job.kind, job.config, job.dirs, job.options, log);
 };
+
+// Stop on the page (2026-11-02): the parent sends SIGTERM; browsers / Xvfb the job opened are closed first
+process.once('SIGTERM', () => void runStopHooks().finally(() => process.exit(143)));
 
 process.once('message', (job: WorkerJob) => {
   run(job)

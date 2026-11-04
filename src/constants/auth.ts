@@ -42,6 +42,8 @@ export const PAGES: readonly PageEntry[] = [
   // Amazon inbound plans + shipments (2026-10-19). No grant rows: roles inherit /operations (admin / developer editor).
   { slug: '/operations/amazon-inbound', label: 'Amazon Inbound', section: 'B2B/B2C Operations' },
   { slug: '/operations/skus-short', label: 'SKUs Short', section: 'B2B/B2C Operations' },
+  // D2C internal transfers (2026-11-03): warehouse-to-warehouse transfers through Uniware (SO -> invoice -> inward PO).
+  { slug: '/operations/d2c-transfers', label: 'D2C Internal Transfers', section: 'B2B/B2C Operations' },
   { slug: '/operations/analytics', label: 'Analytics', section: 'B2B/B2C Operations' },
   { slug: '/planning', label: 'Demand Planning', section: 'Demand Planning' },
   { slug: '/planning/inventory', label: 'Inventory Calculation', section: 'Demand Planning' },
@@ -66,6 +68,8 @@ export const OPEN_PAGES: readonly PageEntry[] = [{ slug: '/feedback', label: 'Fe
 export const CAPABILITY = {
   /** In PO Review, change any value of a PO, not only the ones that show an error (user, 2026-10-22). */
   PO_REVIEW_EDIT_ALL: 'po-review:edit-all',
+  /** D2C internal transfers (2026-11-03, decision 12): full Uniware resync, incl. closed / cancelled / erroring transfers. */
+  D2C_RESYNC: 'd2c-transfers:resync',
 } as const;
 export type Capability = (typeof CAPABILITY)[keyof typeof CAPABILITY];
 export const CAPABILITIES: readonly { key: Capability; label: string; description: string }[] = [
@@ -73,6 +77,11 @@ export const CAPABILITIES: readonly { key: Capability; label: string; descriptio
     key: CAPABILITY.PO_REVIEW_EDIT_ALL,
     label: 'PO Review: edit all fields',
     description: 'Without it, a reviewer can change only the values that show an error.',
+  },
+  {
+    key: CAPABILITY.D2C_RESYNC,
+    label: 'D2C transfers: full resync',
+    description: 'Re-read every transfer from Uniware, including closed, cancelled and erroring ones.',
   },
 ];
 export const CAPABILITY_SECTION = 'Special permissions';
@@ -89,6 +98,7 @@ export const PAGE = {
   PO_OVERVIEW: '/operations/po-overview',
   PO_REVIEW: '/operations/po-review',
   AMAZON_INBOUND: '/operations/amazon-inbound',
+  D2C_TRANSFERS: '/operations/d2c-transfers',
   PLANNING: '/planning',
   INVENTORY: '/planning/inventory',
   INTRANSIT_STOCK: '/planning/intransit-stock',

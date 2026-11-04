@@ -10,6 +10,10 @@ import { listChannelCustomers } from '../modules/masters/channel-customers.servi
 import { listChannelSkus } from '../modules/masters/channel-skus.service';
 import { listPepSkus } from '../modules/masters/pep-skus.service';
 import { listChannelWarehouses, listPepWarehouses } from '../modules/masters/warehouses.service';
+import { editTransferRoute, listTransferRoutes } from '../modules/masters/transfer-routes.service';
+import { env } from '../config/env';
+import { readSettings } from '../modules/d2c-transfers/settings';
+import { testCodesOf } from '../modules/d2c-transfers/test-mode';
 
 /*
  * Masters routes: ALL master-data endpoints live here, one block per screen, each guarded by its own page key.
@@ -21,6 +25,7 @@ import { listChannelWarehouses, listPepWarehouses } from '../modules/masters/war
  *                                    facilities (from details_channels). Viewer on /masters/channel-customers.
  *   GET /masters/warehouses/pep       our facilities, built from details_channels.facility_code (no warehouse table).
  *                                    Viewer on /masters/warehouses.
+ *                                    Each row has allowInternalTransfer (D2C transfers, 2026-11-03; edited as Yes / No).
  *   GET /masters/channel-locations   every channel delivery location (details_channels). Viewer on /masters/channel-locations
  *                                    (Channel Location Master, 2026-10-16; was /masters/warehouses/channel).
  * All: { data: Item[], meta: { total } }.
@@ -52,6 +57,16 @@ import { listChannelWarehouses, listPepWarehouses } from '../modules/masters/war
  *                                    the Add rules), 404 MASTER_ROW_NOT_FOUND, 409 MASTER_EDIT_CONFLICT [{ field, now }]
  *   POST  /masters/active/:type/:id  { active: boolean, remark? } -> { active, changed }
  *   Re-checks the POs in review afterwards (that channel; every channel for a PEP SKU / warehouse).
+ *
+ * D2C internal transfer routes (2026-11-03; d2c_transfer_routes, loaded by npm run d2c:routes-load):
+ *   GET   /masters/transfer-routes      every route (sender, channel, location, receiving facility, PO prefix, Uniware
+ *                                       channel / customer / vendor codes, active, missingVendor / missingCustomer /
+ *                                       missingChannel). Viewer on /masters/warehouses. { data: TransferRouteItem[], meta: { total, testOnly, testFacilities } }
+ *   PATCH /masters/transfer-routes/:id  { changes: { uniwareChannelCode?, customerCode?, vendorCode?, isActive? }, original?,
+ *                                       remark? } -> { changed: string[] }; admin / developer; logged (history type
+ *                                       transfer_route); 400 / 404 / 409 as the edit above. The location's PO prefix and
+ *                                       receiving facility: PATCH /masters/edit/location/:locationId (transferPoPrefix,
+ *                                       transferFacilityId).
  */
 
 const router = Router();
@@ -91,6 +106,7 @@ const HISTORY_PAGE: Record<MasterLogType, string> = {
   [MASTER_LOG_TYPE.CHANNEL]: PAGE.CHANNEL_CUSTOMERS,
   [MASTER_LOG_TYPE.LOCATION]: PAGE.CHANNEL_LOCATIONS,
   [MASTER_LOG_TYPE.FACILITY]: PAGE.WAREHOUSES,
+  [MASTER_LOG_TYPE.TRANSFER_ROUTE]: PAGE.WAREHOUSES,
 };
 router.get(MASTER_ROUTES.HISTORY, requireAuth, (req, res, next) => {
   const type = req.params.type;
@@ -153,5 +169,17 @@ router.get(MASTER_ROUTES.CHANNEL_LOCATIONS, requireAuth, requirePage(PAGE.CHANNE
     next(err);
   }
 });
+
+// ---- D2C internal transfer routes (2026-11-03) ---------------------------------
+router.get(MASTER_ROUTES.TRANSFER_ROUTES, requireAuth, requirePage(PAGE.WAREHOUSES, ACCESS_LEVEL.VIEWER), async (_req, res, next) => {
+  try {
+    const items = await listTransferRoutes();
+    // testOnly: local D2C test mode (env.d2c.testOnly), the tab shows a "TEST_FACILITY only" banner
+    res.json({ data: items, meta: { total: items.length, testOnly: env.d2c.testOnly, testFacilities: env.d2c.testOnly ? testCodesOf(await readSettings()) : [] } });
+  } catch (err) {
+    next(err);
+  }
+});
+router.patch(MASTER_ROUTES.TRANSFER_ROUTE, requireAuth, requireMasterAdmin, ok((req) => editTransferRoute(req.params.id, req.body, actor(req))));
 
 export default router;

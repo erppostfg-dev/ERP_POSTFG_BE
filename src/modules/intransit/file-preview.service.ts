@@ -8,7 +8,7 @@ import {
   INTRANSIT_REPORT_NAME,
   INTRANSIT_RUN_KIND,
   INTRANSIT_RUN_STATUS,
-  MAIL_FILE_NAMES,
+  RUN_EXTRA_FILES,
   SHEET_FRAMES,
 } from '../../constants';
 import { IntransitRun } from '../../entities';
@@ -121,7 +121,7 @@ export const runFileBlob = async (id: string, name: string): Promise<StoredBlob>
   let key: string | null = null;
   if (run.kind === INTRANSIT_RUN_KIND.REPORT) {
     const base = reportDirOf(run);
-    if (base && (name === COMBO_CHECK.ALERT_FILE || name === COMBO_CHECK.SPLIT1_ROWS_FILE || MAIL_FILE_NAMES.includes(name))) key = `${base}${name}`;
+    if (base && (name === COMBO_CHECK.ALERT_FILE || name === COMBO_CHECK.SPLIT1_ROWS_FILE || RUN_EXTRA_FILES.includes(name))) key = `${base}${name}`;
   } else {
     key = ((run.result ?? {}) as { files?: Record<string, string> }).files?.[name] ?? null;
   }

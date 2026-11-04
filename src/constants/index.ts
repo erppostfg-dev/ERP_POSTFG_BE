@@ -5,6 +5,7 @@
 export * from './auth';
 export * from './channel-api';
 export * from './channels';
+export * from './d2c-transfers';
 export * from './dates';
 export * from './feedback';
 export * from './db';

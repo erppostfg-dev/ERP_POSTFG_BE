@@ -4,6 +4,7 @@ import fsp from 'fs/promises';
 import path from 'path';
 import { env } from '../../config/env';
 import {
+  D2C_TRANSFERS_CONNECTOR,
   ERROR_CODES,
   HEADER_SCAN_BYTES,
   INPUT_BY_NAME,
@@ -61,7 +62,7 @@ export const dayBefore = (date: string): string => new Date(Date.parse(`${date}T
 
 // ---- meta ------------------------------------------------------------------------------------------------------
 
-export type InputOrigin = 'upload' | IntransitSource | typeof PEPIMS_CONNECTOR | 'restore' | 'edit' | 'migrated';
+export type InputOrigin = 'upload' | IntransitSource | typeof PEPIMS_CONNECTOR | typeof D2C_TRANSFERS_CONNECTOR | 'restore' | 'edit' | 'migrated';
 
 export interface InputMeta {
   at: string;
@@ -376,7 +377,7 @@ export interface DailyItem {
   group: 'upload' | 'api';
   source: string;
   /** 'pepims' = read from PEPIMS at the build (Shipment_Status, PO_Format). */
-  connector: IntransitSource | typeof PEPIMS_CONNECTOR | null;
+  connector: IntransitSource | typeof PEPIMS_CONNECTOR | typeof D2C_TRANSFERS_CONNECTOR | null;
   /** Can a connector fetch it for this day (PEPIMS: will the build read it)? */
   fetchable: boolean;
   /** Why not, when it has a connector. */
@@ -486,6 +487,9 @@ export const planDay = async (date: string, missingKeys: (s: IntransitSource) =>
     if (connector === PEPIMS_CONNECTOR) {
       if (env.intransit.poSource !== 'pepims') notFetchable = 'reading from PEPIMS is off (INTRANSIT_PO_SOURCE in .env): upload it';
       else if (date !== today) notFetchable = 'PEPIMS holds the current statuses only: read when building today';
+    } else if (connector === D2C_TRANSFERS_CONNECTOR) {
+      // written from our own D2C transfers by every build for today; a past day keeps its stored copy (none = no rows)
+      if (date !== today) notFetchable = 'written from the D2C transfers by a build for today only';
     } else if (connector && keys[connector].length) notFetchable = `${connector} is not set up (${keys[connector].join(', ')} in .env)`;
     else if (connector && spec.fetchable === 'today-only' && date !== today) notFetchable = 'the API gives the current state only: fetchable for today';
     daily.push({
@@ -496,7 +500,7 @@ export const planDay = async (date: string, missingKeys: (s: IntransitSource) =>
   }
 
   // PEPIMS files are read by the build itself (every build for today), not by a fetch step
-  const toFetchFiles = daily.filter((d) => d.on !== 'date' && d.fetchable && d.connector !== PEPIMS_CONNECTOR);
+  const toFetchFiles = daily.filter((d) => d.on !== 'date' && d.fetchable && d.connector !== PEPIMS_CONNECTOR && d.connector !== D2C_TRANSFERS_CONNECTOR);
   const toFetch: FetchStep[] = [];
   for (const d of toFetchFiles) {
     const src = d.connector as IntransitSource;
@@ -516,6 +520,7 @@ export const planDay = async (date: string, missingKeys: (s: IntransitSource) =>
   const fetchRequired: string[] = [];
   for (const d of daily) {
     if (d.connector === PEPIMS_CONNECTOR && d.fetchable) continue; // read fresh from PEPIMS at the build
+    if (d.connector === D2C_TRANSFERS_CONNECTOR) continue; // written by the build (today); no copy = no transfer rows, never a warning
     // an optional file never holds a build up: without a copy its sheet says so and the build warns
     if (INPUT_BY_NAME.get(d.name)?.optional) {
       if (d.on === 'missing') warnings.push(`${d.name}: no copy yet (optional: the build goes on without it)`);

@@ -62,9 +62,23 @@ export class MasterFacility {
   @Column({ name: 'intransit_type', type: 'varchar', length: 50, nullable: true })
   intransitType: string | null;
 
+  /** In-transit (2026-11-02): 'both' = its open POs also count as in transit, 'soh' = stock on hand only (STOCK_FEEDS); null = its bucket's default. */
+  @Column({ name: 'intransit_feed', type: 'varchar', length: 20, nullable: true })
+  intransitFeed: string | null;
+
+  /** In-transit (2026-11-02): which Inventory Snapshot columns make its SOH (STOCK_FORMULAS key); null = its bucket's default. */
+  @Column({ name: 'stock_formula', type: 'varchar', length: 40, nullable: true })
+  stockFormula: string | null;
+
   /** In-transit (2026-10-26): the Uniware fetch exports this facility (once per export); replaces .env UNIWARE_FACILITY. */
   @Column({ name: 'uniware_export', type: 'boolean', default: false })
   uniwareExport: boolean;
+
+  /** D2C internal transfers (2026-11-03): may send / receive transfers (Masters > Warehouses); 0 for every row at first. */
+  @Column({ name: 'allow_internal_transfer', type: 'boolean', default: false })
+  allowInternalTransfer: boolean;
+
+  // D2C Uniware vendor / customer codes are per route (d2c_transfer_routes), not per facility (2026-11-03)
 
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive: boolean;

@@ -5,12 +5,12 @@ import { gunzipSync } from 'zlib';
 import { In } from 'typeorm';
 import { AppDataSource } from '../../../config/data-source';
 import { env } from '../../../config/env';
-import { blockingMissing, COMBO_CHECK, INTRANSIT_REPORT_NAME, INTRANSIT_RUN_KIND, INTRANSIT_RUN_STATUS, INTRANSIT_TEMPLATE_NAME, MAIL_FILE_NAMES, RUN_RECORD_FILE } from '../../../constants';
+import { blockingMissing, COMBO_CHECK, D2C_TRANSFERS_CONNECTOR, INTRANSIT_REPORT_NAME, INTRANSIT_RUN_KIND, INTRANSIT_RUN_STATUS, INTRANSIT_TEMPLATE_NAME, RUN_EXTRA_FILES, RUN_RECORD_FILE } from '../../../constants';
 import { IntransitRun } from '../../../entities';
 import { ConnectorResult } from '../connectors';
 import { DB_MASTER_FILES, exportMastersFromDb } from '../masters-export';
 import { runRecord } from '../run-record';
-import { fetchInput, resolveStored, saveDailyFile } from './inputs';
+import { fetchInput, resolveStored, saveDailyFile, uploadedAfter } from './inputs';
 import { BUILD_JSON, buildJsonKey, fullReportDir, refusedKey, SNAPSHOT_SHEETS, snapshotDir } from './layout';
 import { withLock } from './lock';
 import { PROD_SCOPE, Scope, TEST_SCOPE, visibleScopes, writeScope } from './scope';
@@ -88,9 +88,20 @@ export const prepareConnector = async (run: IntransitRun, day: string): Promise<
 /** After a connector ran: the checked files become the day's inputs, the refused ones go to _refused/. name -> key. */
 export const storeConnectorFiles = async (run: IntransitRun, exportDir: string, result: ConnectorResult, day: string): Promise<Record<string, string>> => {
   const keys: Record<string, string> = {};
+  const kept: string[] = [];
   for (const name of result.saved) {
     const file = path.join(exportDir, name);
-    if (fs.existsSync(file)) keys[name] = (await saveDailyFile(name, day, file, who(run), run.kind)).key;
+    if (!fs.existsSync(file)) continue;
+    // uploaded by hand while the fetch ran (e.g. after Stop): the upload stays the day's file
+    if (run.startedAt && (await uploadedAfter(name, day, run.startedAt.toISOString()))) {
+      kept.push(name);
+      continue;
+    }
+    keys[name] = (await saveDailyFile(name, day, file, who(run), run.kind)).key;
+  }
+  if (kept.length) {
+    result.saved = result.saved.filter((n) => !kept.includes(n));
+    result.keptUploads = [...(result.keptUploads ?? []), ...kept];
   }
   for (const [name, problems] of Object.entries(result.rejected)) {
     const file = path.join(exportDir, name);
@@ -103,6 +114,11 @@ export const storeConnectorFiles = async (run: IntransitRun, exportDir: string, 
 /** PEPIMS' files of a build for today: the day's input files. */
 export const storePepimsFiles = async (run: IntransitRun, dir: string, names: string[], day: string): Promise<void> => {
   for (const name of names) await saveDailyFile(name, day, path.join(dir, name), who(run), 'pepims');
+};
+
+/** D2C_Transfers.csv written by a build for today (phase 8) becomes the day's input, as PEPIMS' files do. */
+export const storeTransferFeed = async (run: IntransitRun, dir: string, name: string, day: string): Promise<void> => {
+  await saveDailyFile(name, day, path.join(dir, name), who(run), D2C_TRANSFERS_CONNECTOR);
 };
 
 // ---- builds ----------------------------------------------------------------------------------------------------
@@ -215,7 +231,7 @@ export const publishBuild = async (run: IntransitRun, dir: string): Promise<{ re
     files[label] = r.key;
     if (r.stored === 'queued') queued++;
   };
-  for (const name of [INTRANSIT_REPORT_NAME, COMBO_CHECK.ALERT_FILE, COMBO_CHECK.SPLIT1_ROWS_FILE, ...MAIL_FILE_NAMES]) {
+  for (const name of [INTRANSIT_REPORT_NAME, COMBO_CHECK.ALERT_FILE, COMBO_CHECK.SPLIT1_ROWS_FILE, ...RUN_EXTRA_FILES]) {
     const file = path.join(dir, name);
     if (fs.existsSync(file)) await keep(`${base}${name}`, file, name);
   }

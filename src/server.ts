@@ -14,6 +14,7 @@ import { expireStaleRuns, recoverRuns } from './modules/intransit/runs.service';
 import { applyResume, planResume } from './modules/po-pipeline/resume.service';
 import { startChannelApis } from './modules/channel-api/scheduler';
 import { startRobotSchedule } from './modules/channel-api/flipkart/consignments.service';
+import { startD2cSync } from './modules/d2c-transfers/sync.service';
 import { resumeManualQueue } from './modules/manual-upload/manual-upload.service';
 import { recheckInReview } from './modules/po-review/recheck.service';
 import { holdForIntake, kickRelease } from './modules/po-intake-control/intake-release.service';
@@ -108,6 +109,10 @@ const start = async (): Promise<void> => {
   // Myntra STRs waiting (a failed run, a restart) are tried again by themselves (2026-11-03); same rule.
   const strRetry = AppDataSource.isInitialized && !env.laptopMode ? startStrRetry() : undefined;
 
+  // D2C internal transfers (2026-11-03, phase 6): the Uniware SO status sync every d2c:settings.syncMinutes (read-only on
+  // Uniware; one server at a time through a MySQL lock). Not on a laptop, not without a DB, not with D2C_SYNC_ENABLED=false.
+  const d2cSync = AppDataSource.isInitialized && !env.laptopMode ? startD2cSync() : undefined;
+
   // PO jobs worker (2026-10-26): with QUEUE_MODE=sqs + WORKER_IN_SERVER=true this process also takes the queued jobs;
   // otherwise the separate `npm run worker` does (EC2: its own pm2 process).
   const worker = usesSqs() && env.queue.workerInServer && AppDataSource.isInitialized ? startPoWorker() : undefined;
@@ -172,6 +177,7 @@ const start = async (): Promise<void> => {
     await listener?.stop();
     channelApis?.stop();
     robotSchedule?.stop();
+    d2cSync?.stop();
     strRetry?.stop();
     await worker?.stop();
     if (recheckTimer) clearInterval(recheckTimer);

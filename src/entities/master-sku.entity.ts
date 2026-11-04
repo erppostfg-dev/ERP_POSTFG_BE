@@ -93,4 +93,12 @@ export class MasterSku {
   /** Sheet35(2) "COGS (With TAX)". */
   @Column({ name: 'intransit_cogs', type: 'decimal', precision: 10, scale: 2, nullable: true, transformer: decimal })
   intransitCogs: number | null;
+
+  /** A new SKU the user answered Consider / Don't consider for at a build (2026-11-02): never asked again. */
+  @Column({ name: 'intransit_reviewed_at', type: 'datetime', nullable: true })
+  intransitReviewedAt: Date | null;
+
+  /** Sheet35 values a build filled (e.g. "mrp:uniware; cogs:20% of MRP"); NULL = typed by a person. */
+  @Column({ name: 'intransit_autofilled', type: 'varchar', length: 100, nullable: true })
+  intransitAutofilled: string | null;
 }

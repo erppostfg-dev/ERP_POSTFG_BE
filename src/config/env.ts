@@ -20,7 +20,9 @@ dotenv.config();
 const laptopMode = process.env.LAPTOP_MODE === 'true';
 export const LAPTOP_MODE_OFF = {
   PUBSUB_ENABLED: 'false', OCR_ENABLED: 'false', OCR_BACKLOG: 'false', PIPELINE_RESUME: 'false', CHANNEL_API_ENABLED: 'false',
-  LOCAL_CLEANUP_ENABLED: 'false', WORKER_IN_SERVER: 'false', QUEUE_MODE: 'local', RECHECK_MINUTES: '0',
+  LOCAL_CLEANUP_ENABLED: 'false', WORKER_IN_SERVER: 'false', QUEUE_MODE: 'local', RECHECK_MINUTES: '0', D2C_SYNC_ENABLED: 'false',
+  // not an off switch: laptop mode is ALWAYS D2C local test mode (env.d2c.testOnly), whatever .env says
+  D2C_TEST_ONLY: 'true',
 } as const;
 if (laptopMode) Object.assign(process.env, LAPTOP_MODE_OFF);
 
@@ -205,6 +207,9 @@ export const env = {
     poSource: (process.env.INTRANSIT_PO_SOURCE ?? 'upload').trim().toLowerCase() === 'pepims' ? 'pepims' : 'upload',
     // The 7 masters + Channel SKU Mapping: 'db' = written from the database into each build's snapshot; else the files
     mastersSource: (process.env.INTRANSIT_MASTERS_SOURCE ?? 'files').trim().toLowerCase() === 'db' ? 'db' : 'files',
+    // A paused build (new SKUs / mapping issues to answer, a failed fetch to upload by hand) waits this long, then stops
+    // (user, 2026-11-02).
+    skuWaitMs: Number(process.env.INTRANSIT_SKU_WAIT_MS ?? 30 * 60 * 1000),
     // The upload page warns when the daily inputs were saved more than this many hours apart.
     inputSpreadWarnHours: Number(process.env.INTRANSIT_INPUT_SPREAD_WARN_HOURS ?? 6),
     amazon: {
@@ -258,6 +263,22 @@ export const env = {
   // original PO (constants/po-verify.ts). On unless PO_VERIFY_REQUIRED=false (the switch to drop the step later).
   poVerify: {
     required: flag('PO_VERIFY_REQUIRED', 'true'),
+  },
+  // D2C internal transfers (plan 2.11): Uniware writes (create SO, cancel, close short) only when this AND
+  // d2c:settings.live are true; otherwise only for d2c:settings.testFacilities. Default off.
+  // The Uniware SO status sync timer (phase 6): on by default on a server, off in laptop mode (LAPTOP_MODE_OFF).
+  // testOnly = local TEST ONLY mode (user, 2026-11-03: "while on local host everything is made in test facility"): only
+  // transfers whose sender AND receiving facility are test facilities (TEST_FACILITY + d2c:settings.testFacilities) may be
+  // created / imported / edited / sent to Uniware, the sync timer never starts, Sync now reads test transfers only and
+  // the in-transit feed is written empty. D2C_TEST_ONLY=true|false wins; unset = on unless NODE_ENV=production (the
+  // Docker image sets NODE_ENV=production, so the dev / prod EC2 are not in test mode unless their .env says so).
+  // Laptop mode (npm run dev) always forces it on (LAPTOP_MODE_OFF).
+  d2c: {
+    uniwareWrites: flag('D2C_UNIWARE_WRITES'),
+    syncEnabled: flag('D2C_SYNC_ENABLED', 'true'),
+    testOnly: (process.env.D2C_TEST_ONLY ?? '').trim()
+      ? (process.env.D2C_TEST_ONLY ?? '').trim().toLowerCase() !== 'false'
+      : laptopMode || (process.env.NODE_ENV ?? 'development') !== 'production',
   },
   // Re-check of POs in review after a master fix (2026-10-22, constants/po-review REVIEW_RECHECK): minutes between
   // automatic runs; 0 = only after masters:load and on the button.

@@ -1,4 +1,5 @@
-import { ERROR_CODES, INTRANSIT_RUN_STATUS, MAIL_FILE_NAMES } from '../../constants';
+import { env } from '../../config/env';
+import { ERROR_CODES, INPUTS_BOOK_FILE, INTRANSIT_RUN_STATUS, MAIL_FILE_NAMES } from '../../constants';
 import { appError } from '../../utils/AppError';
 import type { MailAttachment } from '../mail/mailer.service';
 import { runFileBlob } from './file-preview.service';
@@ -26,26 +27,41 @@ export interface WhSummaryMail {
   text: string;
 }
 
+export const WH_TOTAL_LABEL = 'Total';
+
+/** A line of the mail table: a WH row, or the total. */
+type MailRow = Omit<WhSummaryRow, 'wh'> & { wh: string };
+
+/** The last line of the mail table (user 2026-11-03): every WH row summed up. */
+export const whTotal = (rows: WhSummaryRow[]): MailRow => rows.reduce<MailRow>(
+  (t, r) => ({ ...t, gmv: t.gmv + r.gmv, units: t.units + r.units, cogs: t.cogs + r.cogs, cogsSplit: t.cogsSplit + r.cogsSplit }),
+  { wh: WH_TOTAL_LABEL, gmv: 0, units: 0, cogs: 0, cogsSplit: 0 },
+);
+
 export const whSummaryMail = (rows: WhSummaryRow[], asOf: string, runId: string): WhSummaryMail => {
   const head = ['WHs', 'GMV', 'Units', 'COGS (With Tax)', 'COGS Split'];
   const th = head.map((h) => `<th style="${CELL}background:${HEADER_BG};text-align:left;font-weight:normal;">${h}</th>`).join('');
-  const body = rows.map((r) => `<tr>${[
-    `<td style="${CELL}text-align:left;">${esc(r.wh)}</td>`,
-    `<td style="${CELL}text-align:right;">${inr(r.gmv)}</td>`,
-    `<td style="${CELL}text-align:right;">${inr(r.units)}</td>`,
-    `<td style="${CELL}text-align:right;">${inr(r.cogs)}</td>`,
-    `<td style="${CELL}text-align:right;">${pct(r.cogsSplit)}</td>`,
-  ].join('')}</tr>`).join('');
+  const total = whTotal(rows);
+  const tr = (r: MailRow, extra = '') => `<tr>${[
+    `<td style="${CELL}${extra}text-align:left;">${esc(r.wh)}</td>`,
+    `<td style="${CELL}${extra}text-align:right;">${inr(r.gmv)}</td>`,
+    `<td style="${CELL}${extra}text-align:right;">${inr(r.units)}</td>`,
+    `<td style="${CELL}${extra}text-align:right;">${inr(r.cogs)}</td>`,
+    `<td style="${CELL}${extra}text-align:right;">${pct(r.cogsSplit)}</td>`,
+  ].join('')}</tr>`;
+  const body = rows.map((r) => tr(r)).join('') + tr(total, `background:${HEADER_BG};font-weight:bold;`);
   const html = `<!doctype html><html><body style="margin:0;padding:16px;">`
     + `<p style="font-family:Calibri,Arial,sans-serif;font-size:14px;">In-transit stock as of ${esc(asOf)} (stock on hand + in transit; report #${esc(runId)}):</p>`
     + `<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;"><thead><tr>${th}</tr></thead><tbody>${body}</tbody></table>`
     + `</body></html>`;
-  const width = Math.max(...rows.map((r) => r.wh.length), 3);
+  const width = Math.max(...rows.map((r) => r.wh.length), WH_TOTAL_LABEL.length, 3);
+  const line = (r: MailRow) => `${r.wh.padEnd(width)}  ${inr(r.gmv).padStart(16)}  ${inr(r.units).padStart(12)}  ${inr(r.cogs).padStart(16)}  ${pct(r.cogsSplit).padStart(10)}`;
   const text = [
     `In-transit stock as of ${asOf} (report #${runId})`,
     '',
     `${'WHs'.padEnd(width)}  ${'GMV'.padStart(16)}  ${'Units'.padStart(12)}  ${'COGS (With Tax)'.padStart(16)}  COGS Split`,
-    ...rows.map((r) => `${r.wh.padEnd(width)}  ${inr(r.gmv).padStart(16)}  ${inr(r.units).padStart(12)}  ${inr(r.cogs).padStart(16)}  ${pct(r.cogsSplit).padStart(10)}`),
+    ...rows.map(line),
+    line(total),
   ].join('\n');
   return { subject: `In-transit stock - ${asOf}`, html, text };
 };
@@ -71,17 +87,35 @@ export const runMailAttachments = async (id: string, asOf: string): Promise<Mail
   return out;
 };
 
-/** The mail of build `id` as it goes out: the WH table, and the two workbooks attached (named in the text). */
+/**
+ * The link to build `id`'s input files workbook (Inputs.xlsx, too big to attach; user 2026-11-02): the In-transit Stock
+ * page, which downloads it after sign-in. The app's address is AUTH_REDIRECT_URL (as the welcome mail uses).
+ */
+export const inputsBookLink = (id: string): string =>
+  `${env.auth.redirectUrl.replace(/\/+$/, '')}/planning/intransit-stock?run=${encodeURIComponent(id)}&get=inputs`;
+
+/**
+ * The mail of build `id` as it goes out: the WH table, the two workbooks attached (named in the text), and a link to
+ * the input files workbook when the build has one.
+ */
 export const runMailWithFiles = async (id: string): Promise<WhSummaryMail & { attachments: MailAttachment[] }> => {
   const mail = await runMail(id);
   const asOf = (await getRun(id)).asOf ?? '';
   const attachments = await runMailAttachments(id, asOf);
-  if (!attachments.length) return { ...mail, attachments };
-  const names = attachments.map((a) => a.filename).join(', ');
-  return {
-    ...mail,
-    html: mail.html.replace('</body>', `<p style="font-family:Calibri,Arial,sans-serif;font-size:14px;">Attached: ${esc(names)}.</p></body>`),
-    text: `${mail.text}\n\nAttached: ${names}.`,
-    attachments,
-  };
+  const book = await runFileBlob(id, INPUTS_BOOK_FILE).catch(() => null);
+  const p = (s: string) => `<p style="font-family:Calibri,Arial,sans-serif;font-size:14px;">${s}</p>`;
+  const html: string[] = [];
+  const text: string[] = [];
+  if (attachments.length) {
+    const names = attachments.map((a) => a.filename).join(', ');
+    html.push(p(`Attached: ${esc(names)}.`));
+    text.push(`Attached: ${names}.`);
+  }
+  if (book) {
+    const link = inputsBookLink(id);
+    html.push(p(`All the input files of this build (Uniware, PEPIMS, Amazon, Flipkart, Myntra), one dated tab each: <a href="${esc(link)}">download the input files workbook</a> (sign in to POST FG).`));
+    text.push(`All the input files of this build, one dated tab each: ${link} (sign in to POST FG).`);
+  }
+  if (!html.length) return { ...mail, attachments };
+  return { ...mail, html: mail.html.replace('</body>', `${html.join('')}</body>`), text: `${mail.text}\n\n${text.join('\n')}`, attachments };
 };

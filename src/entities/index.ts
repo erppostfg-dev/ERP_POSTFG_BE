@@ -31,6 +31,8 @@ export * from './master-sku-component.entity';
 export * from './master-sku.entity';
 export * from './po-issue-action.entity';
 export * from './po-issue.entity';
+export * from './po-invoice.entity';
+export * from './d2c-transfer-route.entity';
 export * from './po-price-difference.entity';
 export * from './po-reopen.entity';
 export * from './po-review-submission.entity';

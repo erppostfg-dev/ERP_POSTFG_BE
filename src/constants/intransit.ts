@@ -14,6 +14,13 @@ export const INTRANSIT_REPORT_NAME = 'Intransit_Stock_Report_FINAL.xlsx';
  */
 export const MAIL_FILES = { STOCK: 'Stock.xlsx', B2C: 'B2C-Format-Data-Planning.xlsx' } as const;
 export const MAIL_FILE_NAMES: readonly string[] = Object.values(MAIL_FILES);
+/**
+ * Every daily input of a build in one workbook, a dated tab per file (user, 2026-11-02): too big to mail, so the mail
+ * links to it. Kept with the build like the mail files.
+ */
+export const INPUTS_BOOK_FILE = 'Inputs.xlsx';
+/** The files a report run keeps next to its workbook (downloadable by name). */
+export const RUN_EXTRA_FILES: readonly string[] = [...MAIL_FILE_NAMES, INPUTS_BOOK_FILE];
 /** Channels of the B2C attachment. */
 export const MARKETPLACE_CHANNELS = ['Amazon', 'Flipkart', 'Myntra'];
 
@@ -53,6 +60,20 @@ export type IntransitSource = (typeof INTRANSIT_SOURCE)[keyof typeof INTRANSIT_S
 /** Inputs built from PEPIMS's own tracker at report build (sources/pepims.ts), not by a connector run. */
 export const PEPIMS_CONNECTOR = 'pepims';
 
+/**
+ * D2C internal transfers of this tool (phase 8, plan d2c-internal-transfers 7.2 Option B): D2C_Transfers.csv is written
+ * from our own tables at every build for today (whatever INTRANSIT_PO_SOURCE is) by modules/d2c-transfers/intransit-feed.ts
+ * and stored as the day's file; combined-intransit counts its rows (Source D2C_TRANSFERS_SOURCE) and drops the PEPIMS /
+ * Export-B2B rows of the same reference IDs and the Uniware POs of our inward PO codes. Rows with Source
+ * D2C_TRANSFERS_REF_SOURCE carry no units: one per transfer of ours, so its reference ID wins even when nothing is open.
+ */
+export const D2C_TRANSFERS_CONNECTOR = 'd2c-transfers';
+export const D2C_TRANSFERS_FILE = 'D2C_Transfers.csv';
+export const D2C_TRANSFERS_SOURCE = 'D2C_Transfers';
+export const D2C_TRANSFERS_REF_SOURCE = 'D2C_Transfers_Ref';
+/** Extra columns of the feed after combined-intransit's TARGET_COLS. */
+export const D2C_TRANSFERS_EXTRA_COLUMNS = ['PO Number (Inward)', 'Transfer Code'] as const;
+
 export interface InputFile {
   name: string;
   group: InputGroup;
@@ -63,7 +84,7 @@ export interface InputFile {
   oneOf?: string[][];
   /** The connector that can fetch this file. */
   /** 'pepims' = read from PEPIMS's tracker at build (Shipment_Status, PO_Format). */
-  connector?: IntransitSource | typeof PEPIMS_CONNECTOR;
+  connector?: IntransitSource | typeof PEPIMS_CONNECTOR | typeof D2C_TRANSFERS_CONNECTOR;
   /** Masters: 'daily' = expected to be updated every day (warned when not updated today), else 'on-change'. */
   refresh?: 'daily' | 'on-change';
   /** The connector's option that fetches only this file (amazon soh|grn, uniware b2b|po|inventory). */
@@ -92,6 +113,13 @@ export const INPUT_CATALOG: readonly InputFile[] = [
     required: ['PO Number', 'SKU Code', 'Channel SKU Code', 'Quantity', 'Updated Quantity', 'Entry Date', 'PO Date', 'Facility', 'Channel',
       'Location', 'Brand', 'Sr No', 'SKU Name', 'GMV', 'PO Value', 'Updated GMV', 'Updated PO Value', 'Product Weight', 'Working Date',
       'Dispatch Date', 'Current Appointment Date', 'Status Planning', 'Status Warehouse', 'Status Logistics'],
+  },
+  // ---- daily, written from our own D2C internal transfers at the build (today only; optional: no copy = no rows)
+  {
+    name: D2C_TRANSFERS_FILE, group: 'daily-fetch', connector: D2C_TRANSFERS_CONNECTOR, fetchable: 'today-only', optional: true,
+    source: 'D2C internal transfers of this tool (our database), written at build',
+    required: ['PO Number', 'Facility', 'Channel', 'Location', 'SKU Code', 'Final Status', 'final Intransit units', 'Source', 'Final Planning Units',
+      'PO Number (Inward)'],
   },
   // ---- masters
   { name: 'Channel SKU Mapping.csv', group: 'master', refresh: 'on-change', source: 'Marketplace code -> SKU', required: ['Channel Codes', 'Listing SKU Codes at Channel'] },
@@ -215,14 +243,62 @@ export const facilityToGroup = (groups: FacilityGroups): ReadonlyMap<string, str
  * The stock buckets a facility can be put in from the Facility check (user, 2026-10-30): the groups the inventory
  * stage has a units formula for, in FACILITY_GROUPS order. A facility in none of them is not counted as stock.
  */
-export const STOCK_BUCKETS: readonly { group: string; type: string; label: string }[] = [
-  { group: 'D2C', type: 'D2C', label: 'D2C' },
-  { group: 'DarkStore', type: 'DarkStore', label: 'DarkStore' },
-  { group: 'GGNMWH', type: 'MWH', label: 'GGN MWH' },
-  { group: 'MUMMWH', type: 'MWH', label: 'MUM MWH' },
-  { group: 'KOLMWH', type: 'MWH', label: 'KOL MWH' },
-  { group: 'Return', type: 'Return', label: 'Return' },
+export const STOCK_BUCKETS: readonly { group: string; type: string; label: string; feed: StockFeed; formula: StockFormula }[] = [
+  { group: 'D2C', type: 'D2C', label: 'D2C', feed: 'both', formula: 'INV_PP_OP_MINUS_OS' },
+  { group: 'DarkStore', type: 'DarkStore', label: 'DarkStore', feed: 'both', formula: 'INV_PP_OP_SIT_MINUS_OS' },
+  { group: 'GGNMWH', type: 'MWH', label: 'GGN MWH', feed: 'both', formula: 'INV_PP_OP_SIT' },
+  { group: 'MUMMWH', type: 'MWH', label: 'MUM MWH', feed: 'both', formula: 'INV_PP_OP_SIT' },
+  { group: 'KOLMWH', type: 'MWH', label: 'KOL MWH', feed: 'both', formula: 'INV_PP_OP_SIT' },
+  // returned stock counts only while physically held: bare Inventory, never in transit
+  { group: 'Return', type: 'Return', label: 'Return', feed: 'soh', formula: 'INV' },
 ];
+
+/*
+ * Per-facility stock settings (user's facility sheet, 2026-11-02; master_facilities.intransit_feed / stock_formula,
+ * edited in Masters > Warehouses). Feed: whether the facility's own open purchase orders also count as in transit
+ * (both) or only its stock on hand (soh). Units formula: which Uniware Inventory Snapshot columns make its SOH.
+ * An empty value = its bucket's default above.
+ */
+export const STOCK_FEEDS = [
+  { value: 'both', label: 'SOH + In-transit' },
+  { value: 'soh', label: 'SOH only' },
+] as const;
+export type StockFeed = (typeof STOCK_FEEDS)[number]['value'];
+
+/** The Inventory Snapshot columns a formula adds (Open Sale is subtracted), in the order they are summed. */
+export interface StockFormulaParts { putaway: boolean; openPurchase: boolean; stockInTransfer: boolean; openSale: boolean }
+
+export const STOCK_FORMULAS = {
+  INV: { label: 'Inventory only', parts: { putaway: false, openPurchase: false, stockInTransfer: false, openSale: false } },
+  INV_PP_OP_MINUS_OS: { label: 'Inventory + Putaway Pending + Open Purchase - Open Sale', parts: { putaway: true, openPurchase: true, stockInTransfer: false, openSale: true } },
+  INV_PP_OP_SIT_MINUS_OS: { label: 'Inventory + Putaway Pending + Open Purchase + Stock In Transfer - Open Sale', parts: { putaway: true, openPurchase: true, stockInTransfer: true, openSale: true } },
+  INV_PP_OP_SIT: { label: 'Inventory + Putaway Pending + Open Purchase + Stock In Transfer', parts: { putaway: true, openPurchase: true, stockInTransfer: true, openSale: false } },
+} as const satisfies Record<string, { label: string; parts: StockFormulaParts }>;
+export type StockFormula = keyof typeof STOCK_FORMULAS;
+export const isStockFormula = (v: unknown): v is StockFormula => typeof v === 'string' && Object.prototype.hasOwnProperty.call(STOCK_FORMULAS, v);
+export const isStockFeed = (v: unknown): v is StockFeed => STOCK_FEEDS.some((f) => f.value === v);
+
+/** Facilities whose formula differs from their bucket's (the D2C ones that also count Stock In Transfer). */
+export const FACILITY_FORMULA_OVERRIDES: Readonly<Record<string, StockFormula>> = {
+  mCaff_Mumbai2: 'INV_PP_OP_SIT_MINUS_OS',
+  mCaff_Gurgaon3: 'INV_PP_OP_SIT_MINUS_OS',
+};
+
+/** The Warehouses edit value of a facility that is not counted as stock (bucket, feed and formula all empty). */
+export const STOCK_NOT_COUNTED = 'Not counted';
+/** The Warehouses edit fields of the stock settings (sent together; changing only these re-checks no POs). */
+export const STOCK_EDIT_KEYS = ['stockBucket', 'stockFeed', 'stockFormula'] as const;
+
+/** One counted facility's feed and formula. */
+export interface FacilityStock { feed: StockFeed; formula: StockFormula }
+
+/** A facility's settings where none are stored: its bucket's default (and the overrides above); null = no such bucket. */
+export const defaultFacilityStock = (group: string, code: string): FacilityStock | null => {
+  const b = STOCK_BUCKETS.find((x) => x.group === group);
+  if (!b) return null;
+  const over = Object.entries(FACILITY_FORMULA_OVERRIDES).find(([c]) => c.toLowerCase() === code.toLowerCase())?.[1];
+  return { feed: b.feed, formula: over ?? b.formula };
+};
 
 /** The weekly check of Uniware's facilities against master_facilities (user, 2026-10-30). */
 export const FACILITY_CHECK = {
@@ -283,8 +359,25 @@ export const INTRANSIT_RUN_STATUS = {
   RUNNING: 'running',
   SUCCEEDED: 'succeeded',
   FAILED: 'failed',
+  /** Stopped by a person, or a build nobody answered the new-SKU question for (user, 2026-11-02). */
+  STOPPED: 'stopped',
 } as const;
 export type IntransitRunStatus = (typeof INTRANSIT_RUN_STATUS)[keyof typeof INTRANSIT_RUN_STATUS];
+
+/** A build's steps (options.step) besides 'fetching <source>'. */
+export const INTRANSIT_STEP = {
+  BUILDING: 'building',
+  /** Paused: new SKUs / mapping issues found, waiting for the answers (fix or ignore; user, 2026-11-02). */
+  AWAITING_ANSWERS: 'awaiting-answers',
+  /** Paused: a fetch of the build failed, waiting for its files uploaded by hand (or Continue; user, 2026-11-02). */
+  AWAITING_UPLOAD: 'awaiting-upload',
+  INPUTS_BOOK: 'saving the input files',
+  SAVING: 'saving to S3',
+  DONE: 'done',
+} as const;
+
+/** COGS of a SKU with an MRP but no COGS in Sheet35(2) or Uniware: 20% of MRP (user, 2026-11-02). */
+export const COGS_FROM_MRP = 0.2;
 
 /** Lines of the log returned with a run (the full log is GET /runs/:id/log). */
 export const INTRANSIT_LOG_TAIL_LINES = 15;
@@ -320,6 +413,9 @@ export const INTRANSIT_ROUTES = {
   RUN_MAIL: '/runs/:id/mail',
   RUN_MAIL_SEND: '/runs/:id/mail/send',
   RUN_REPORT: '/runs/:id/report',
+  RUN_STOP: '/runs/:id/stop',
+  RUN_ISSUES: '/runs/:id/issues',
+  RUN_CONTINUE: '/runs/:id/continue',
   CONNECTOR: '/connectors/:source',
   ROBOT_LOGIN: '/robots/:source/login',
   INVENTORY: '/inventory',
@@ -364,6 +460,10 @@ export const MASTER_CHANGE_SOURCE = {
   VARIANT_MAP: 'variant_map',
   /** the first full load (npm run intransit:masters) */
   LOADER: 'loader',
+  /** a new SKU / marketplace code answered at a build (2026-11-02) */
+  SKU_REVIEW: 'sku_review',
+  /** Sheet35 values a build filled: Uniware MRP / name, COGS = 20% of MRP (2026-11-02) */
+  UNIWARE_FILL: 'uniware_fill',
 } as const;
 export type MasterChangeSource = (typeof MASTER_CHANGE_SOURCE)[keyof typeof MASTER_CHANGE_SOURCE];
 

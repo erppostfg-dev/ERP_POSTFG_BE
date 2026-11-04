@@ -109,6 +109,10 @@ export const TABLES = {
   /** Mailing lists (2026-10-30; constants/mail-lists.ts): a mail switched on / off, and who gets each mail. */
   MAIL_LIST_SETTINGS: 'mail_list_settings',
   MAIL_RECIPIENTS: 'mail_recipients',
+  /** D2C internal transfers (2026-11-03; constants/d2c-transfers.ts): one row per Uniware invoice / package of a transfer. */
+  PO_INVOICES: 'po_invoices',
+  /** D2C internal transfers (2026-11-03): Uniware channel / customer / vendor codes per route (sending facility + transfer location). */
+  D2C_TRANSFER_ROUTES: 'd2c_transfer_routes',
 } as const;
 
 /** master_sku_components.stage: which split file a combo's parts come from (the report splits in two stages). */
@@ -245,6 +249,27 @@ export const SHIPMENT_LOG_ACTION = {
   /** The sale order CSV was uploaded into Uniware (marked by a person; 2026-10-19), or that mark was removed. */
   UNIWARE_UPLOADED: 'uniware_uploaded',
   UNIWARE_UPLOAD_UNDONE: 'uniware_upload_undone',
+  /*
+   * D2C internal transfers (2026-11-03): written only for transfer rows (master_purchase_orders.transferCode NOT NULL);
+   * field edits of a draft reuse field_changed.
+   */
+  STAGE_CHANGED: 'stage_changed',
+  SO_REQUESTED: 'so_requested',
+  SO_CREATED: 'so_created',
+  SO_FAILED: 'so_failed',
+  STOCK_WARNING: 'stock_warning',
+  CANCELLED: 'cancelled',
+  BALANCE_CLOSED: 'balance_closed',
+  EXPIRY_CHANGED: 'expiry_changed',
+  LINE_ADDED: 'line_added',
+  LINE_REMOVED: 'line_removed',
+  INVOICE_SEEN: 'invoice_seen',
+  INWARD_PO_REQUESTED: 'inward_po_requested',
+  INWARD_PO_CREATED: 'inward_po_created',
+  INWARD_PO_FAILED: 'inward_po_failed',
+  GRN_RECEIVED: 'grn_received',
+  VARIANCE_REASON: 'variance_reason',
+  SYNC_ERROR: 'sync_error',
 } as const;
 export type ShipmentLogAction = (typeof SHIPMENT_LOG_ACTION)[keyof typeof SHIPMENT_LOG_ACTION];
 
@@ -255,6 +280,10 @@ export const SHIPMENT_LOG_SOURCE = {
   PIPELINE: 'pipeline',
   REVIEW: 'review',
   SCRIPT: 'script',
+  /** D2C internal transfers (2026-11-03): the tool called Uniware (TOOL · API), Uniware's own change (sync), the app itself. */
+  TOOL_API: 'tool_api',
+  UNIWARE: 'uniware',
+  SYSTEM: 'system',
 } as const;
 export type ShipmentLogSource = (typeof SHIPMENT_LOG_SOURCE)[keyof typeof SHIPMENT_LOG_SOURCE];
 
@@ -268,6 +297,8 @@ export const MASTER_LOG_TYPE = {
   CHANNEL: 'channel',
   LOCATION: 'location',
   FACILITY: 'facility',
+  /** D2C internal transfers (2026-11-03): a route of d2c_transfer_routes (Masters > Warehouses grid). */
+  TRANSFER_ROUTE: 'transfer_route',
 } as const;
 export type MasterLogType = (typeof MASTER_LOG_TYPE)[keyof typeof MASTER_LOG_TYPE];
 

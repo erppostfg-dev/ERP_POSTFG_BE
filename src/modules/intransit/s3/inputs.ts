@@ -124,6 +124,18 @@ const templateKeys = async (): Promise<string[]> => {
 };
 const lastTemplates = new Map<Scope, string[]>();
 
+/**
+ * The day's copy of `name` was uploaded by hand after `since` (ISO): a fetch that started before must not replace it
+ * (Stop a fetch and upload by hand, user 2026-11-02).
+ */
+export const uploadedAfter = async (name: string, day: string, since: string): Promise<boolean> => {
+  forgetListings();
+  const v = versionOfDay(await entries(), name, day);
+  if (!v || v === 'deleted') return false;
+  const m = await metaOf(v.key);
+  return m?.meta.source === 'upload' && m.at.toISOString() > since;
+};
+
 /** The inputs used for `date`. */
 export const resolveStored = async (date: string): Promise<{ files: StoredInput[]; missing: string[] }> => {
   const all = await entries();
