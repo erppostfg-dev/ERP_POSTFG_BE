@@ -245,6 +245,9 @@ export const ERRORS = {
   SPLIT1_COMPONENT_UNKNOWN: define(422, (skus: string) => `Not added: Uniware does not know these component SKUs: ${skus}`),
   INTRANSIT_RUN_NOT_DONE: define(409, (id: string, status: string) => `Run ${id} is ${status}; the report is ready only when it succeeded`),
   INTRANSIT_RUN_BUSY: define(409, (id: string, status: string) => `Run ${id} is ${status}; wait for it to finish`),
+  INTRANSIT_RUN_NOT_STOPPABLE: define(409, (id: string, status: string) => `Run ${id} is ${status}: there is nothing to stop`),
+  INTRANSIT_NOT_PAUSED: define(409, (id: string, what: string) => `Build ${id} is not waiting for ${what}`),
+  INTRANSIT_SKU_ANSWERS_INVALID: define(400, (problem: string) => `The answers were not saved: ${problem}`),
   INTRANSIT_SOURCE_UNKNOWN: define(404, (source: string, sources: string) => `No connector ${source}; use one of: ${sources}`),
   INTRANSIT_CONNECTOR_RUNNING: define(409, (source: string, id: string) => `The ${source} fetch is already running (run ${id})`),
   INTRANSIT_CONNECTOR_NOT_CONFIGURED: define(500, (source: string, keys: string) => `The ${source} connector needs ${keys} in .env`),
@@ -271,6 +274,30 @@ export const ERRORS = {
   INTRANSIT_MASTERS_PROD_ONLY: define(403, () => 'The in-transit masters are shared with production: change them on the live server (a test machine cannot)'),
   INTRANSIT_SKU_UNKNOWN: define(422, (skus: string) => `Not saved: these SKUs are neither in the product master nor in Uniware: ${skus}`),
   INTRANSIT_UNIWARE_NEEDED: define(422, (skus: string, reason: string) => `Not saved: ${skus} must be looked up in Uniware first (${reason})`),
+
+  // --- D2C internal transfers (2026-11-03; constants/d2c-transfers.ts) ----------------------------------------------
+  D2C_NOT_FOUND: define(404, (id: string) => `No internal transfer ${id}`),
+  D2C_NOT_EDITABLE: define(409, (code: string, why: string) => `${code} cannot be changed: ${why}`),
+  D2C_STALE: define(409, (code: string) => `${code} was changed by someone else since you opened it: reload it and try again`),
+  D2C_INVALID: define(422, (problems: number) => `The transfer was not saved: ${problems} problem(s), see details`),
+  D2C_UPLOAD_FILE: define(400, (reason: string) => `Upload rejected: ${reason}`),
+  D2C_NO_MAPPING: define(422, (channel: string, location: string) => `No transfer location ${location} for channel ${channel}: add it in Masters`),
+  // phase 5 (Uniware sale orders)
+  D2C_NOT_LIVE: define(409, (facility: string) => `Uniware changes are switched off for ${facility}: only the test warehouses may be used until D2C transfers go live`),
+  // local TEST ONLY mode (env.d2c.testOnly): nothing but test-facility transfers may change
+  D2C_TEST_ONLY: define(409, (lane: string) => `local test mode: only TEST_FACILITY transfers can reach Uniware (${lane} is not a test transfer)`),
+  D2C_TEST_ONLY_CHANGE: define(409, (lane: string) => `local test mode: only transfers between test facilities (TEST_FACILITY) can be changed here; ${lane} is a real route`),
+  D2C_TEST_ONLY_MASTER: define(409, (why: string) => `local test mode: only TEST_FACILITY rows of the D2C transfer masters can be changed here; ${why}`),
+  D2C_IN_FLIGHT: define(409, (code: string) => `${code}: its sale order request is still open in Uniware: wait until it is resolved (the sync checks it)`),
+  D2C_UNIWARE_REFUSED: define(422, (code: string, why: string) => `${code}: Uniware refused: ${why}`),
+  D2C_UNIWARE_DOWN: define(502, (code: string, why: string) => `${code}: Uniware could not be reached, nothing was changed: ${why}`),
+  D2C_JOB_NOT_FOUND: define(404, (id: string) => `No sale order job ${id} on this server (it may have restarted): reload the list`),
+  D2C_TOO_MANY: define(400, (max: number) => `At most ${max} transfers at a time`),
+  // phase 6 (Uniware status sync)
+  D2C_RESYNC_FORBIDDEN: define(403, () => 'A full resync (closed, cancelled and erroring transfers too) needs the "D2C transfers: full resync" permission'),
+  // phase 7 (inward POs, GRN, variance reason)
+  D2C_INVOICE_NOT_FOUND: define(404, (id: string) => `No invoice ${id} of an internal transfer`),
+  D2C_TOO_MANY_INVOICES: define(400, (max: number) => `At most ${max} invoices at a time`),
 
   // --- Command-line scripts ---------------------------------------------------------------------------------------
   CLI_USAGE: define(400, (usage: string) => usage),

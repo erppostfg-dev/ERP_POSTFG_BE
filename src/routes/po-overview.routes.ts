@@ -18,7 +18,7 @@ import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
 import { Paging, PoOverviewFilters } from '../modules/po-overview/po-overview.queries';
 import { accessFor } from '../modules/po-overview/po-overview.access';
 import { editOptions, FieldChanges, saveShipment, shipmentHistory } from '../modules/po-overview/po-overview.edit';
-import { changesSince, lastLogId, onShipmentChange, startLive } from '../modules/po-overview/po-overview.live';
+import { changesSince, lastLogId, onShipmentChange, ShipmentChange, startLive } from '../modules/po-overview/po-overview.live';
 import { getColumns, getFilterOptions, getShipment, hiddenFields, listLines, listShipments } from '../modules/po-overview/po-overview.service';
 import { appError } from '../utils/AppError';
 import { LOG_SOURCE } from '../constants/logging';
@@ -215,13 +215,18 @@ router.get(PO_OVERVIEW_ROUTES.EDIT_OPTIONS, ...viewer, async (_req, res, next) =
   }
 });
 
+/** A change as PO Overview sends it: hidden fields left out, without the transfer flag (same message as before). */
+const forPoOverview = ({ isTransfer: _transfer, ...c }: ShipmentChange, hidden: Set<string>) => ({ ...c, fields: c.fields.filter((f) => !hidden.has(f)) });
+
 /** "changes since <logId>": the fallback a screen polls while its SSE is down. No `after` = just the current cursor. */
 router.get(PO_OVERVIEW_ROUTES.CHANGES, ...viewer, async (req, res, next) => {
   try {
     const after = Number(req.query.after);
     const hidden = hiddenFields(await accessFor(req.auth!.user, req.auth!.roles));
-    const changes = Number.isFinite(after) ? (await changesSince(after)).map((c) => ({ ...c, fields: c.fields.filter((f) => !hidden.has(f)) })) : [];
-    res.json({ data: { lastId: String(changes.at(-1)?.logId ?? (Number.isFinite(after) ? after : await lastLogId())), changes } });
+    const all = Number.isFinite(after) ? await changesSince(after) : [];
+    // D2C internal transfers are not on PO Overview (2026-11-03): dropped, but the cursor still moves past them
+    const changes = all.filter((c) => !c.isTransfer).map((c) => forPoOverview(c, hidden));
+    res.json({ data: { lastId: String(all.at(-1)?.logId ?? (Number.isFinite(after) ? after : await lastLogId())), changes } });
   } catch (err) {
     next(err);
   }
@@ -240,12 +245,12 @@ router.get(PO_OVERVIEW_ROUTES.EVENTS, ...viewer, async (req, res) => {
     await startLive();
     hidden = hiddenFields(await accessFor(req.auth!.user, req.auth!.roles));
     const after = Number(req.header('Last-Event-ID') ?? req.query.after);
-    if (Number.isFinite(after)) for (const c of await changesSince(after)) send(LIVE.EVENT_SHIPMENT, { ...c, fields: c.fields.filter((f) => !hidden.has(f)) }, c.logId);
+    if (Number.isFinite(after)) for (const c of await changesSince(after)) if (!c.isTransfer) send(LIVE.EVENT_SHIPMENT, forPoOverview(c, hidden), c.logId);
     send(LIVE.EVENT_PING, { lastId: String(await lastLogId()) });
   } catch (err) {
     logError(LOG_SOURCE.DB, '[live] stream start failed (the screen falls back to polling)', err);
   }
-  const off = onShipmentChange((c) => send(LIVE.EVENT_SHIPMENT, { ...c, fields: c.fields.filter((f) => !hidden.has(f)) }, c.logId));
+  const off = onShipmentChange((c) => { if (!c.isTransfer) send(LIVE.EVENT_SHIPMENT, forPoOverview(c, hidden), c.logId); });
   const beat = setInterval(() => send(LIVE.EVENT_PING, { at: Date.now() }), LIVE.HEARTBEAT_MS);
   req.on('close', () => { off(); clearInterval(beat); });
 });

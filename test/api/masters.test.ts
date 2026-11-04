@@ -192,6 +192,28 @@ describe('Edit', () => {
     expect(loc.body.error.details[0]).toMatchObject({ field: 'facilityCode', code: 'FIELD_NOT_FOUND' });
   });
 
+  it('warehouse in-transit stock: bucket, feed and formula go together, sets the channel type, logged per field', async () => {
+    const stock = (changes: object) => edit('facility', m.facilityId, { changes });
+    // one of the three alone, or a bucket with "Not counted" feed / formula, is refused
+    const alone = await stock({ stockBucket: 'D2C' }).expect(400);
+    expect(alone.body.error.details.map((d: { field: string }) => d.field).sort()).toEqual(['stockFeed', 'stockFormula']);
+    const half = await stock({ stockBucket: 'D2C', stockFeed: 'soh', stockFormula: 'Not counted' }).expect(400);
+    expect(half.body.error.details[0]).toMatchObject({ field: 'stockFormula', code: 'FIELD_REQUIRED' });
+    await stock({ stockBucket: 'NOPE', stockFeed: 'soh', stockFormula: 'INV' }).expect(400);
+
+    const res = await stock({ stockBucket: 'D2C', stockFeed: 'soh', stockFormula: 'INV_PP_OP_SIT_MINUS_OS' }).expect(200);
+    expect(res.body.data.changed.sort()).toEqual(['stockBucket', 'stockFeed', 'stockFormula']);
+    const q = 'SELECT intransit_group g, intransit_type t, intransit_feed feed, stock_formula formula FROM master_facilities WHERE id = ?';
+    expect((await rows(q, [m.facilityId]))[0]).toEqual({ g: 'D2C', t: 'D2C', feed: 'soh', formula: 'INV_PP_OP_SIT_MINUS_OS' });
+    expect((await rows<{ field_name: string }>('SELECT field_name FROM master_change_logs ORDER BY field_name')).map((r) => r.field_name)).toEqual(['stockBucket', 'stockFeed', 'stockFormula']);
+    const list = (await api().get(`${P}/warehouses/pep`).set('Cookie', admin.cookie).expect(200)).body as { data: Record<string, unknown>[] };
+    expect(list.data[0]).toMatchObject({ intransitGroup: 'D2C', intransitFeed: 'soh', stockFormula: 'INV_PP_OP_SIT_MINUS_OS' });
+
+    // "Not counted" empties all three (and the channel type)
+    await stock({ stockBucket: 'Not counted', stockFeed: 'Not counted', stockFormula: 'Not counted' }).expect(200);
+    expect((await rows(q, [m.facilityId]))[0]).toEqual({ g: null, t: null, feed: null, formula: null });
+  });
+
   it('same values -> nothing written; unknown row -> 404', async () => {
     const res = await edit('location', m.locationId, { changes: { city: 'Mumbai' } }).expect(200);
     expect(res.body.data.changed).toEqual([]);

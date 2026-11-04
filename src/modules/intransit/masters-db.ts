@@ -95,10 +95,11 @@ export const updateMany = async (m: EntityManager, table: string, keyCol: string
 /**
  * Make sure every SKU is a master_skus row (the combo parts' foreign keys need them): the missing ones are added from
  * Uniware. Refused, listing them, when Uniware does not know them or cannot be asked. Returns lower-case -> pep_code
- * and the SKUs added. dryRun: Uniware is asked but nothing is inserted.
+ * and the SKUs added. dryRun: Uniware is asked but nothing is inserted. lenient (a new SKU answered at a build,
+ * 2026-11-02): one Uniware does not know - or when Uniware cannot be asked - is added as a bare code (inactive).
  */
 export const ensureSkus = async (
-  m: EntityManager, skus: string[], who: Who, master: string, source: MasterChangeSource, dryRun = false,
+  m: EntityManager, skus: string[], who: Who, master: string, source: MasterChangeSource, dryRun = false, lenient = false,
 ): Promise<{ map: Map<string, string>; added: string[] }> => {
   const wanted = [...new Map(skus.filter((s) => s && s.trim()).map((s) => [lc(s), s.trim()])).entries()];
   const have = new Map<string, string>();
@@ -111,23 +112,28 @@ export const ensureSkus = async (
   if (!missing.length) return { map: have, added: [] };
 
   const u = env.intransit.uniware;
-  if (!u.tenant || !u.username || !u.password) throw appError(ERROR_CODES.INTRANSIT_UNIWARE_NEEDED, missing.join(', '), 'no Uniware login in .env');
-  const api = uniwareCatalog(u);
   const found: UniwareItem[] = [];
   const unknown: string[] = [];
-  for (const sku of missing) {
-    let it: UniwareItem | null;
-    try {
-      it = await getItem(api, sku);
-    } catch (err) {
-      throw appError(ERROR_CODES.INTRANSIT_UNIWARE_NEEDED, missing.join(', '), err instanceof Error ? err.message.slice(0, 200) : String(err));
+  if (!u.tenant || !u.username || !u.password) {
+    if (!lenient) throw appError(ERROR_CODES.INTRANSIT_UNIWARE_NEEDED, missing.join(', '), 'no Uniware login in .env');
+    unknown.push(...missing);
+  } else {
+    const api = uniwareCatalog(u);
+    for (const sku of missing) {
+      let it: UniwareItem | null;
+      try {
+        it = await getItem(api, sku);
+      } catch (err) {
+        if (!lenient) throw appError(ERROR_CODES.INTRANSIT_UNIWARE_NEEDED, missing.join(', '), err instanceof Error ? err.message.slice(0, 200) : String(err));
+        it = null;
+      }
+      // stored as asked (Uniware may answer in other letter case: the masters name it the way the file does)
+      if (it) found.push({ ...it, sku: lc(it.sku) === lc(sku) ? it.sku : sku });
+      else unknown.push(sku);
     }
-    // stored as asked (Uniware may answer in other letter case: the masters name it the way the file does)
-    if (it) found.push({ ...it, sku: lc(it.sku) === lc(sku) ? it.sku : sku });
-    else unknown.push(sku);
   }
-  if (unknown.length) throw appError(ERROR_CODES.INTRANSIT_SKU_UNKNOWN, unknown.join(', ')).withDetails({ unknown });
-  const rows = found.map((it) => skuRowFrom(it, it.sku, null));
+  if (unknown.length && !lenient) throw appError(ERROR_CODES.INTRANSIT_SKU_UNKNOWN, unknown.join(', ')).withDetails({ unknown });
+  const rows = [...found.map((it) => skuRowFrom(it, it.sku, null)), ...(lenient ? unknown.map((sku) => skuRowFrom(null, sku, null)) : [])];
   if (dryRun) {
     for (const r of rows) have.set(lc(r.pep_code), r.pep_code);
     return { map: have, added: rows.map((r) => r.pep_code) };
@@ -135,7 +141,11 @@ export const ensureSkus = async (
   const cols = Object.keys(rows[0]);
   await m.query(`INSERT INTO ${TABLES.MASTER_SKUS} (${cols.map((c) => `\`${c}\``).join(', ')}) VALUES ${rows.map(() => `(${cols.map(() => '?').join(', ')})`).join(', ')}`,
     rows.flatMap((r) => cols.map((c) => (r as Record<string, unknown>)[c])));
-  await logChanges(m, rows.map((r) => ({ master, table: TABLES.MASTER_SKUS, rowKey: r.pep_code, field: null, oldValue: null, newValue: `added from Uniware: ${r.product_name ?? ''}` })), who, source);
+  const bare = new Set(lenient ? unknown : []);
+  await logChanges(m, rows.map((r) => ({
+    master, table: TABLES.MASTER_SKUS, rowKey: r.pep_code, field: null, oldValue: null,
+    newValue: bare.has(r.pep_code) ? 'added as a code only (not in Uniware)' : `added from Uniware: ${r.product_name ?? ''}`,
+  })), who, source);
   for (const r of rows) have.set(lc(r.pep_code), r.pep_code);
   for (const s of missing) if (!have.has(lc(s))) have.set(lc(s), s); // whatever Uniware's spelling, the asked key resolves
   return { map: have, added: rows.map((r) => r.pep_code) };

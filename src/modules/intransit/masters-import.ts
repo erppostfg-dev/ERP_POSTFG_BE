@@ -3,7 +3,7 @@ import fsp from 'fs/promises';
 import path from 'path';
 import { AppDataSource } from '../../config/data-source';
 import { env } from '../../config/env';
-import { FACILITY_GROUPS, INTRANSIT_FOLDERS, SKU_COMPONENT_STAGE, SkuComponentStage, TABLES } from '../../constants';
+import { defaultFacilityStock, FACILITY_GROUPS, INTRANSIT_FOLDERS, SKU_COMPONENT_STAGE, SkuComponentStage, TABLES } from '../../constants';
 import { mastersDir } from './input-store';
 import { decodeText, tokenizeCsv } from './io';
 import { readXlsxSheet, textXlsx, TextSheet } from './sources/files';
@@ -253,14 +253,16 @@ export const importIntransitMasters = async (opts: { apply: boolean; log: Log; o
 
   // ---- 5. warehouse buckets (exactly FACILITY_GROUPS: the stock the report counts today)
   const facLog: string[][] = [['Facility', 'Report bucket', 'Type', 'Action']];
-  const facUpdates: { id: number; group: string; type: string }[] = [];
+  const facUpdates: { id: number; code: string; group: string; type: string }[] = [];
   for (const [group, type, codes] of FACILITY_GROUPS) {
     for (const code of codes) {
       const hits = facilities.filter((f) => lc(f.code) === lc(code) || (Array.isArray(f.aliases) ? f.aliases : f.aliases ? (JSON.parse(f.aliases) as string[]) : []).some((a) => lc(a) === lc(code)));
       if (!hits.length) { facLog.push([code, group, type, 'NOT in master_facilities']); continue; }
       for (const f of hits) {
         if (f.intransit_group === group && f.intransit_type === type) { facLog.push([f.code, group, type, 'same']); continue; }
-        facUpdates.push({ id: f.id, group, type });
+        // a bucket set since (Facility check, Masters > Warehouses) is not overwritten by a re-import
+        if (f.intransit_group) { facLog.push([f.code, f.intransit_group, f.intransit_type ?? '', 'kept (already set)']); continue; }
+        facUpdates.push({ id: f.id, code: f.code, group, type });
         facLog.push([f.code, group, type, 'set']);
       }
     }
@@ -353,7 +355,10 @@ export const importIntransitMasters = async (opts: { apply: boolean; log: Log; o
         return { channel_id: ch.id, channel_name: ch.name, channel_location_code: l.code, intransit_location: l.loc, is_active: 0, created_at: now, updated_at: now };
       }));
     }
-    for (const u of facUpdates) await m.query(`UPDATE ${TABLES.MASTER_FACILITIES} SET intransit_group = ?, intransit_type = ? WHERE id = ?`, [u.group, u.type, u.id]);
+    for (const u of facUpdates) {
+      const st = defaultFacilityStock(u.group, u.code);
+      await m.query(`UPDATE ${TABLES.MASTER_FACILITIES} SET intransit_group = ?, intransit_type = ?, intransit_feed = ?, stock_formula = ? WHERE id = ?`, [u.group, u.type, st?.feed ?? null, st?.formula ?? null, u.id]);
+    }
     await m.query(`DELETE FROM ${TABLES.INTRANSIT_CHANNEL_SKU_MAP}`);
     await insert(TABLES.INTRANSIT_CHANNEL_SKU_MAP, csm.map((r) => ({ sku_code: r.sku, channel: r.channel, channel_sku_code: r.code, final_sku: r.final, source: r.source, review_note: r.note, is_active: 1 })));
   });

@@ -50,6 +50,10 @@ export class ShipmentLog {
   @Column({ name: 'remark', type: 'text', nullable: true })
   remark: string | null;
 
+  /** D2C internal transfers (2026-11-03): the raw Uniware status the row was written for (SO / package / PO / GRN). */
+  @Column({ name: 'uniware_status', type: 'varchar', length: 100, nullable: true })
+  uniwareStatus: string | null;
+
   @Column({ name: 'created_at', type: 'datetime', precision: 6, default: () => 'CURRENT_TIMESTAMP(6)' })
   createdAt: Date;
 

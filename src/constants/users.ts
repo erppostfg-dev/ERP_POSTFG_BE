@@ -24,7 +24,7 @@ export const USER_NAME_MAX = 100;
 const V = ACCESS_LEVEL.VIEWER;
 const E = ACCESS_LEVEL.EDITOR;
 const MASTERS = ['/masters', '/masters/pep-skus', '/masters/channel-skus', '/masters/channel-customers', '/masters/channel-locations', '/masters/warehouses'];
-const OPERATIONS = ['/operations', '/operations/po-overview', '/operations/po-review', '/operations/po-working', '/operations/skus-short', '/operations/analytics'];
+const OPERATIONS = ['/operations', '/operations/po-overview', '/operations/po-review', '/operations/po-working', '/operations/skus-short', '/operations/analytics', '/operations/d2c-transfers'];
 const PLANNING = ['/planning', '/planning/inventory', '/planning/drr-aging', '/planning/analytics'];
 const all = (pages: string[], level: AccessLevel) => Object.fromEntries(pages.map((p) => [p, level]));
 
@@ -50,7 +50,7 @@ export const ROLE_CATALOG: readonly RoleDef[] = [
     key: 'operations-executive', label: 'Operations Executive', description: 'Works on PO Overview, PO Review and PO Working; sees Masters', isSystem: false,
     grants: {
       '/operations': V, '/operations/po-overview': E, '/operations/po-review': E, '/operations/po-working': E,
-      '/operations/skus-short': V, '/operations/analytics': V, ...all(MASTERS, V),
+      '/operations/skus-short': V, '/operations/analytics': V, '/operations/d2c-transfers': E, ...all(MASTERS, V),
     },
   },
   {

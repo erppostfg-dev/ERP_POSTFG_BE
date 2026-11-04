@@ -24,6 +24,9 @@ export const MASTER_ROUTES = {
   EDIT: '/edit/:type/:id',
   /** Switch one row on / off (2026-10-28, POST { active }): never deleted, logged. */
   ACTIVE: '/active/:type/:id',
+  /** D2C internal transfer routes (2026-11-03): GET the grid, PATCH /:id one route's codes / on-off. */
+  TRANSFER_ROUTES: '/transfer-routes',
+  TRANSFER_ROUTE: '/transfer-routes/:id',
 } as const;
 
 /** Masters history (2026-10-28): most entries one call returns, and the "recent changes" look-back (days). */

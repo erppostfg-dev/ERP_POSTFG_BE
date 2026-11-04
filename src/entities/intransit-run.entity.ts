@@ -67,6 +67,15 @@ export class IntransitRun {
   @Column({ name: 'report_path', type: 'varchar', length: 500, nullable: true })
   reportPath: string | null;
 
+  /** Who pressed Stop (user, 2026-11-02); also the signal to the machine running it. */
+  @Column({ name: 'stop_requested_by', type: 'int', nullable: true })
+  stopRequestedBy: number | null;
+
+  /** fk_intransit_runs_stop_requested_by */
+  @ManyToOne(() => User, { nullable: true, onDelete: 'SET NULL', onUpdate: 'CASCADE' })
+  @JoinColumn({ name: 'stop_requested_by', referencedColumnName: 'id', foreignKeyConstraintName: 'fk_intransit_runs_stop_requested_by' })
+  stopper: User | null;
+
   /** fk_intransit_runs_created_by */
   @ManyToOne(() => User, { nullable: true, onDelete: 'SET NULL', onUpdate: 'CASCADE' })
   @JoinColumn({ name: 'created_by', referencedColumnName: 'id', foreignKeyConstraintName: 'fk_intransit_runs_created_by' })

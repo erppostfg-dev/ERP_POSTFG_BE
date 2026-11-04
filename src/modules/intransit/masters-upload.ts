@@ -107,7 +107,10 @@ const setSkuColumns = async (c: Ctx, values: Map<string, Record<string, string |
     if (diff.every(([col]) => now[col] === null || now[col] === undefined)) c.res.added++;
     else c.res.updated++;
     diff.forEach(([col, val]) => c.changes.push({ master: c.res.master, table: TABLES.MASTER_SKUS, rowKey: code, field: col, oldValue: now[col] ?? null, newValue: val }));
-    updates.push({ key: code, set: Object.fromEntries(diff) });
+    const set: Record<string, unknown> = Object.fromEntries(diff);
+    // an MRP / COGS a person gave is no longer an auto-filled one (2026-11-02)
+    if ('intransit_mrp' in set || 'intransit_cogs' in set) set.intransit_autofilled = null;
+    updates.push({ key: code, set });
   }
   // 500 SKUs per UPDATE (2026-10-27: was one UPDATE per SKU)
   if (!c.dryRun) await updateMany(c.m, TABLES.MASTER_SKUS, 'pep_code', updates);

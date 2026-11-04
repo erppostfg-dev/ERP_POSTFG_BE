@@ -1,6 +1,9 @@
-import { facilityToGroup, TEST_FACILITY } from '../../../constants';
+import fs from 'fs';
+import {
+  D2C_CHANNELS, D2C_CODE, D2C_TRANSFERS_FILE, D2C_TRANSFERS_SOURCE, facilityToGroup, TEST_FACILITY,
+} from '../../../constants';
 import { Context, fmtInt } from '../context';
-import { Cell, countTrue, fillna, Frame, keyOf, mapWith, not, pyStr, pyStrip, stripped, toNum } from '../frame';
+import { Cell, countTrue, fillna, Frame, keyOf, mapWith, normKey, not, pyStr, pyStrip, stripped, toNum } from '../frame';
 import { stripCols } from '../io';
 import { fillAll } from './common';
 
@@ -12,6 +15,8 @@ const TARGET_COLS = [
   'Current Appointment Date', 'Status Planning', 'Status Warehouse', 'Status Logistics', 'Status (Planning)', 'Status (Warehouse)',
   'Status (Logistics)', 'Final Status', 'final Intransit units', 'Source', 'Final Planning Units',
 ];
+/** The layout of the combined rows (the D2C transfer feed writes these columns first). */
+export const COMBINED_TARGET_COLS: readonly string[] = TARGET_COLS;
 /** Operational fields backfilled onto Export-B2B rows from Intransit_Stock. */
 const LOOKUP_FIELDS = TARGET_COLS.filter(
   (c) => !['PO Number', 'SKU Code', 'Channel SKU Code', 'Final Status', 'final Intransit units', 'Source', 'Final Planning Units'].includes(c),
@@ -26,7 +31,31 @@ const HOLD_MANUAL = new Set(['working hold', 'manual check']);
 
 const SRC_NOT_FOUND = 'PO_Not_Found_in_Export_B2B';
 const SRC_B2B = 'Export_B2B_InTransit_Orders';
-const SRC_PO = 'Purchase_Order';
+/** Source of the open purchase order rows (inventory.ts drops those of SOH-only facilities). */
+export const SRC_PO = 'Purchase_Order';
+
+/**
+ * Our D2C internal transfers (phase 8; D2C_Transfers.csv, modules/d2c-transfers/intransit-feed.ts). Its rows bypass
+ * ALLOWED_CHANNELS only for the 5 transfer channels (KOL_WAREHOUSE is counted for our transfers only, user 2026-11-02);
+ * every PO Number in it (reference rows included) wins over PEPIMS / Export-B2B rows of the same PO Number, and its
+ * inward PO codes (plus every code of our SO prefix: the tool is the only maker of them) are not counted again from
+ * Purchase_Order.csv. No file / no rows = nothing changes.
+ */
+const TRANSFER_CHANNELS = new Set(D2C_CHANNELS.map((c) => c.toLowerCase()));
+interface TransferFeed { rows: Frame; references: Set<string>; inwardCodes: Set<string> }
+const transferFeed = async (ctx: Context): Promise<TransferFeed | null> => {
+  if (!fs.existsSync(ctx.inputPath(D2C_TRANSFERS_FILE))) return null;
+  const f = stripCols(fillAll(await ctx.readInput(D2C_TRANSFERS_FILE), ''));
+  if (!f.length) return null;
+  const references = new Set(normKey(f.get('PO Number')).filter((k) => k !== ''));
+  const inwardCodes = new Set(f.has('PO Number (Inward)') ? normKey(f.get('PO Number (Inward)')).filter((k) => k !== '') : []);
+  const src = stripped(f.get('Source'));
+  const ch = stripped(f.get('Channel')).map((c) => c.toLowerCase());
+  const fac = stripped(f.get('Facility')).map((c) => c.toUpperCase());
+  let rows = f.filter(src.map((x, i) => x === D2C_TRANSFERS_SOURCE && TRANSFER_CHANNELS.has(ch[i]) && fac[i] !== TEST_FACILITY));
+  rows = rows.assign({ 'final Intransit units': toNum(rows.get('final Intransit units')), 'Final Planning Units': toNum(rows.get('Final Planning Units')) });
+  return { rows: rows.select(TARGET_COLS), references, inwardCodes };
+};
 
 /** key -> the field values of the first row of each key. */
 const lookup = (frame: Frame, keyCols: string[], fields: string[]): Map<string, Cell[]> => {
@@ -86,10 +115,17 @@ const backfill = (ctx: Context, b2bOut: Frame, intr: Frame): Frame => {
  * Open purchase orders (status CREATED) as in-transit rows. Not cut by the start date: an open PO is expected stock
  * however old it is (user, 2026-10-21).
  */
-const purchaseOrders = async (ctx: Context): Promise<Frame> => {
+const purchaseOrders = async (ctx: Context, inwardCodes: Set<string> = new Set()): Promise<Frame> => {
   let po = stripCols(fillAll(await ctx.readInput('Purchase_Order.csv'), ''));
   po = po.filter(stripped(po.get('Purchase Order Status')).map((s) => s.toUpperCase() === 'CREATED'));
   po = po.filter(stripped(po.get('Facility')).map((s) => s.toUpperCase() !== TEST_FACILITY));
+  // inward POs of our D2C transfers: counted by the transfer feed (dispatched - received per invoice), never here
+  const soPrefix = D2C_CODE.SO_PREFIX.toLowerCase();
+  const ours = normKey(po.get('PO Code')).map((c) => inwardCodes.has(c) || c.startsWith(soPrefix));
+  if (ours.some(Boolean)) {
+    ctx.log(`  left out ${fmtInt(countTrue(ours))} open purchase order row(s) of our D2C transfers' inward POs (counted by ${D2C_TRANSFERS_FILE})`);
+    po = po.filter(not(ours));
+  }
 
   const fac = stripped(po.get('Facility'));
   const qty = toNum(po.get('Order Quantity'));
@@ -135,6 +171,14 @@ export const run = async (ctx: Context): Promise<void> => {
   b2bOut = b2bOut.assign(Object.fromEntries(filled.columns.map((c) => [c, filled.get(c)]))).select(TARGET_COLS);
 
   let combined = Frame.concat([nf, b2bOut]);
+  const feed = await transferFeed(ctx);
+  if (feed?.references.size) {
+    const dup = normKey(combined.get('PO Number')).map((k) => feed.references.has(k));
+    if (dup.some(Boolean)) {
+      ctx.log(`  left out ${fmtInt(countTrue(dup))} PEPIMS / Export-B2B row(s) of reference IDs our D2C transfers hold (the tool's rows count)`);
+      combined = combined.filter(not(dup));
+    }
+  }
   const status = stripped(combined.get('Final Status')).map((s) => s.toLowerCase());
   const source = combined.get('Source');
   const units = toNum(combined.get('final Intransit units'));
@@ -143,8 +187,12 @@ export const run = async (ctx: Context): Promise<void> => {
   const allowed = new Set(ALLOWED_CHANNELS.map((c) => c.toLowerCase()));
   combined = combined.filter(stripped(combined.get('Channel')).map((c) => allowed.has(c.toLowerCase())));
   ctx.log(`  dropped ${fmtInt(countTrue(not(keep)))} unbacked hold/manual rows; ${fmtInt(combined.length)} rows after channel filter`);
+  if (feed?.rows.length) {
+    combined = Frame.concat([combined, feed.rows]);
+    ctx.log(`  D2C transfers: ${fmtInt(feed.rows.length)} rows, ${fmtInt(toNum(feed.rows.get('final Intransit units')).reduce((a, b) => a + b, 0))} in-transit units (${D2C_TRANSFERS_FILE})`);
+  }
 
-  const poRows = await purchaseOrders(ctx);
+  const poRows = await purchaseOrders(ctx, feed?.inwardCodes);
   ctx.set('df_combined_intransit', Frame.concat([combined, poRows]));
   ctx.log(`combined in-transit: ${fmtInt(combined.length + poRows.length)} rows (${fmtInt(poRows.length)} open purchase orders)`);
 };

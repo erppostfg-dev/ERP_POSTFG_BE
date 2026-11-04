@@ -4,6 +4,7 @@ import path from 'path';
 import type { Browser, BrowserContext, Download, Locator, Page, Response } from 'playwright';
 import { Log, sleep } from './http';
 import { downloadEach, LIGHT_ARGS, RobotFile, skipHeavyContent } from './robot-files';
+import { onWorkerStop } from '../worker-stop';
 
 /*
  * Myntra Partner Portal robot (user, 2026-10-28; steps watched in a person's session the same day): a headless browser
@@ -93,6 +94,12 @@ const openBrowser = async (cfg: MyntraConfig, sessionFile: string): Promise<{ br
     throw err;
   });
   if (screen) browser.on('disconnected', screen.stop);
+  // Stop on the page: the browser and its screen close before the worker exits
+  const unhook = onWorkerStop(async () => {
+    await browser.close().catch(() => undefined);
+    screen?.stop();
+  });
+  browser.on('disconnected', unhook);
   const platform = process.platform === 'win32' ? 'Windows NT 10.0; Win64; x64' : process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10_15_7' : 'X11; Linux x86_64';
   const major = browser.version().split('.')[0];
   const saved = await fs.access(sessionFile).then(() => true, () => false);

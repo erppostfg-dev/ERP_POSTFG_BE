@@ -1,6 +1,12 @@
 import { EntityManager } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
-import { ERROR_CODES, errorMessage, IST_OFFSET_MS, MASTER_ADD, MASTER_LOG_ACTION, MASTER_LOG_SOURCE, MASTER_LOG_TYPE, MasterLogType, REVIEW_RECHECK, TABLES } from '../../constants';
+import { env } from '../../config/env';
+import { readSettings } from '../d2c-transfers/settings';
+import { testCodesOf } from '../d2c-transfers/test-mode';
+import {
+  ERROR_CODES, errorMessage, IST_OFFSET_MS, MASTER_ADD, MASTER_LOG_ACTION, MASTER_LOG_SOURCE, MASTER_LOG_TYPE, MasterLogType, REVIEW_RECHECK,
+  STOCK_BUCKETS, STOCK_FEEDS, STOCK_FORMULAS, STOCK_NOT_COUNTED, TABLES,
+} from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
 import { ActivityLog, DetailsChannel, MasterChannel, MasterChannelSku, MasterSku } from '../../entities';
 import { appError } from '../../utils/AppError';
@@ -93,6 +99,12 @@ export const checker = (body: unknown) => {
   return { bad, has, text, format, number, oneOf, bool, list, remark, done };
 };
 
+/** The body has a non-empty value for an optional field. */
+const hasValue = (body: unknown, field: string): boolean => {
+  const v = body && typeof body === 'object' ? (body as Body)[field] : undefined;
+  return v !== undefined && v !== null && v !== '';
+};
+
 const audit = (m: EntityManager, by: Actor, what: string) =>
   m.getRepository(ActivityLog).insert({ userId: by.id, method: 'AUDIT', path: what.slice(0, 255), status: 200, durationMs: 0, createdOn: new Date(Date.now() + IST_OFFSET_MS) });
 
@@ -129,6 +141,13 @@ export const formOptions = async () => {
     appointment: MASTER_ADD.APPOINTMENT,
     buyerTypes: MASTER_ADD.BUYER_TYPES,
     states: MASTER_ADD.STATES,
+    // a warehouse's in-transit stock settings (2026-11-02): bucket (with its defaults), feed and units formula
+    stockBuckets: STOCK_BUCKETS,
+    stockFeeds: STOCK_FEEDS,
+    stockFormulas: Object.entries(STOCK_FORMULAS).map(([value, f]) => ({ value, label: f.label })),
+    stockNotCounted: STOCK_NOT_COUNTED,
+    // local D2C test mode (env.d2c.testOnly): the edit forms lock the D2C fields of rows that are not TEST_FACILITY rows
+    d2cTestMode: { testOnly: env.d2c.testOnly, testFacilities: env.d2c.testOnly ? testCodesOf(await readSettings()) : [] },
   };
 };
 
@@ -234,6 +253,8 @@ export const addChannelLocation = async (body: unknown, by: Actor) => {
     shippingAddress: c.text('shippingAddress', MASTER_ADD.ADDRESS_MAX), billingAddress: c.text('billingAddress', MASTER_ADD.ADDRESS_MAX),
     buyerType: c.oneOf('buyerType', MASTER_ADD.BUYER_TYPES), buyerGstNumber: c.format('buyerGstNumber', MASTER_ADD.GSTIN, true), buyerState: c.oneOf('buyerState', MASTER_ADD.STATES),
     buyerPinCode: c.format('buyerPinCode', MASTER_ADD.PIN), tallyLedgerName: c.text('tallyLedgerName'), appointmentChannel: c.oneOf('appointmentChannel', MASTER_ADD.APPOINTMENT),
+    // D2C internal transfers (2026-11-03): optional receiving facility (master_facilities.id) of a transfer location
+    transferFacilityId: hasValue(body, 'transferFacilityId') ? c.number('transferFacilityId', { min: 1, max: 2_147_483_647, int: true }) : null,
   };
   const remark = c.remark();
   const result = await AppDataSource.transaction(async (m) => {
@@ -242,6 +263,9 @@ export const addChannelLocation = async (body: unknown, by: Actor) => {
     // facility codes are exact (upper / lower case = main / child warehouse)
     const facility = v.facilityCode ? await one<{ id: number; code: string }>(m, `SELECT id, code FROM ${TABLES.MASTER_FACILITIES} WHERE code = ? AND is_active = 1`, [v.facilityCode]) : undefined;
     if (v.facilityCode && !facility) c.bad('facilityCode', 'FIELD_NOT_FOUND', 'facilityCode', v.facilityCode);
+    if (v.transferFacilityId && !(await one(m, `SELECT id FROM ${TABLES.MASTER_FACILITIES} WHERE id = ? AND is_active = 1`, [v.transferFacilityId]))) {
+      c.bad('transferFacilityId', 'FIELD_NOT_FOUND', 'transferFacilityId', String(v.transferFacilityId));
+    }
     if (channel && v.locationCode && (await one(m, `SELECT id FROM ${TABLES.DETAILS_CHANNELS} WHERE channel_id = ? AND LOWER(TRIM(channel_location_code)) = LOWER(?) AND is_active = 1 LIMIT 1`, [channel.id, v.locationCode]))) {
       c.bad('locationCode', 'FIELD_ALREADY_EXISTS', 'locationCode', `${channel.display_name} ${v.locationCode}`);
     }
@@ -253,11 +277,11 @@ export const addChannelLocation = async (body: unknown, by: Actor) => {
       consigneeGstNumber: v.consigneeGstNumber, consigneeState: v.consigneeState, consigneePinCode: v.consigneePinCode,
       finalShippingAddress: v.shippingAddress, finalBillingAddress: v.billingAddress, buyerType: v.buyerType, buyerGstNumber: v.buyerGstNumber,
       buyerState: v.buyerState, buyerPinCode: v.buyerPinCode, tallyLedgerName: v.tallyLedgerName, appointmentChannel: v.appointmentChannel,
-      isActive: true, createdAt: now, updatedAt: now,
+      transferFacilityId: v.transferFacilityId, isActive: true, createdAt: now, updatedAt: now,
     });
     await audit(m, by, `masters: added location ${channel!.display_name} ${v.locationCode} (${facility!.code})`);
     await logCreated(m, by, MASTER_LOG_TYPE.LOCATION, r.identifiers[0]?.id, `${channel!.display_name} | ${v.locationCode}`,
-      { ...v, channelId: undefined, channel: channel!.display_name }, remark);
+      { ...v, channelId: undefined, transferFacilityId: v.transferFacilityId ?? undefined, channel: channel!.display_name }, remark);
     log.info(LOG_SOURCE.APP, `[masters] ${by.email} added location ${channel!.display_name} ${v.locationCode}`);
     return { id: String(r.identifiers[0]?.id ?? ''), channel: channel!.display_name };
   });

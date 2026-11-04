@@ -76,8 +76,13 @@ export interface PepWarehouseItem {
   mainFacilityCode: string | null;
   intransitGroup: string | null;
   intransitType: string | null;
+  /** In-transit feed and units formula (STOCK_FEEDS / STOCK_FORMULAS, 2026-11-02); null = not counted. */
+  intransitFeed: string | null;
+  stockFormula: string | null;
   /** Exported by the In-transit Uniware fetch. */
   uniwareExport: boolean;
+  /** D2C internal transfers (2026-11-03): may send / receive transfers (edited as Yes / No). */
+  allowInternalTransfer: boolean;
 }
 
 export async function listChannelWarehouses(): Promise<ChannelWarehouseItem[]> {
@@ -128,7 +133,8 @@ export async function listPepWarehouses(): Promise<PepWarehouseItem[]> {
       select: {
         id: true, code: true, name: true, entity: true, pickupLocation: true, state: true, facilityType: true, billToGstin: true,
         shipToGstin: true, remarks: true, isActive: true, source: true, parentFacilityId: true, intransitGroup: true,
-        intransitType: true, uniwareExport: true,
+        intransitType: true, intransitFeed: true, stockFormula: true, uniwareExport: true,
+        allowInternalTransfer: true,
       },
       order: { code: 'ASC' },
     }),
@@ -155,7 +161,8 @@ export async function listPepWarehouses(): Promise<PepWarehouseItem[]> {
     name: f.name, entity: f.entity, pickupLocation: f.pickupLocation, state: f.state, facilityType: f.facilityType,
     billToGstin: f.billToGstin, shipToGstin: f.shipToGstin, remarks: f.remarks, isActive: f.isActive, source: f.source ?? null,
     mainFacilityCode: f.parentFacilityId !== null ? codeById.get(f.parentFacilityId) ?? null : null,
-    intransitGroup: f.intransitGroup, intransitType: f.intransitType, uniwareExport: f.uniwareExport,
+    intransitGroup: f.intransitGroup, intransitType: f.intransitType, intransitFeed: f.intransitFeed, stockFormula: f.stockFormula, uniwareExport: f.uniwareExport,
+    allowInternalTransfer: f.allowInternalTransfer,
   }));
   // codes the locations use that master_facilities lacks (a data problem: shown, flagged)
   const known = new Set(facilities.map((f) => f.code));
@@ -164,7 +171,8 @@ export async function listPepWarehouses(): Promise<PepWarehouseItem[]> {
     items.push({
       id: null, facilityCode: code, spellings: [code], locationCount: u.count, channels: [...u.channels].sort(), inMaster: false,
       name: null, entity: null, pickupLocation: null, state: null, facilityType: null, billToGstin: null, shipToGstin: null, remarks: null,
-      isActive: false, source: null, mainFacilityCode: null, intransitGroup: null, intransitType: null, uniwareExport: false,
+      isActive: false, source: null, mainFacilityCode: null, intransitGroup: null, intransitType: null, intransitFeed: null, stockFormula: null, uniwareExport: false,
+      allowInternalTransfer: false,
     });
   }
   // the ones serving locations first, then by code

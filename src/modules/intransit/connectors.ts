@@ -2,7 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { INPUT_CATALOG, INTRANSIT_SOURCE, IntransitSource } from '../../constants';
 import { validateInput } from './catalog';
-import { writeWithMeta } from './input-store';
+import { readMeta, writeWithMeta } from './input-store';
 import { AmazonConfig, fetchAmazon } from './sources/amazon';
 import { fetchFlipkart, FlipkartConfig, usesSellerHub } from './sources/flipkart';
 import { Log } from './sources/http';
@@ -44,6 +44,8 @@ export interface ConnectorDirs {
   exportDir: string;
   /** Kept between runs (Amazon's closed-shipment cache). */
   cacheDir: string;
+  /** When the fetch started (ISO): a day's file uploaded by hand after it is kept, not replaced (Stop, 2026-11-02). */
+  startedAt?: string;
 }
 
 export interface ConnectorResult {
@@ -53,6 +55,8 @@ export interface ConnectorResult {
   rejected: Record<string, string[]>;
   /** Files asked for that did not come (their download failed: see the log). */
   missing?: string[];
+  /** Fetched, but the day's copy was uploaded by hand while the fetch ran: the upload is kept. */
+  keptUploads?: string[];
 }
 
 /** The `only` option as a list (empty = everything). */
@@ -90,6 +94,12 @@ const expectedFiles = (source: IntransitSource, cfg: ConnectorConfig, only: stri
 };
 
 /** Fetch, check, and store the good files as the day's inputs. */
+/** The file was uploaded by hand after `since` (ISO). */
+const uploadedAfter = async (file: string, since: string): Promise<boolean> => {
+  const meta = await readMeta(file).catch(() => null);
+  return meta?.source === 'upload' && meta.at > since;
+};
+
 export const runConnector = async (source: IntransitSource, cfg: ConnectorConfig, dirs: ConnectorDirs, opts: ConnectorOptions, log: Log): Promise<ConnectorResult> => {
   await fs.mkdir(dirs.exportDir, { recursive: true });
   const written = await fetchSource(source, cfg, dirs, opts, log);
@@ -101,6 +111,11 @@ export const runConnector = async (source: IntransitSource, cfg: ConnectorConfig
     if (problems.length) {
       result.rejected[name] = problems;
       log(`  ${name} NOT used: ${problems.join('; ')}`);
+      continue;
+    }
+    if (dirs.targetDir && dirs.startedAt && (await uploadedAfter(path.join(dirs.targetDir, name), dirs.startedAt))) {
+      (result.keptUploads ??= []).push(name);
+      log(`  ${name} NOT used: it was uploaded by hand while this fetch ran - the upload is kept`);
       continue;
     }
     if (dirs.targetDir) {

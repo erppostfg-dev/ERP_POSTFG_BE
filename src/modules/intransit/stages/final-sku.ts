@@ -3,6 +3,8 @@ import { Context, fmtInt } from '../context';
 import { canonValues, Cell, Col, countTrue, fillna, Frame, isNa, mapWith, roundHalfEven, stripped, stripText as s, toNumeric, unquoted } from '../frame';
 import { present, yesNo } from './common';
 import { readClean, skuNameMap } from './inventory';
+import { checkCombos } from '../combo-check';
+import { fillSheet35, findNewSkus } from '../sku-fill';
 
 /* Final SKU Code on every SKU-level sheet, combo splits, Sheet35 and gap sheets (final_sku.py, legacy stageJ). */
 
@@ -293,7 +295,14 @@ export const run = async (ctx: Context): Promise<void> => {
   const split1 = buildSplit(comb, 'Final SKU Code', sp1, 'Split1 SKU', notConsider);
   const split2 = buildSplit(split1, 'Split1 SKU', sp2, 'Split2 SKU', notConsider); // chains off Split1
   const master = await sheet35Master(ctx);
-  const s35 = await buildSheet35(ctx, split2, master, notConsider);
+  let s35 = await buildSheet35(ctx, split2, master, notConsider);
+  // blank SKU Name / MRP / COGS of counted rows: product master, Uniware, COGS = 20% of MRP (2026-11-02)
+  const review = ctx.settings.skuReview;
+  if (review) {
+    const filled = await fillSheet35(ctx, s35, review);
+    s35 = filled.frame;
+    ctx.skuFills = filled.fills;
+  }
   ctx.set('df_split1', split1);
   ctx.set('df_split2', split2);
   ctx.set('df_sheet35', s35);
@@ -310,4 +319,15 @@ export const run = async (ctx: Context): Promise<void> => {
   ctx.set('df_final_sku_code_missing', codeMissing);
   ctx.set('df_missing_items', appendFinalSkuMisses(ctx.get('df_missing_items'), misses));
   ctx.log(`missing items: ${fmtInt(ctx.get('df_missing_items').length)} rows`);
+
+  // new SKUs / marketplace codes and the other issues: the server asks about them (2026-11-02). The combo check runs
+  // here (not after the build) so its confirmed combos are in the list
+  if (review) {
+    ctx.comboCheck = await checkCombos(ctx.get('df_gap_split1'), review.uniware, { cacheDir: review.cacheDir, outDir: ctx.settings.outputDir }, (l) => ctx.log(l))
+      .catch((err: unknown) => ({ status: 'failed' as const, reason: err instanceof Error ? err.message : String(err), checked: 0, combos: [], unknownInUniware: 0, lookedUp: 0 }));
+    ctx.newSkus = findNewSkus(ctx, s35, review, ctx.comboCheck.combos);
+    const list = ctx.newSkus.slice(0, 10).map((n) => `${n.kind} ${n.kind === 'code' || n.kind === 'location' ? `${n.channel} ${n.code}` : n.sku}`).join(', ');
+    if (ctx.newSkus.length) ctx.log(`issues to ask about: ${fmtInt(ctx.newSkus.length)} (${list}${ctx.newSkus.length > 10 ? ' ...' : ''})`);
+    if (ctx.newSkus.length && !review.pause) ctx.warn(`${fmtInt(ctx.newSkus.length)} SKU / mapping issue(s) not asked (only the live server asks): ${list}${ctx.newSkus.length > 10 ? ' ...' : ''}`);
+  }
 };

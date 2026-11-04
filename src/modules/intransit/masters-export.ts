@@ -9,12 +9,13 @@ import { writeAtomic } from './sources/files';
  * pipeline does not change:
  *   Final SKU Mapping.csv   master_skus.final_pep_code
  *   Split1.csv / Split2.csv master_sku_components (one row per unit, parts in position order, combos in load order)
- *   Sheet35(2).csv          master_skus.intransit_name / _type / _category / _mrp / _cogs
+ *   Sheet35(2).csv          master_skus.intransit_name / _type / _category / _mrp / _cogs (+ Auto-filled: values a build
+ *                           filled - Uniware MRP, COGS = 20% of MRP - 2026-11-02; the report ignores the column)
  *   SKU-Not To Consider.csv master_skus.intransit_consider = 0
  *   Location Master.csv     details_channels.intransit_location (Myntra warehouse ids excluded)
  *   MyntraWHIDs.csv         details_channels.intransit_location of Myntra rows whose code is a number (warehouse id)
  *   Channel SKU Mapping.csv intransit_channel_sku_map (Amazon / Flipkart / Myntra rows first: the report keeps the
- *                           first SKU of a code)
+ *                           first SKU of a code; Consider = No: a code the user said not to count, 2026-11-02)
  */
 
 const MARKETPLACES = ['amazon', 'flipkart', 'myntra'];
@@ -44,10 +45,10 @@ export const mastersFromDb = async (): Promise<Record<(typeof DB_MASTER_FILES)[n
   }
 
   const s35 = await q<Record<string, unknown>>(
-    `SELECT pep_code, intransit_name, intransit_type, intransit_category, intransit_mrp, intransit_cogs FROM ${TABLES.MASTER_SKUS}
+    `SELECT pep_code, intransit_name, intransit_type, intransit_category, intransit_mrp, intransit_cogs, intransit_autofilled FROM ${TABLES.MASTER_SKUS}
      WHERE intransit_name IS NOT NULL OR intransit_type IS NOT NULL OR intransit_category IS NOT NULL OR intransit_mrp IS NOT NULL OR intransit_cogs IS NOT NULL ORDER BY id`);
-  out['Sheet35(2).csv'] = [['SKU Code', 'SKU Name', 'Type', 'Count', 'MRP', 'COGS (With TAX)'],
-    ...s35.map((r) => [s(r.pep_code), s(r.intransit_name), s(r.intransit_type), s(r.intransit_category), dec(r.intransit_mrp), dec(r.intransit_cogs)])];
+  out['Sheet35(2).csv'] = [['SKU Code', 'SKU Name', 'Type', 'Count', 'MRP', 'COGS (With TAX)', 'Auto-filled'],
+    ...s35.map((r) => [s(r.pep_code), s(r.intransit_name), s(r.intransit_type), s(r.intransit_category), dec(r.intransit_mrp), dec(r.intransit_cogs), s(r.intransit_autofilled)])];
 
   const nc = await q<{ pep_code: string }>(`SELECT pep_code FROM ${TABLES.MASTER_SKUS} WHERE intransit_consider = 0 ORDER BY id`);
   out['SKU-Not To Consider.csv'] = [['Item SkuCode'], ...nc.map((r) => [r.pep_code])];
@@ -59,11 +60,11 @@ export const mastersFromDb = async (): Promise<Record<(typeof DB_MASTER_FILES)[n
     ...loc.filter((r) => !isWh(r)).map((r) => [`${r.channel_name}${r.channel_location_code}`, r.channel_name, r.channel_location_code, r.intransit_location])];
   out['MyntraWHIDs.csv'] = [['WH Id', 'WH location'], ...loc.filter(isWh).map((r) => [r.channel_location_code, r.intransit_location])];
 
-  const csm = await q<{ sku_code: string; channel: string | null; channel_sku_code: string }>(
-    `SELECT sku_code, channel, channel_sku_code FROM ${TABLES.INTRANSIT_CHANNEL_SKU_MAP} WHERE is_active = 1 ORDER BY id`);
+  const csm = await q<{ sku_code: string; channel: string | null; channel_sku_code: string; consider: number }>(
+    `SELECT sku_code, channel, channel_sku_code, consider FROM ${TABLES.INTRANSIT_CHANNEL_SKU_MAP} WHERE is_active = 1 ORDER BY id`);
   const rank = (c: string | null) => { const i = MARKETPLACES.indexOf((c ?? '').toLowerCase()); return i >= 0 ? i : c ? MARKETPLACES.length : MARKETPLACES.length + 1; };
-  out['Channel SKU Mapping.csv'] = [['Listing SKU Codes at Channel', 'Channel Codes'],
-    ...csm.map((r, i) => ({ r, i })).sort((a, b) => rank(a.r.channel) - rank(b.r.channel) || a.i - b.i).map(({ r }) => [r.sku_code, r.channel_sku_code])];
+  out['Channel SKU Mapping.csv'] = [['Listing SKU Codes at Channel', 'Channel Codes', 'Consider'],
+    ...csm.map((r, i) => ({ r, i })).sort((a, b) => rank(a.r.channel) - rank(b.r.channel) || a.i - b.i).map(({ r }) => [r.sku_code, r.channel_sku_code, Number(r.consider) === 0 ? 'No' : ''])];
 
   return Object.fromEntries(DB_MASTER_FILES.map((name) => [name, toCsv(out[name])])) as Record<(typeof DB_MASTER_FILES)[number], string>;
 };

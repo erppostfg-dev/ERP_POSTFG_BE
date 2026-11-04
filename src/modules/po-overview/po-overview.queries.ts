@@ -1,4 +1,4 @@
-import { In, SelectQueryBuilder } from 'typeorm';
+import { In, IsNull, SelectQueryBuilder } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
 import { NOT_ASSIGNED, NOT_ASSIGNED_DATE, NotAssignedDate, STATUS_STAGE, STATUS_WHEN_EMPTY, TABLES } from '../../constants';
 import {
@@ -77,6 +77,8 @@ const range = <T extends object>(qb: SelectQueryBuilder<T>, sql: string, from: s
 const applyFilters = async <T extends object>(qb: SelectQueryBuilder<T>, f: PoOverviewFilters, lineAlias?: string): Promise<void> => {
   // Only POs whose sale order CSV was marked uploaded into Uniware (user, 2026-10-19); the rest wait on Processed.
   qb.andWhere(`EXISTS (SELECT 1 FROM ${TABLES.PO_UPLOADS} hu WHERE hu.po_uid = po.uid AND hu.uniware_uploaded_at IS NOT NULL)`);
+  // Never a D2C internal transfer (user, 2026-11-02: transfers are not shown on PO Overview).
+  qb.andWhere('po.transferCode IS NULL');
   if (f.q) qb.andWhere('(po.poNumber LIKE :q OR CAST(po.uid AS CHAR) LIKE :q)', { q: `%${f.q}%` });
   if (f.docketNo) qb.andWhere('(po.firstDocketNo LIKE :docket OR po.secondDocketNo LIKE :docket OR po.thirdDocketNo LIKE :docket)', { docket: `%${f.docketNo}%` });
   if (f.skuCode && lineAlias) qb.andWhere(`${lineAlias}.skuCode LIKE :sku`, { sku: `%${f.skuCode}%` });
@@ -137,8 +139,9 @@ export const findShipmentPage = async (f: PoOverviewFilters, p: Paging): Promise
   return { rows, total };
 };
 
+/** A channel PO by uid; a D2C internal transfer is not found here (not on PO Overview, 2026-11-03). */
 export const findShipment = (uid: string): Promise<MasterPurchaseOrder | null> =>
-  AppDataSource.getRepository(MasterPurchaseOrder).findOneBy({ uid });
+  AppDataSource.getRepository(MasterPurchaseOrder).findOneBy({ uid, transferCode: IsNull() });
 
 /** One page of lines with their shipment, newest shipment first, lines in their order. */
 export const findLinePage = async (f: PoOverviewFilters, p: Paging): Promise<{ rows: DetailsPurchaseOrder[]; total: number }> => {
@@ -225,9 +228,10 @@ export const filterOptions = async (): Promise<FilterOptions> => {
   const statuses = await AppDataSource.getRepository(MasterShipmentStatus).find({ where: { isActive: true }, order: { stage: 'ASC', sortOrder: 'ASC' } });
   const ofStage = (s: string) => statuses.filter((x) => x.stage === s).map((x) => x.value);
   const [brand, channel, location, facilities, partners, finals] = await Promise.all([
-    distinct(`SELECT DISTINCT brandName v FROM ${TABLES.DETAILS_PURCHASE_ORDERS} ORDER BY v`),
-    distinct(`SELECT DISTINCT channel v FROM ${TABLES.MASTER_PURCHASE_ORDERS} ORDER BY v`),
-    distinct(`SELECT DISTINCT location v FROM ${TABLES.MASTER_PURCHASE_ORDERS} ORDER BY v`),
+    // channel POs only: D2C internal transfers (transferCode NOT NULL) are not on PO Overview
+    distinct(`SELECT DISTINCT d.brandName v FROM ${TABLES.DETAILS_PURCHASE_ORDERS} d JOIN ${TABLES.MASTER_PURCHASE_ORDERS} p ON p.uid = d.shipmentOrderId WHERE p.transferCode IS NULL ORDER BY v`),
+    distinct(`SELECT DISTINCT channel v FROM ${TABLES.MASTER_PURCHASE_ORDERS} WHERE transferCode IS NULL ORDER BY v`),
+    distinct(`SELECT DISTINCT location v FROM ${TABLES.MASTER_PURCHASE_ORDERS} WHERE transferCode IS NULL ORDER BY v`),
     AppDataSource.getRepository(MasterFacility).find({ select: ['code'], where: { isActive: true }, order: { code: 'ASC' } }),
     AppDataSource.getRepository(MasterCourierPartner).find({ select: ['code'], where: { isActive: true }, order: { code: 'ASC' } }),
     finalStatusRows(),

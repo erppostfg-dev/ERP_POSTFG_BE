@@ -26,6 +26,11 @@ export interface ShipmentChange {
   fields: string[];
   /** Name of who did it; null = the pipeline. */
   by: string | null;
+  /**
+   * The row is a D2C internal transfer (master_purchase_orders.transferCode NOT NULL; 2026-11-03): one cursor and one
+   * bus for both, PO Overview drops these changes, the D2C transfers screen keeps only these.
+   */
+  isTransfer: boolean;
 }
 
 const bus = new EventEmitter();
@@ -43,15 +48,16 @@ export const lastLogId = async (): Promise<number> => {
 /** Log rows after `after`, grouped per shipment (oldest first), at most LIVE.BATCH_MAX rows read. */
 export const changesSince = async (after: number): Promise<ShipmentChange[]> => {
   const rows = (await AppDataSource.query(
-    `SELECT l.id, l.shipment_uid uid, l.action, l.field_name field, u.name
+    `SELECT l.id, l.shipment_uid uid, l.action, l.field_name field, u.name, p.transferCode IS NOT NULL is_transfer
        FROM ${TABLES.SHIPMENT_LOGS} l LEFT JOIN ${TABLES.USERS} u ON u.id = l.user_id
+       LEFT JOIN ${TABLES.MASTER_PURCHASE_ORDERS} p ON p.uid = l.shipment_uid
       WHERE l.id > ? ORDER BY l.id LIMIT ?`,
     [after, LIVE.BATCH_MAX],
-  )) as { id: string | number; uid: string | number; action: string; field: string | null; name: string | null }[];
+  )) as { id: string | number; uid: string | number; action: string; field: string | null; name: string | null; is_transfer: string | number | null }[];
   const byUid = new Map<string, ShipmentChange>();
   for (const r of rows) {
     const uid = String(r.uid);
-    const c = byUid.get(uid) ?? { uid, logId: '0', action: r.action, fields: [], by: null };
+    const c = byUid.get(uid) ?? { uid, logId: '0', action: r.action, fields: [], by: null, isTransfer: Number(r.is_transfer) === 1 };
     c.logId = String(r.id);
     // A new PO stays "created" (lists reload); otherwise the latest action counts.
     if (c.action !== SHIPMENT_LOG_ACTION.CREATED) c.action = r.action;

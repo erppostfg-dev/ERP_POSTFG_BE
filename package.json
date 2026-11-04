@@ -57,7 +57,11 @@
     "intransit:masters": "ts-node --transpile-only src/scripts/intransit-masters.ts",
     "intransit:compare": "ts-node --transpile-only src/scripts/intransit-compare.ts",
     "intransit:s3-migrate": "ts-node --transpile-only src/scripts/intransit-s3-migrate.ts",
-    "intransit:session": "ts-node --transpile-only src/scripts/intransit-session.ts"
+    "intransit:session": "ts-node --transpile-only src/scripts/intransit-session.ts",
+    "intransit:sku-backlog": "ts-node --transpile-only src/scripts/intransit-sku-backlog.ts",
+    "d2c:purge": "ts-node --transpile-only src/scripts/d2c-purge.ts",
+    "d2c:routes-load": "ts-node --transpile-only src/scripts/d2c-routes-load.ts",
+    "d2c:regression-snapshot": "ts-node --transpile-only src/scripts/d2c-regression-snapshot.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1146.0",

@@ -294,6 +294,8 @@ export interface UniwareItem extends UniwareItemType {
   ean: string | null;
   brand: string | null;
   mrp: number | null;
+  /** Uniware's costPrice (empty for our SKUs when checked on 2026-11-02; used for COGS when filled). */
+  costPrice: number | null;
   hsnCode: string | null;
   gstTaxTypeCode: string | null;
   lengthMm: number | null;
@@ -327,6 +329,7 @@ export const getItem = async (api: UniwareApi, sku: string): Promise<UniwareItem
     ean: str(d.ean),
     brand: str(d.brand),
     mrp: num(d.maxRetailPrice),
+    costPrice: num(d.costPrice),
     hsnCode: str(d.hsnCode),
     gstTaxTypeCode: str(d.gstTaxTypeCode),
     lengthMm: num(d.length),

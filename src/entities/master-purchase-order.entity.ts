@@ -3,6 +3,7 @@ import { PO_ACTIVE_STATUS, PoActiveStatus, TABLES } from '../constants/db';
 import { NEW_PO_STATUS } from '../constants/sale-order';
 import type { DetailsPurchaseOrder } from './details-purchase-order.entity';
 import { DetailsChannel } from './details-channel.entity';
+import { D2cTransferRoute } from './d2c-transfer-route.entity';
 import { MasterChannel } from './master-channel.entity';
 import { MasterCourierPartner } from './master-courier-partner.entity';
 import { MasterFacility } from './master-facility.entity';
@@ -25,6 +26,10 @@ import { decimal } from './transformers';
 @Index('idx_master_po_status_warehouse', ['statusWarehouse'])
 @Index('idx_master_po_status_logistics', ['statusLogistics'])
 @Index('idx_master_po_location', ['location'])
+// D2C internal transfers (2026-11-03): one transfer code per row; the transfer list sorts by stage, priority, PO date.
+@Index('uq_master_po_transfer_code', ['transferCode'], { unique: true })
+@Index('idx_master_po_transfer_stage', ['transferStage', 'transferPriority', 'poDate'])
+@Index('idx_master_po_transfer_route', ['transferRouteId'])
 export class MasterPurchaseOrder {
   @PrimaryGeneratedColumn({ name: 'uid', type: 'bigint' })
   uid: string;
@@ -310,6 +315,70 @@ export class MasterPurchaseOrder {
   @Column({ name: 'thirdTransporterId', type: 'int', nullable: true })
   thirdTransporterId: number | null;
 
+  /*
+   * D2C internal transfers (2026-11-03, plan d2c-internal-transfers v3 section 2.2). transferCode NOT NULL = this row is
+   * a transfer, not a channel PO: EVERY reader of this table must decide transferCode IS NULL / IS NOT NULL.
+   * Columns reused for a transfer: poNumber = reference ID, orderNo1 = Uniware SO code (erp_it_...), labelsLink = PO
+   * expiry date, location / locationId = receiving transfer location, facility / facilityId = dispatch facility.
+   */
+
+  /** IT-<FY>-<MM>-<NNN> (constants/d2c-transfers.ts); unique. */
+  @Column({ name: 'transferCode', type: 'varchar', length: 30, nullable: true })
+  transferCode: string | null;
+
+  /** Regular / Internal / Freebee. */
+  @Column({ name: 'transferType', type: 'varchar', length: 30, nullable: true })
+  transferType: string | null;
+
+  /** P1 / P2 / P3. */
+  @Column({ name: 'transferPriority', type: 'varchar', length: 2, nullable: true })
+  transferPriority: string | null;
+
+  /** D2C_STAGE: recomputed after every action and sync. */
+  @Column({ name: 'transferStage', type: 'varchar', length: 30, nullable: true })
+  transferStage: string | null;
+
+  /** Last stage change (also "closed at"). */
+  @Column({ name: 'transferStageAt', type: 'datetime', precision: 6, nullable: true })
+  transferStageAt: Date | null;
+
+  /** One import or one form save (also shipment_logs.batch_id). */
+  @Column({ name: 'transferBatchId', type: 'char', length: 36, nullable: true })
+  transferBatchId: string | null;
+
+  /** S3 key of the uploaded CSV. */
+  @Column({ name: 'transferFileUrl', type: 'varchar', length: 500, nullable: true })
+  transferFileUrl: string | null;
+
+  /**
+   * d2c_transfer_routes.id the transfer uses (its Uniware channel, customer and vendor; D2cRouteChannels1794000000000).
+   * Needed when the route has 2+ Uniware channels; null for channel POs.
+   */
+  @Column({ name: 'transferRouteId', type: 'int', nullable: true })
+  transferRouteId: number | null;
+
+  /** D2C_REQUEST_STATE of the Uniware SO: requested / created / failed / unknown; null = not asked. */
+  @Column({ name: 'soState', type: 'varchar', length: 10, nullable: true })
+  soState: string | null;
+
+  @Column({ name: 'soRequestedAt', type: 'datetime', precision: 6, nullable: true })
+  soRequestedAt: Date | null;
+
+  /** Last Uniware refusal of the SO. */
+  @Column({ name: 'soError', type: 'text', nullable: true })
+  soError: string | null;
+
+  /** D2C_BALANCE_CLOSED_REASON: close_short / uniware_cancelled. */
+  @Column({ name: 'balanceClosedReason', type: 'varchar', length: 20, nullable: true })
+  balanceClosedReason: string | null;
+
+  @Column({ name: 'lastSyncedAt', type: 'datetime', precision: 6, nullable: true })
+  lastSyncedAt: Date | null;
+
+  /** Last sync failure of this transfer. */
+  @Column({ name: 'syncError', type: 'text', nullable: true })
+  syncError: string | null;
+
   /** fk_master_po_channel: channel -> master_channels.display_name. */
   @ManyToOne(() => MasterChannel, { nullable: true, onUpdate: 'CASCADE' })
   @JoinColumn({ name: 'channel', referencedColumnName: 'displayName', foreignKeyConstraintName: 'fk_master_po_channel' })
@@ -319,6 +388,11 @@ export class MasterPurchaseOrder {
   @ManyToOne(() => MasterFacility, { nullable: true, onDelete: 'RESTRICT', onUpdate: 'CASCADE' })
   @JoinColumn({ name: 'facilityId', referencedColumnName: 'id', foreignKeyConstraintName: 'fk_master_po_facility' })
   facilityRef: MasterFacility | null;
+
+  /** fk_master_po_transfer_route */
+  @ManyToOne(() => D2cTransferRoute, { nullable: true, onDelete: 'RESTRICT', onUpdate: 'CASCADE' })
+  @JoinColumn({ name: 'transferRouteId', referencedColumnName: 'id', foreignKeyConstraintName: 'fk_master_po_transfer_route' })
+  transferRouteRef: D2cTransferRoute | null;
 
   /** fk_master_po_location */
   @ManyToOne(() => DetailsChannel, { nullable: true, onDelete: 'RESTRICT', onUpdate: 'CASCADE' })

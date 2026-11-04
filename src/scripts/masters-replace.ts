@@ -153,6 +153,15 @@ const main = async () => {
   // ---- nothing may still point at the old rows
   const poRows = (await count(TABLES.PO_UPLOADS)) + (await count(TABLES.MASTER_PURCHASE_ORDERS));
   if (poRows) problems.push(`${poRows} PO row(s) (po_uploads / master_purchase_orders) still point at the old channels / locations`);
+  // D2C internal transfers (2026-11-03): their transfer locations and transfers would be wiped; refuse and name them
+  const transferLocs = await AppDataSource.query<{ id: string; ch: string; code: string | null }[]>(
+    `SELECT id, channel_name ch, channel_location_code code FROM ${TABLES.DETAILS_CHANNELS} WHERE transfer_facility_id IS NOT NULL ORDER BY id`,
+  );
+  if (transferLocs.length) problems.push(`${transferLocs.length} D2C transfer location(s) set up (details_channels.transfer_facility_id): ${transferLocs.slice(0, 20).map((l) => `${l.id} ${l.ch}/${l.code ?? ''}`).join(', ')}`);
+  const transfers = await AppDataSource.query<{ code: string }[]>(
+    `SELECT transferCode code FROM ${TABLES.MASTER_PURCHASE_ORDERS} WHERE transferCode IS NOT NULL ORDER BY uid`,
+  );
+  if (transfers.length) problems.push(`${transfers.length} D2C internal transfer(s) exist: ${transfers.slice(0, 20).map((t) => t.code).join(', ')}`);
 
   const pc = await plan(TABLES.MASTER_CHANNELS, channels, problems);
   const pl = await plan(TABLES.DETAILS_CHANNELS, locations, problems);
