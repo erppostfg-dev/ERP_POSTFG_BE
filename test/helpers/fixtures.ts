@@ -9,6 +9,13 @@ import { insert } from './db';
  */
 export const BB = { id: CHANNEL_MASTER_IDS[CHANNELS.BIGBASKET], name: 'BigBasket', slug: 'bigbasket' };
 
+/**
+ * The D2C transfer channel McaffeineB2C (inactive, as on dev). The D2C migration adds it only to a database that
+ * already has channels, so the empty test database gets it here; a high id keeps clear of the fixed channel ids.
+ */
+export const seedTransferChannel = async (): Promise<number> =>
+  insert('master_channels', { id: 9001, slug: 'mcaffeine-b2c', display_name: 'McaffeineB2C', db_aliases: ['McaffeineB2C', 'mcaffeine-b2c'], has_processor: 0, is_active: 0 });
+
 export interface Masters {
   channelId: number;
   facilityId: number;

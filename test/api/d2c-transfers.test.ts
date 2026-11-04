@@ -5,7 +5,7 @@ import { refDateToken, todayIst } from '../../src/modules/d2c-transfers/referenc
 import { api, loginAs, type TestLogin } from '../helpers/auth';
 import { closeDb, count, insert, resetDb, rows } from '../helpers/db';
 import { clearS3, s3Objects } from '../helpers/fake-s3';
-import { seedMasters, type Masters } from '../helpers/fixtures';
+import { seedMasters, seedTransferChannel, type Masters } from '../helpers/fixtures';
 import { covers } from '../helpers/routes';
 
 /*
@@ -44,7 +44,7 @@ beforeEach(async () => {
   today = todayIst();
   senderId = await insert('master_facilities', { code: 'TEST_SEND', name: 'Sender', is_active: 1, source: 'manual', uniware_export: 0, allow_internal_transfer: 1 });
   receivingId = await insert('master_facilities', { code: 'TEST_RECV', name: 'Receiver', is_active: 1, source: 'manual', uniware_export: 0, allow_internal_transfer: 1 });
-  const [ch] = await rows<{ id: number }>("SELECT id FROM master_channels WHERE display_name = 'McaffeineB2C'");
+  const ch = { id: await seedTransferChannel() };
   locationId = await insert('details_channels', {
     channel_id: ch.id, channel_name: 'McaffeineB2C', channel_location_code: 'TestLoc', transfer_facility_id: receivingId, transfer_po_prefix: 'TEST_PFX',
     channel_category: 'D2C', is_active: 1, created_at: new Date(), updated_at: new Date(),
