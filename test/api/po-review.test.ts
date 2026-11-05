@@ -101,6 +101,8 @@ describe('PO Review lists and one PO', () => {
     expect(d.issues.map((i: { type?: string; issueType?: string }) => i.type ?? i.issueType)).toEqual(['LOCATION_NOT_MAPPED']);
     expect(JSON.stringify(d)).toContain('IRA90000002');
     expect(d.skuOptions.map((o: { pepCode: string }) => o.pepCode)).toEqual([m.pepCode]);
+    // the line's values as READ from the PO (click-to-find in the review panel searches these, 2026-11-05)
+    expect(d.lines[0]).toMatchObject({ qty: 10, poMrp: 499, printed: { unitCost: '', landingRate: 349.3, lineTotal: 3493 } });
     expect((await api().get(`${V}/po-review/999999`).set('Cookie', reviewer.cookie)).status).toBe(404);
   });
 

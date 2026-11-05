@@ -267,6 +267,11 @@ export interface PoReviewLine {
   poMrp: Num;
   poUnitPrice: Num;
   poLineValue: Num;
+  /**
+   * The line's values AS READ from the PO (processed.json, 2026-11-05): what the review panel finds on the PO when a
+   * value is clicked (poUnitPrice / poLineValue are worked out with tax, so a PO priced before tax does not print them).
+   */
+  printed: { unitCost: Num; landingRate: Num; lineTotal: Num };
   /** Ours, from the master ("" when the SKU is not mapped). */
   pepCode: string;
   /** The code the sale order is punched with: the _S code of a combo when our master has it, else pepCode. */
@@ -455,6 +460,7 @@ export const getPoReview = async (uploadId: string): Promise<PoReviewDetail> => 
         poMrp: l.channel_mrp,
         poUnitPrice: v?.poUnitPrice ?? l.landing_rate,
         poLineValue: v?.poLineValue ?? l.line_total,
+        printed: { unitCost: l.unit_cost, landingRate: l.landing_rate, lineTotal: l.line_total },
         pepCode: v?.pepCode ?? '',
         punchCode: v?.punchCode || v?.pepCode || '',
         skuName: v?.skuName ?? '',
