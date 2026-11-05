@@ -127,6 +127,15 @@ export const env = {
     webhookSecret: process.env.WEBHOOK_SECRET,
   },
   // Python OCR (ocr-service/, a git submodule), run as a child process by extractPo().
+  // Admin > Monitor (2026-11-05): what the server reads from CloudWatch with its OWN role. Dev values by default;
+  // prod sets MONITOR_LOG_GROUP=/mcaffeine-erp-post-fg/prod/api (PROD_CHECKLIST). The instance id comes from the
+  // instance metadata; MONITOR_INSTANCE_ID only overrides it.
+  monitor: {
+    logGroup: process.env.MONITOR_LOG_GROUP || '/mcaffeine-erp-post-fg/dev/api',
+    instanceId: process.env.MONITOR_INSTANCE_ID || '',
+    rdsInstance: process.env.MONITOR_RDS_INSTANCE || 'mcaff-dwh',
+    region: process.env.AWS_REGION || 'ap-south-1',
+  },
   ocr: {
     // true: every newly stored email goes to extractPo() straight away (testing; later a BullMQ worker does this).
     enabled: flag('OCR_ENABLED'),

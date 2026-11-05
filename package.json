@@ -64,10 +64,13 @@
     "d2c:regression-snapshot": "ts-node --transpile-only src/scripts/d2c-regression-snapshot.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-cloudwatch": "^3.1162.0",
+    "@aws-sdk/client-cloudwatch-logs": "^3.1162.0",
     "@aws-sdk/client-s3": "^3.1146.0",
     "@aws-sdk/client-sqs": "^3.1156.0",
     "@aws-sdk/s3-request-presigner": "^3.1146.0",
     "@google-cloud/pubsub": "^6.1.0",
+    "@smithy/credential-provider-imds": "^4.5.2",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",

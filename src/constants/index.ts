@@ -19,6 +19,7 @@ export * from './intransit';
 export * from './intransit-uniware-exports';
 export * from './intransit-pepims';
 export * from './local-storage';
+export * from './monitor';
 export * from './logging';
 export * from './mail-lists';
 export * from './manual-upload';

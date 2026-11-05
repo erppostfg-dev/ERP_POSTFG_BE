@@ -3,6 +3,7 @@ import {
   ACCESS_LEVEL,
   ERROR_CODES,
   errorMessage,
+  MONITOR,
   PAGE,
   USER_ADMIN_ROLES,
   ROLES,
@@ -20,6 +21,7 @@ import { createUser, listUsers, sendWelcome, updateUser, UserInput, userOptions 
 import { appError } from '../utils/AppError';
 import { Problem } from './po-review.routes';
 import { runCleanupNow, serverView } from '../modules/admin/server-health.service';
+import { monitorAccess, monitorOverview, monitorPeak } from '../modules/monitor/monitor.service';
 
 /*
  * Users & Roles (2026-10-15, user). Admin / developer only (USER_ADMIN_ROLES) and editor on /admin.
@@ -99,6 +101,29 @@ router.post('/server/cleanup', ...devGuard, wrap(async (req) => {
     throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails([{ field: 'apply', code: ERROR_CODES.FIELD_NOT_BOOLEAN, message: 'apply: true or false' }]);
   }
   return runCleanupNow(apply === true);
+}));
+
+// ---- Monitor: CloudWatch logs + metrics read with the EC2's own role (2026-11-05; developers only) ----
+
+/** GET /admin/monitor/access: on the server or not, and which CloudWatch reads the server's role may do. */
+router.get(MONITOR.ROUTES.ACCESS, ...devGuard, wrap(() => monitorAccess()));
+
+/** GET /admin/monitor/overview?window=1h|24h|7d: health over time, alerts, server + database metrics, alarms. */
+router.get(MONITOR.ROUTES.OVERVIEW, ...devGuard, wrap(async (req) => {
+  const w = req.query.window;
+  if (w !== undefined && (typeof w !== 'string' || !MONITOR.WINDOWS[w])) {
+    throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails([{ field: 'window', code: ERROR_CODES.VALIDATION_FAILED, message: `window: ${Object.keys(MONITOR.WINDOWS).join(' / ')}` }]);
+  }
+  return monitorOverview(w);
+}));
+
+/** GET /admin/monitor/peak?at=<ISO time>: what ran around that moment (APIs by load, jobs, alerts, health). */
+router.get(MONITOR.ROUTES.PEAK, ...devGuard, wrap(async (req) => {
+  const at = typeof req.query.at === 'string' ? new Date(req.query.at) : null;
+  if (!at || Number.isNaN(at.getTime())) {
+    throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails([{ field: 'at', code: ERROR_CODES.VALIDATION_FAILED, message: 'at: an ISO date-time' }]);
+  }
+  return monitorPeak(at);
 }));
 
 // ---- Users ----
