@@ -2,7 +2,7 @@ import { In } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
 import {
   TABLES,
-  ACCEPTABLE_ISSUE_TYPES,
+  isAcceptableIssue,
   ChannelName,
   ERROR_CODES,
   IST_OFFSET_MS,
@@ -289,7 +289,7 @@ export interface PoReviewIssue {
   details: string | null;
   originalValues: Record<string, unknown> | null;
   status: string;
-  /** Only OTHER and PO_EXPIRED can be accepted as they are; the rest must be corrected or the PO rejected. */
+  /** OTHER, PO_EXPIRED and TOTAL_MISMATCH can be accepted (not a gap in our master: no rate / GST, isAcceptableIssue); the rest must be corrected or the PO rejected. */
   canAccept: boolean;
 }
 
@@ -393,7 +393,7 @@ export const getPoReview = async (uploadId: string): Promise<PoReviewDetail> => 
       details: i.details,
       originalValues: i.originalValues,
       status: i.status,
-      canAccept: ACCEPTABLE_ISSUE_TYPES.includes(i.issueType),
+      canAccept: isAcceptableIssue(i.issueType, i.fieldName),
     }))
     .sort((a, b) => Number(b.status === ISSUE_STATUS.OPEN) - Number(a.status === ISSUE_STATUS.OPEN));
 

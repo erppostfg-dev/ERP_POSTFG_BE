@@ -1,7 +1,7 @@
 import { EntityManager } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
 import {
-  ACCEPTABLE_ISSUE_TYPES,
+  isAcceptableIssue,
   ChannelName,
   ERROR_CODES,
   FILES,
@@ -143,7 +143,7 @@ const prepare = async (uploadId: string, body: ResubmitBody, status: UploadStatu
   const accepted = body.accept.map((a) => {
     const issue = open.find((i) => String(i.id) === a.issueId);
     if (!issue) throw appError(ERROR_CODES.ISSUE_NOT_OPEN, a.issueId);
-    if (!ACCEPTABLE_ISSUE_TYPES.includes(issue.issueType)) throw appError(ERROR_CODES.ISSUE_NOT_ACCEPTABLE, a.issueId, issue.issueType);
+    if (!isAcceptableIssue(issue.issueType, issue.fieldName)) throw appError(ERROR_CODES.ISSUE_NOT_ACCEPTABLE, a.issueId, issue.issueType);
     const remark = a.remark ?? body.remark ?? null;
     // "go with the line total" (price check) needs a reason
     if (!remark && REMARK_REQUIRED_ISSUE_TYPES.includes(issue.issueType)) throw appError(ERROR_CODES.ISSUE_REMARK_REQUIRED, a.issueId, issue.issueType);

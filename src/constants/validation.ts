@@ -50,6 +50,7 @@ export const CHANNEL_TOLERANCES: Record<ChannelName, Tolerance> = {
   [CHANNELS.SLIKK]: DEFAULT_TOLERANCE,
   [CHANNELS.POP_TECH]: DEFAULT_TOLERANCE,
   [CHANNELS.FIRST_CLUB]: DEFAULT_TOLERANCE,
+  [CHANNELS.OCTAVOS]: DEFAULT_TOLERANCE,
 };
 
 /**
@@ -82,6 +83,8 @@ export const CHANNEL_MASTER_IDS: Record<ChannelName, number> = {
   [CHANNELS.POP_TECH]: 37,
   /** "FIRST CLUB" (35 SKU rows with rates, 2 locations; checked 2026-11-05). */
   [CHANNELS.FIRST_CLUB]: 41,
+  /** "OCTAVOS ENTERPRISE" (Smytten; 49 SKU rows, prices from the Smytten Minis Master loaded 2026-11-05; 4 locations). */
+  [CHANNELS.OCTAVOS]: 22,
 };
 
 /**
@@ -177,6 +180,9 @@ export const CHANNEL_LOCATION_MATCH: Record<ChannelName, LocationMatch> = {
   /** The PO number ends in First Club's warehouse code (FHYBLRNLM01 / FRHHYDMDL01), not our location code: the Shipping
    *  Address pincode (562123 BENGALURU, 500078 HYDERABAD; only in the master's address on 5 Nov: matched by the address). */
   [CHANNELS.FIRST_CLUB]: LOCATION_MATCH.PINCODE,
+  /** No location code on the PO: the pincode of Octavos' warehouse block at the top (382427 AHMEDABAD_2, 122503 GURGAON,
+   *  387570 HARYALA / HARYALA_2 = the address decides; 122506 Farukh Nagar not in the master on 5 Nov: review). */
+  [CHANNELS.OCTAVOS]: LOCATION_MATCH.PINCODE,
 };
 
 /** Result of validating one PO. */
@@ -228,6 +234,18 @@ export const EXPECTED_UNIWARE_CHANNEL: Partial<Record<ChannelName, Record<string
 };
 
 export const ACCEPTABLE_ISSUE_TYPES: readonly IssueType[] = [ISSUE_TYPE.OTHER, ISSUE_TYPE.PO_EXPIRED, ISSUE_TYPE.TOTAL_MISMATCH];
+
+/**
+ * OTHER issues that are a gap in OUR master (2026-11-05, user: "if it is not in the masters keep it in review with proper
+ * errors; the masters team adds the data"): no rate after margin, no GST for our SKU. They are NOT accepted by a reviewer
+ * (a sale order needs our price and GST) and the re-check closes them once the master has the value (the PO then goes on
+ * by itself).
+ */
+export const MASTER_GAP_FIELDS: readonly string[] = [ISSUE_FIELDS.RATE, ISSUE_FIELDS.GST];
+
+/** Can a reviewer accept this issue with a remark? (type acceptable, and not a gap in our master) */
+export const isAcceptableIssue = (type: string, field: string | null | undefined): boolean =>
+  ACCEPTABLE_ISSUE_TYPES.includes(type as IssueType) && !(type === ISSUE_TYPE.OTHER && MASTER_GAP_FIELDS.includes(field ?? ''));
 /** Price check (2026-10-30): a total still off after the line choices is accepted ("go with the line total") only with a remark. */
 export const REMARK_REQUIRED_ISSUE_TYPES: readonly IssueType[] = [ISSUE_TYPE.TOTAL_MISMATCH];
 
@@ -301,7 +319,7 @@ export const VALIDATION_TEXT = {
   SKU_NONE_PO_GIVES_PEP: (code: string, pepCode: string) =>
     `channel SKU code ${code} is not in master_channel_skus for this channel; the PO says it is our SKU ${pepCode} (in master_skus): add ${code} -> ${pepCode} with its rate to this channel's SKUs, then Re-check`,
   SKU_MANY: (code: string, pepCodes: string) => `channel SKU code ${code} maps to several of our SKUs (${pepCodes})`,
-  SKU_NO_RATE: (pepCode: string) => `our SKU ${pepCode} has no rate_after_margin in master_channel_skus`,
+  SKU_NO_RATE: (pepCode: string) => `no price in our master: our SKU ${pepCode} has no rate after margin for this channel (master_channel_skus); the masters team adds it, then the re-check completes this PO`,
   /** Switched off on the Masters page (2026-10-28): the PO line or location goes to review. */
   SKU_INACTIVE: (pepCode: string) => `our SKU ${pepCode} is inactive in the PEP SKU master (switch it on, or map the line to another SKU)`,
   FACILITY_INACTIVE: (code: string, facility: string) => `location "${code}" is served by warehouse ${facility}, which is inactive in the Warehouses master`,

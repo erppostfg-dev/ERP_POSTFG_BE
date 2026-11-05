@@ -8,6 +8,7 @@ import { flipkartQcomHandler } from './flipkart-qcom/flipkart-qcom.handler';
 import { gluzoHandler } from './gluzo/gluzo.handler';
 import { slikkHandler } from './slikk/slikk.handler';
 import { firstClubHandler } from './first-club/first-club.handler';
+import { octavosHandler } from './octavos/octavos.handler';
 import { popTechHandler } from './pop-tech/pop-tech.handler';
 import { nykaaHandler } from './nykaa/nykaa.handler';
 import { purplleHandler } from './purplle/purplle.handler';
@@ -42,4 +43,6 @@ export const channelHandlers: Partial<Record<ChannelName, ChannelHandler>> = {
   [popTechHandler.channel]: popTechHandler,
   // Header + line names = the OCR's header_notes / line_notes (8 samples, 5 Nov): check the first real run.
   [firstClubHandler.channel]: firstClubHandler,
+  // Header + line names = the OCR's header_notes / line_notes (7 samples, 5 Nov): check the first real run.
+  [octavosHandler.channel]: octavosHandler,
 };

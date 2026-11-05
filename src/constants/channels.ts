@@ -33,6 +33,8 @@ export const CHANNELS = {
   MYNTRA: 'myntra',
   /** First Club (Firstclub Technology): its PO PDF, by Manual Upload only (no other source, user; OCR PDF pipeline; 2026-11-05). */
   FIRST_CLUB: 'first_club',
+  /** Octavos Enterprise Solutions (Smytten): its PO PDF, by Manual Upload only (user; OCR PDF pipeline; 2026-11-05). */
+  OCTAVOS: 'octavos',
 } as const;
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS];
@@ -71,4 +73,6 @@ export const OCR_CHANNELS: Record<ChannelName, string> = {
   [CHANNELS.POP_TECH]: 'pop_tech',
   /** PDF: fixed header + line names (header_notes / line_notes), "2447.97 (18.00%)" tax cells split. */
   [CHANNELS.FIRST_CLUB]: 'first_club',
+  /** PDF: fixed header + line names (header_notes / line_notes), header from page 1 (+ the Grand Total page). */
+  [CHANNELS.OCTAVOS]: 'octavos',
 };

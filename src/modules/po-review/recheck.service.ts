@@ -1,6 +1,6 @@
 import { In } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
-import { ChannelName, ISSUE_ACTION, ISSUE_STATUS, REVIEW_RECHECK, SYSTEM_ACTOR, UPLOAD_STATUS } from '../../constants';
+import { ChannelName, ISSUE_ACTION, ISSUE_STATUS, ISSUE_TYPE, MASTER_GAP_FIELDS, REVIEW_RECHECK, SYSTEM_ACTOR, UPLOAD_STATUS } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
 import { PoIssue, PoIssueAction, PoUpload } from '../../entities';
 import { AppError } from '../../utils/AppError';
@@ -66,7 +66,9 @@ export const recheckInReview = async (opts: { channels?: string[]; trigger: stri
       const stillFound = new Set(v.issues.map((i) => issueKey(i.type, i.lineNo, i.field)));
 
       const open = await issues.findBy({ uploadId: u.id, status: ISSUE_STATUS.OPEN });
-      const fixed = open.filter((i) => REVIEW_RECHECK.FIXABLE.includes(i.issueType) && !stillFound.has(issueKey(i.issueType, i.lineNo, i.fieldName)));
+      // fixable: the master-data issues, and the gaps in our master (no rate / GST: MASTER_GAP_FIELDS, 2026-11-05)
+      const fixable = (i: PoIssue) => REVIEW_RECHECK.FIXABLE.includes(i.issueType) || (i.issueType === ISSUE_TYPE.OTHER && MASTER_GAP_FIELDS.includes(i.fieldName ?? ''));
+      const fixed = open.filter((i) => fixable(i) && !stillFound.has(issueKey(i.issueType, i.lineNo, i.fieldName)));
       const now = new Date();
       for (const i of fixed) {
         await issues.save({ ...i, status: ISSUE_STATUS.APPROVED, resolvedBy: SYSTEM_ACTOR, resolvedAt: now, remark: REVIEW_RECHECK.REMARK });

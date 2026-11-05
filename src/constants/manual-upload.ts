@@ -68,10 +68,12 @@ export const MANUAL_UPLOAD = {
  * below; exact = the number itself, prefix = the PO number starts with it: First Club "PO-210392.pdf" ->
  * PO-210392-FRHHYDMDL01). Channels with their own check (Amazon, Flipkart, Myntra) are not in here.
  */
-export const FILE_NAME_PO: Partial<Record<ChannelName, { re: RegExp; prefix?: (n: string) => string }>> = {
+export const FILE_NAME_PO: Partial<Record<ChannelName, { re: RegExp; prefix?: (n: string) => string; po?: (m: RegExpExecArray) => string }>> = {
   [CHANNELS.FIRSTCRY]: { re: /(pin\w{10,})/i },
   [CHANNELS.FLIPKART_QCOM]: { re: /purchase_order_([A-Z0-9]{8,})/i },
   [CHANNELS.FIRST_CLUB]: { re: /PO[-_](\d{5,})/i, prefix: (n) => `PO-${n}-` },
+  // the file name writes the slashes as dashes: OG-00381-2026-27.pdf = PO OG/00381/2026-27
+  [CHANNELS.OCTAVOS]: { re: /\b(OESPL|OG|OK|RET)-(\d+)-(\d{2,4}-\d{2})\b/i, po: (m) => `${m[1].toUpperCase()}/${m[2]}/${m[3]}` },
 };
 
 /** What can be done with a copy already in POST_FG when the same PO is uploaded again. */

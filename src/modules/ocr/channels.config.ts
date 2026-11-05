@@ -252,4 +252,14 @@ export const channelConfigs: ChannelConfig[] = [
     domains: [],
     files: { pdf: /\.pdf$/i },
   },
+  {
+    // Octavos (Octavos Enterprise Solutions = Smytten, 2026-11-05): one PO PDF per PO ("OG-00381-2026-27.pdf", PO No.
+    // "OG/00381/2026-27"; OESPL / OG / OK / RET = Octavos' warehouses, RET are normal POs, user). Manual Upload only.
+    // OCR "octavos": PDF pipeline with header_notes + line_notes (fixed names) + header_pages (page 1 + Grand Total page).
+    channel: CHANNELS.OCTAVOS,
+    ocrChannel: OCR_CHANNELS[CHANNELS.OCTAVOS],
+    senders: [],
+    domains: [],
+    files: { pdf: /\.pdf$/i },
+  },
 ];

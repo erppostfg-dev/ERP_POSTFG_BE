@@ -94,7 +94,8 @@ export const findCopies = async (channel: ChannelName, displayName: string, file
   const rule = FILE_NAME_PO[channel];
   if (rule) {
     for (const f of files) {
-      const n = rule.re.exec(f.filename)?.[1];
+      const m = rule.re.exec(f.filename);
+      const n = m ? (rule.po ? rule.po(m) : m[1]) : undefined;
       if (!n) continue;
       const rows = await uploads().find({ where: { channel: displayName, poNumber: rule.prefix ? Like(`${rule.prefix(n)}%`) : n } });
       for (const r of rows) {
