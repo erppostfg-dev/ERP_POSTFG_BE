@@ -31,6 +31,8 @@ export const CHANNELS = {
   POP_TECH: 'pop_tech',
   /** Myntra STRs (= POs): the STR numbers come by email, our robot downloads each STR's CSV (no OCR; 2026-11-03). */
   MYNTRA: 'myntra',
+  /** First Club (Firstclub Technology): its PO PDF, by Manual Upload only (no other source, user; OCR PDF pipeline; 2026-11-05). */
+  FIRST_CLUB: 'first_club',
 } as const;
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS];
@@ -67,4 +69,6 @@ export const OCR_CHANNELS: Record<ChannelName, string> = {
   [CHANNELS.SLIKK]: 'slikk',
   /** Unicommerce PDF: "amount (9.000%)" tax cells split, the unlabeled totals row read as the Total row. */
   [CHANNELS.POP_TECH]: 'pop_tech',
+  /** PDF: fixed header + line names (header_notes / line_notes), "2447.97 (18.00%)" tax cells split. */
+  [CHANNELS.FIRST_CLUB]: 'first_club',
 };

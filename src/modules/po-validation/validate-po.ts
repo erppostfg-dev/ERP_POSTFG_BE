@@ -8,6 +8,7 @@ import {
   PUNCH_S,
   SKU_ANY_CODE,
   SKU_EAN_TIEBREAK,
+  SKU_NAME_TIEBREAK,
   ChannelName,
   IST_OFFSET_MS,
   ISSUE_FIELDS,
@@ -25,6 +26,7 @@ import { DetailsChannel, MasterSku } from '../../entities';
 import { pincodeFrom } from '../po-processing/common/parse';
 import { Num, ProcessedLine, ProcessedPo } from '../po-processing/common/processed-po';
 import { pickOneLocation } from './location-tiebreak';
+import { pickByDescription } from './sku-name-tiebreak';
 import { ChannelMasterData, matchKey } from './master-data';
 
 /*
@@ -248,7 +250,11 @@ const validateLine = (
   const byEanToo = SKU_EAN_TIEBREAK.has(channel) && line.ean && new Set(allByCode.map((r) => matchKey(r.pepCode))).size > 1
     ? allByCode.filter((r) => matchKey(r.eanCode) === matchKey(line.ean)) : [];
   const eanRow = new Set(byEanToo.map((r) => matchKey(r.pepCode))).size === 1 ? (byEanToo.find((r) => r.rateAfterMargin !== null) ?? byEanToo[0]) : undefined;
-  const byCode = eanRow ? [eanRow] : allByCode;
+  // First Club (SKU_NAME_TIEBREAK): still rows of several of our codes -> the one whose product name is in the PO's item
+  // description (SKU263395202 + "... Brightening Raspberry Rush Body Wash 300 ml" -> MCaf383_WB_N1); none / several -> review
+  const nameRow = !eanRow && SKU_NAME_TIEBREAK.has(channel) && new Set(allByCode.map((r) => matchKey(r.pepCode))).size > 1
+    ? pickByDescription(allByCode, line.description, master.skus) : undefined;
+  const byCode = eanRow ? [eanRow] : nameRow ? [nameRow] : allByCode;
   // Slikk's "SKU Id" is a channel code, our pep code or an EAN (SKU_ANY_CODE): then the channel's rows by pep code
   // (one is enough, they share the rate), else by ean_code (rows of different pep codes = ambiguous, as for a code).
   const anyCode = !byCode.length && SKU_ANY_CODE.has(channel);

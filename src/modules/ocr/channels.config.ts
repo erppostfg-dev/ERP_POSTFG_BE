@@ -242,4 +242,14 @@ export const channelConfigs: ChannelConfig[] = [
     domains: [],
     files: { pdf: /\.pdf$/i },
   },
+  {
+    // First Club (Firstclub Technology, 2026-11-05): one PO PDF per PO ("PO-199751.pdf"; header, every line and the totals;
+    // PO No. "PO-199751-FRHHYDMDL01" = number + First Club's warehouse code). Manual Upload only (user: no other source).
+    // OCR "first_club": PDF pipeline with header_notes + line_notes (fixed names) + split_value_rate_cells.
+    channel: CHANNELS.FIRST_CLUB,
+    ocrChannel: OCR_CHANNELS[CHANNELS.FIRST_CLUB],
+    senders: [],
+    domains: [],
+    files: { pdf: /\.pdf$/i },
+  },
 ];

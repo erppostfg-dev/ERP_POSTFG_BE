@@ -49,6 +49,7 @@ export const CHANNEL_TOLERANCES: Record<ChannelName, Tolerance> = {
   [CHANNELS.GLUZO]: DEFAULT_TOLERANCE,
   [CHANNELS.SLIKK]: DEFAULT_TOLERANCE,
   [CHANNELS.POP_TECH]: DEFAULT_TOLERANCE,
+  [CHANNELS.FIRST_CLUB]: DEFAULT_TOLERANCE,
 };
 
 /**
@@ -79,6 +80,8 @@ export const CHANNEL_MASTER_IDS: Record<ChannelName, number> = {
   [CHANNELS.SLIKK]: 40,
   /** "POP TECH". */
   [CHANNELS.POP_TECH]: 37,
+  /** "FIRST CLUB" (35 SKU rows with rates, 2 locations; checked 2026-11-05). */
+  [CHANNELS.FIRST_CLUB]: 41,
 };
 
 /**
@@ -108,6 +111,24 @@ export const LOCATION_TIEBREAK = {
 } as const;
 
 export const SKU_EAN_TIEBREAK: ReadonlySet<ChannelName> = new Set([CHANNELS.POP_TECH]);
+
+/**
+ * Channels whose channel code may sit on rows of several of our codes, told apart by the PO's item description (user
+ * 2026-11-05, First Club: SKU263395202 on MCaf383_WB_N1, MCaf369, MCaf87 and 55MCaf40; the PO line says "mCaffeine
+ * Brightening Raspberry Rush Body Wash 300 ml"): the row whose product name (channel row, else our SKU master) is
+ * contained word for word in the description is taken, when it is the only one. None or several -> review, as before.
+ * Runs after the EAN tie-break (po-validation/sku-name-tiebreak.ts).
+ */
+export const SKU_NAME_TIEBREAK: ReadonlySet<ChannelName> = new Set([CHANNELS.FIRST_CLUB]);
+
+export const SKU_NAME_MATCH = {
+  /** words that say nothing about the product (brand, joiners) */
+  IGNORE_WORDS: ['mcaffeine', 'and', 'with', 'for', 'the', 'of', 'amp'],
+  /** sizes / units ("300 ml", "15gm", "(55 g)", "Rs 129"): the PO's size differs from the master's pack name */
+  IGNORE_WORD_RE: /^(\d+(\.\d+)?(ml|l|g|gm|gms|kg|mg|pc|pcs|n)?|ml|l|g|gm|gms|kg|mg|rs|pc|pcs)$/,
+  /** a product name must keep at least this many words to be used */
+  MIN_WORDS: 2,
+} as const;
 
 
 /**
@@ -153,6 +174,9 @@ export const CHANNEL_LOCATION_MATCH: Record<ChannelName, LocationMatch> = {
   /** No location code on the PO: the Ship to pincode (562114 BANGLORE / 122001 GURGOAN; the 28 Oct master has the pincode
    *  only inside the address, consignee_pin_code empty: matched by the address, as for every channel). */
   [CHANNELS.POP_TECH]: LOCATION_MATCH.PINCODE,
+  /** The PO number ends in First Club's warehouse code (FHYBLRNLM01 / FRHHYDMDL01), not our location code: the Shipping
+   *  Address pincode (562123 BENGALURU, 500078 HYDERABAD; only in the master's address on 5 Nov: matched by the address). */
+  [CHANNELS.FIRST_CLUB]: LOCATION_MATCH.PINCODE,
 };
 
 /** Result of validating one PO. */
