@@ -98,6 +98,10 @@ export const ERRORS = {
   MANUAL_FILES_MISSING: define(400, (channel: string, need: string, got: string) => `${channel} needs ${need} for one PO; got ${got}`),
   MANUAL_AMAZON_FILE: define(400, (name: string) => `${name} is not an Amazon shipment file: it needs "Shipment ID FBA…" at the top and the "Merchant SKU … Shipped" lines`),
   MANUAL_DUPLICATE: define(409, (id: string, where: string) => `${id} is already ${where}: it is not processed twice`),
+  /** details.copies = the copies found (2026-11-05): the screen asks Open it / Process again / Cancel. */
+  MANUAL_ALREADY_IN: define(409, (what: string) => `${what} is already in POST_FG: open it, or choose Process again (the copy in review is then replaced)`),
+  /** details.copies: Process again is not possible for at least one of them (sale order made, approval, running). */
+  MANUAL_ALREADY_BLOCKED: define(409, (what: string, why: string) => `${what} cannot be processed again: ${why}`),
   // Channel Pulls (2026-10-30)
   CHANNEL_PULL_NOT_CONFIGURED: define(409, (what: string) => `${what} is not set up on this server (its login is missing in the settings)`),
   CHANNEL_PULL_NOT_FOUND: define(404, (key: string) => `No channel pull ${key}`),

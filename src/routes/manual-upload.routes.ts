@@ -45,11 +45,19 @@ router.get(MANUAL_UPLOAD.ROUTES.LIST, ...viewer, async (_req, res, next) => {
 });
 
 // Auth first, so files are only read for a signed-in editor.
+/** A text field of the multipart form ('' when missing or not text). */
+const formField = (body: unknown, key: string): string => {
+  const v = (body as Record<string, unknown> | undefined)?.[key];
+  return typeof v === 'string' ? v : '';
+};
+
 router.post(MANUAL_UPLOAD.ROUTES.UPLOAD, ...editor, upload.array(MANUAL_UPLOAD.FIELD_FILES, MANUAL_UPLOAD.MAX_FILES), async (req, res, next) => {
   try {
-    const channel = String((req.body as Record<string, unknown>)?.[MANUAL_UPLOAD.FIELD_CHANNEL] ?? '').trim();
+    const channel = formField(req.body, MANUAL_UPLOAD.FIELD_CHANNEL).trim();
     const files = ((req.files as Express.Multer.File[] | undefined) ?? []).map((f) => ({ originalname: f.originalname, buffer: f.buffer }));
-    res.status(201).json({ data: await uploadFiles(channel, files, actor(req)) });
+    // replace=true: the person chose Process again for a PO already in POST_FG (409 MANUAL_ALREADY_IN before)
+    const replace = formField(req.body, MANUAL_UPLOAD.FIELD_REPLACE) === 'true';
+    res.status(201).json({ data: await uploadFiles(channel, files, actor(req), { replace }) });
   } catch (err) {
     next(err);
   }

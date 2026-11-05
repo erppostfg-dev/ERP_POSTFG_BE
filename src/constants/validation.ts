@@ -239,8 +239,10 @@ const signed = (n: number): string => `${n > 0 ? '+' : ''}${rs(n)}`;
 
 /** Issue messages, by po_issues.issue_type. `where` is "PO" or "line <n> (<channel SKU code>)". */
 const ISSUE_MESSAGES = {
-  [ISSUE_TYPE.DUPLICATE_PO]: (channel: string, poNumber: string) =>
-    `PO ${poNumber} of ${channel} is already in master_purchase_orders`,
+  [ISSUE_TYPE.DUPLICATE_PO]: (channel: string, poNumber: string, copyOf?: string) =>
+    copyOf
+      ? `PO ${poNumber} of ${channel} is already in POST_FG as ${copyOf}: reject this copy (or open that one)`
+      : `PO ${poNumber} of ${channel} is already in master_purchase_orders`,
   [ISSUE_TYPE.LOCATION_NOT_MAPPED]: (detail: string) => `delivery location: ${detail}`,
   [ISSUE_TYPE.SKU_NOT_MAPPED]: (where: string, detail: string) => `${where}: ${detail}`,
   [ISSUE_TYPE.MRP_MISMATCH]: (where: string, po: number, ours: number, tolerance: number) =>
