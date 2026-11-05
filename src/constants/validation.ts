@@ -51,6 +51,7 @@ export const CHANNEL_TOLERANCES: Record<ChannelName, Tolerance> = {
   [CHANNELS.POP_TECH]: DEFAULT_TOLERANCE,
   [CHANNELS.FIRST_CLUB]: DEFAULT_TOLERANCE,
   [CHANNELS.OCTAVOS]: DEFAULT_TOLERANCE,
+  [CHANNELS.NOBLE_CHEMIST]: DEFAULT_TOLERANCE,
 };
 
 /**
@@ -85,6 +86,8 @@ export const CHANNEL_MASTER_IDS: Record<ChannelName, number> = {
   [CHANNELS.FIRST_CLUB]: 41,
   /** "OCTAVOS ENTERPRISE" (Smytten; 49 SKU rows, prices from the Smytten Minis Master loaded 2026-11-05; 4 locations). */
   [CHANNELS.OCTAVOS]: 22,
+  /** "NOBLE CHEMIST" (15 SKU rows by EAN with rates, 1 location GOREGOAN_WEST; checked 2026-11-05). Not "NOBLE PLUS" (36). */
+  [CHANNELS.NOBLE_CHEMIST]: 35,
 };
 
 /**
@@ -146,7 +149,11 @@ export const SKU_NAME_MATCH = {
 /** Pep Technologies' PAN: inside every GSTIN of ours (27AAICP2804J1ZC ...), so a PO's other GSTIN is the buyer's. */
 export const OUR_PAN = 'AAICP2804J';
 
-export const LOCATION_MATCH = { CODE_THEN_PINCODE: 'code_then_pincode', PINCODE: 'pincode' } as const;
+/**
+ * only (2026-11-05, Noble Chemist: its order form carries neither a location code nor a pincode, and the channel has
+ * ONE location): the channel's only active location; none or several -> review.
+ */
+export const LOCATION_MATCH = { CODE_THEN_PINCODE: 'code_then_pincode', PINCODE: 'pincode', ONLY: 'only' } as const;
 export type LocationMatch = (typeof LOCATION_MATCH)[keyof typeof LOCATION_MATCH];
 
 export const CHANNEL_LOCATION_MATCH: Record<ChannelName, LocationMatch> = {
@@ -183,6 +190,8 @@ export const CHANNEL_LOCATION_MATCH: Record<ChannelName, LocationMatch> = {
   /** No location code on the PO: the pincode of Octavos' warehouse block at the top (382427 AHMEDABAD_2, 122503 GURGAON,
    *  387570 HARYALA / HARYALA_2 = the address decides; 122506 Farukh Nagar not in the master on 5 Nov: review). */
   [CHANNELS.OCTAVOS]: LOCATION_MATCH.PINCODE,
+  /** One location (GOREGOAN_WEST, New Welcome Agencies); the form has no pincode. */
+  [CHANNELS.NOBLE_CHEMIST]: LOCATION_MATCH.ONLY,
 };
 
 /** Result of validating one PO. */
@@ -223,10 +232,11 @@ export type IssueField = (typeof ISSUE_FIELDS)[keyof typeof ISSUE_FIELDS];
  * rejected; DUPLICATE_PO can only be rejected.
  */
 /**
- * Channels whose PO price is NOT checked (2026-11-03, user: Myntra STRs): the sale order takes our master rate (margin)
+ * Channels whose PO price is NOT checked (2026-11-03, user: Myntra STRs; Noble Chemist's order form prints no price,
+ * 2026-11-05): the sale order takes our master rate (margin)
  * and our GST; the PO's own price is only shown as information. No "price missing", no price / total check; MRP is.
  */
-export const OUR_PRICE_ONLY_CHANNELS: readonly ChannelName[] = [CHANNELS.MYNTRA];
+export const OUR_PRICE_ONLY_CHANNELS: readonly ChannelName[] = [CHANNELS.MYNTRA, CHANNELS.NOBLE_CHEMIST];
 
 /** What a location's Uniware channel should be (a channel's own sheet); our master differing -> review (OTHER). */
 export const EXPECTED_UNIWARE_CHANNEL: Partial<Record<ChannelName, Record<string, string>>> = {
@@ -307,6 +317,8 @@ export const VALIDATION_TEXT = {
   NO_LOCATION_KEY: 'the PO has neither a delivery facility code nor a delivery pincode',
   LOCATION_NONE: (by: string) => `no details_channels row matches ${by}`,
   /** Appended to "pincode …" when the channel has locations without consignee_pin_code (their address is searched too). */
+  /** LOCATION_MATCH.ONLY: how the match is named in the messages. */
+  LOCATION_ONLY: "the channel's only location",
   LOCATION_BY_ADDRESS: ' (consignee_pin_code, else the pincode in the location address)',
   LOCATION_MANY: (by: string, n: number, codes: string) => `${n} details_channels rows match ${by} (${codes}); exactly one is needed`,
   LOCATION_INCOMPLETE: (code: string, missing: string) => `details_channels row "${code}" has no ${missing}`,

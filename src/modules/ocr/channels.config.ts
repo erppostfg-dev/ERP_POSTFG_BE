@@ -50,6 +50,11 @@ export interface ChannelConfig {
   optional?: ('pdf' | 'sheet')[];
   /** One file holds many POs (Nykaa's export, 2026-10-27): told on the Manual Upload screen. */
   manyPosPerFile?: boolean;
+  /**
+   * reader 'sheet' (2026-11-05): the row that holds the column names, when it is not the first one (Noble Chemist's
+   * form: 5 title rows first). Rows above it go to the raw header as "Line 1", "Line 2" ... (their text joined).
+   */
+  sheetHeader?: RegExp;
 }
 
 export const channelConfigs: ChannelConfig[] = [
@@ -261,5 +266,17 @@ export const channelConfigs: ChannelConfig[] = [
     senders: [],
     domains: [],
     files: { pdf: /\.pdf$/i },
+  },
+  {
+    // Noble Chemist (New Welcome Agencies Pvt Ltd, Goregaon West, 2026-11-05): its order form "Order No 88699.xls"
+    // (old-style .xls: 5 title rows with DATE / Order No, then COMPANY | COMP UPC | ITEM NAME | PACK | QTY. | FREE | MRP |
+    // REMARKS; no price). Manual Upload only. No OCR: our sheet reader (Excel through ocr-service sheet_rows.py).
+    channel: CHANNELS.NOBLE_CHEMIST,
+    ocrChannel: OCR_CHANNELS[CHANNELS.NOBLE_CHEMIST],
+    senders: [],
+    domains: [],
+    files: { sheet: /\.(xls|xlsx|csv)$/i },
+    reader: 'sheet',
+    sheetHeader: /\bCOMP\s*UPC\b/i,
   },
 ];

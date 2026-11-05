@@ -118,7 +118,7 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
     await ocrStarted(dir);
     const t0 = Date.now();
     try {
-      const read = await step('read sheet (no OCR)', () => readSheets(dir, sheets, config.channel), { files: sheets.length });
+      const read = await step('read sheet (no OCR)', () => readSheets(dir, sheets, config.channel, { headerRow: config.sheetHeader }), { files: sheets.length });
       log.info(LOG_SOURCE.OCR, `[extractPo] ${config.channel}: sheet reader, no OCR: ${read.lines} line(s) from ${sheets.length} file(s) (${path.basename(dir)})`);
       return await save({
         status: RESULT_STATUS.OK,

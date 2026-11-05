@@ -54,7 +54,7 @@ export interface ValidatedLocation {
   facilityId: number | null;
   /** -> Uniware Channel (e.g. ZEPTO_B2B) */
   uniwareChannel: string;
-  matchedBy: 'code' | 'pincode' | 'reviewer';
+  matchedBy: 'code' | 'pincode' | 'reviewer' | 'only';
 }
 
 /** A reviewer's choices on resubmit (po-review): they replace the automatic match for this PO only. */
@@ -141,6 +141,7 @@ const findLocation =(po: ProcessedPo, master: ChannelMasterData, issues: Validat
   const code = matchKey(po.delivery_facility_code);
   const pin = matchKey(po.delivery_pincode);
   const byCode = CHANNEL_LOCATION_MATCH[po.channel_name as ChannelName] === LOCATION_MATCH.CODE_THEN_PINCODE;
+  const onlyOne = CHANNEL_LOCATION_MATCH[po.channel_name as ChannelName] === LOCATION_MATCH.ONLY;
 
   let rows: DetailsChannel[] = [];
   let matchedBy: ValidatedLocation['matchedBy'] = 'code';
@@ -149,11 +150,16 @@ const findLocation =(po: ProcessedPo, master: ChannelMasterData, issues: Validat
     rows = master.locations.filter((l) => String(l.id) === picked);
     matchedBy = 'reviewer';
     by = `the reviewer's choice ${picked}`;
+  } else if (onlyOne) {
+    // the channel's only active location (Noble Chemist: no code, no pincode on the form); several -> review below
+    rows = master.locations;
+    matchedBy = 'only';
+    by = VALIDATION_TEXT.LOCATION_ONLY;
   } else if (byCode && code) {
     rows = master.locations.filter((l) => matchKey(l.channelLocationCode) === code);
     by = `facility code "${po.delivery_facility_code}"`;
   }
-  if (!picked && !rows.length && pin) {
+  if (!picked && !onlyOne && !rows.length && pin) {
     rows = master.locations.filter((l) => matchKey(l.consigneePinCode) === pin);
     matchedBy = 'pincode';
     by = `${by ? `${by} or ` : ''}pincode ${po.delivery_pincode}`;
@@ -168,10 +174,10 @@ const findLocation =(po: ProcessedPo, master: ChannelMasterData, issues: Validat
 
   const issue = (detail: string) =>
     issues.push(validationIssue(ISSUE_TYPE.LOCATION_NOT_MAPPED, { field: ISSUE_FIELDS.DELIVERY_LOCATION, actual: po.delivery_facility_code || po.delivery_pincode }, detail));
-  if (!picked && !code && !pin) return issue(VALIDATION_TEXT.NO_LOCATION_KEY), null;
+  if (!picked && !onlyOne && !code && !pin) return issue(VALIDATION_TEXT.NO_LOCATION_KEY), null;
   if (!rows.length) return issue(VALIDATION_TEXT.LOCATION_NONE(by)), null;
   // Several match (a shared pincode): the PO's facility name, GSTIN or address may name exactly one (location-tiebreak.ts).
-  const one = !picked && rows.length > 1 ? pickOneLocation(rows, po) : null;
+  const one = !picked && !onlyOne && rows.length > 1 ? pickOneLocation(rows, po) : null;
   if (one) rows = [one.row];
   if (rows.length > 1) {
     const codes = rows.map((r) => r.channelLocationCode ?? r.uniwareCustomerCode ?? r.id).join(', ');

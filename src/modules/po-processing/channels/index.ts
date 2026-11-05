@@ -9,6 +9,7 @@ import { gluzoHandler } from './gluzo/gluzo.handler';
 import { slikkHandler } from './slikk/slikk.handler';
 import { firstClubHandler } from './first-club/first-club.handler';
 import { octavosHandler } from './octavos/octavos.handler';
+import { nobleChemistHandler } from './noble-chemist/noble-chemist.handler';
 import { popTechHandler } from './pop-tech/pop-tech.handler';
 import { nykaaHandler } from './nykaa/nykaa.handler';
 import { purplleHandler } from './purplle/purplle.handler';
@@ -45,4 +46,6 @@ export const channelHandlers: Partial<Record<ChannelName, ChannelHandler>> = {
   [firstClubHandler.channel]: firstClubHandler,
   // Header + line names = the OCR's header_notes / line_notes (7 samples, 5 Nov): check the first real run.
   [octavosHandler.channel]: octavosHandler,
+  // Its order form read as a sheet (no OCR; 1 sample, 5 Nov).
+  [nobleChemistHandler.channel]: nobleChemistHandler,
 };

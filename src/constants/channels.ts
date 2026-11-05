@@ -35,6 +35,8 @@ export const CHANNELS = {
   FIRST_CLUB: 'first_club',
   /** Octavos Enterprise Solutions (Smytten): its PO PDF, by Manual Upload only (user; OCR PDF pipeline; 2026-11-05). */
   OCTAVOS: 'octavos',
+  /** Noble Chemist (New Welcome Agencies): its order form (.xls), by Manual Upload only (user; read as a sheet, no OCR; 2026-11-05). */
+  NOBLE_CHEMIST: 'noble_chemist',
 } as const;
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS];
@@ -75,4 +77,13 @@ export const OCR_CHANNELS: Record<ChannelName, string> = {
   [CHANNELS.FIRST_CLUB]: 'first_club',
   /** PDF: fixed header + line names (header_notes / line_notes), header from page 1 (+ the Grand Total page). */
   [CHANNELS.OCTAVOS]: 'octavos',
+  /** Not OCR'd: its .xls is read by our sheet reader (channels.config reader: 'sheet'; ocr-service sheet_rows.py, no model). */
+  [CHANNELS.NOBLE_CHEMIST]: 'noble_chemist',
 };
+
+/** The Excel rows helper of the sheet reader (2026-11-05): ocr-service/dev/scripts/<SCRIPT>, no model call. */
+export const OCR_SHEET = {
+  SCRIPT: 'sheet_rows.py',
+  TIMEOUT_MS: 60_000,
+  MAX_OUTPUT_BYTES: 20 * 1024 * 1024,
+} as const;

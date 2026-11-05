@@ -73,6 +73,8 @@ export const FILE_NAME_PO: Partial<Record<ChannelName, { re: RegExp; prefix?: (n
   [CHANNELS.FLIPKART_QCOM]: { re: /purchase_order_([A-Z0-9]{8,})/i },
   [CHANNELS.FIRST_CLUB]: { re: /PO[-_](\d{5,})/i, prefix: (n) => `PO-${n}-` },
   // the file name writes the slashes as dashes: OG-00381-2026-27.pdf = PO OG/00381/2026-27
+  // "Order No 88699.xls" = order 88699
+  [CHANNELS.NOBLE_CHEMIST]: { re: /Order\s*No\.?\s*(\d{3,})/i },
   [CHANNELS.OCTAVOS]: { re: /\b(OESPL|OG|OK|RET)-(\d+)-(\d{2,4}-\d{2})\b/i, po: (m) => `${m[1].toUpperCase()}/${m[2]}/${m[3]}` },
 };
 
