@@ -75,6 +75,8 @@ interface OcrRun {
   startedAt?: string;
   finishedAt?: string;
   durationMs?: number;
+  /** run_po.py's own report (2026-11-05): tokens + cost of the run. */
+  ocr?: { ocr_run?: { totals?: { cost_usd?: number; model_calls?: number; input_tokens?: number; output_tokens?: number; textract_pages?: number } } };
 }
 interface OcrOutput {
   status?: string;
@@ -202,7 +204,10 @@ const ocrSummary = async (folder: string, fp: FolderPo): Promise<Record<string, 
     input_type: fp.po.input_type,
     pipeline: out?.pipeline ?? null,
     lines: fp.po.line_items.length,
-    cost_usd: out?.cost_usd ?? null,
+    // the run's cost: run_po.py's report (ocr_run, 2026-11-05), else the old dev OCR's summary
+    cost_usd: run?.ocr?.ocr_run?.totals?.cost_usd ?? out?.cost_usd ?? null,
+    ocr_tokens: run?.ocr?.ocr_run?.totals ? { input: run.ocr.ocr_run.totals.input_tokens, output: run.ocr.ocr_run.totals.output_tokens } : null,
+    textract_pages: run?.ocr?.ocr_run?.totals?.textract_pages ?? null,
     duration_ms: run?.durationMs ?? null,
     ocr_warnings: out?.warnings ?? [],
     processing_warnings: fp.po.warnings,

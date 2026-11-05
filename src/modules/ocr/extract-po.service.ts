@@ -4,7 +4,7 @@ import { env } from '../../config/env';
 import { detectChannel, emailInfo, StoredMetadata } from './channel-detector';
 import { ChannelConfig } from './channels.config';
 import { DownloadedLink, downloadLinkedFiles } from './link-downloader';
-import { runOcr } from './ocr-runner';
+import { OcrRunReport, runOcr } from './ocr-runner';
 import { readSheets } from './sheet-reader';
 import { submitJob, usesSqs } from '../po-jobs/po-jobs.queue';
 import { syncEmailToS3 } from '../email-intake/s3-mirror.service';
@@ -32,6 +32,8 @@ export interface ExtractResult {
   durationMs?: number;
   ocr?: Record<string, unknown>;
   logTail?: string;
+  /** stdout that was not the OCR's JSON (stray lines, or no JSON at all), for debugging (2026-11-05). */
+  stdoutTail?: string;
   /** Files downloaded from links in the email body (channels with `links`). */
   links?: DownloadedLink[];
   folder: string;
@@ -153,7 +155,8 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
   // 5. Run the OCR (channel + files only). Its JSON (the extracted PO) is saved as the raw JSON, like the sheet reader's.
   log.info(LOG_SOURCE.OCR, `[extractPo] ${config.channel}: ${inputs.join(', ')} (${path.basename(dir)})`);
   await ocrStarted(dir);
-  const run = await step('run OCR', () => runOcr(config.ocrChannel, inputs), { channel: config.channel, files: inputs.length });
+  const run = await step('run OCR', () => runOcr(config.ocrChannel, inputs, { folder: path.basename(dir), channel: config.channel }), { channel: config.channel, files: inputs.length });
+  const report = run.result?.ocr_run as OcrRunReport | undefined;
 
   const ok = run.exitCode === 0 && !!run.result && !run.result.error;
   const ocrError = run.result?.error as string | undefined;
@@ -162,7 +165,8 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
     : run.timedOut
       ? why(ERROR_CODES.OCR_TIMED_OUT, env.ocr.timeoutMs)
       : ocrError
-        ? why(ERROR_CODES.OCR_FAILED, ocrError)
+        // the stage it failed at goes with the reason (Failed tab, po_uploads.error_details): where to look
+        ? why(ERROR_CODES.OCR_FAILED, report?.stage && report.stage !== 'done' ? `${ocrError} (OCR stage: ${report.stage})` : ocrError)
         : why(ERROR_CODES.OCR_EXITED, run.exitCode);
   const reason = failure?.reason;
   if (ok) await fs.writeFile(path.join(dir, FILES.OCR_RAW_JSON), JSON.stringify(run.result, null, 2), 'utf8');
@@ -181,8 +185,10 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
     durationMs: run.durationMs,
     ocr: run.result,
     logTail: ok ? undefined : run.logTail,
+    stdoutTail: run.stdoutTail,
   });
-  log.info(LOG_SOURCE.OCR, `[extractPo] ${config.channel} ${result.status}${reason ? `: ${reason}` : ''} (${run.durationMs} ms)`);
+  const cost = report?.totals?.cost_usd;
+  log.info(LOG_SOURCE.OCR, `[extractPo] ${config.channel} ${result.status}${reason ? `: ${reason}` : ''} (${run.durationMs} ms${typeof cost === 'number' ? `, $${cost.toFixed(4)}` : ''})`);
   return result;
 };
 

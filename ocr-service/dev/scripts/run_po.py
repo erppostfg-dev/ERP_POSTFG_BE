@@ -22,7 +22,11 @@ Usage:
 
 Files can be local or s3:// paths, in any order.
 Exit codes: 0 ok, 1 pipeline or other error, 2 bad arguments. On an error the JSON is
-{"channel": ..., "error": ...}.
+{"channel": ..., "error": ..., "error_type": ..., "error_code": ...}.
+
+Both on success and on an error the JSON also carries "ocr_run" (POST_FG 2026-11-05, for its logs): the stage reached
+(where it failed), the page decisions, every paid call (model tokens + cost, Textract pages + cost), the totals,
+duration_ms and "log" = the last progress lines of the pipeline (kept in memory, not printed).
 """
 
 import os
@@ -31,6 +35,8 @@ import sys
 import json
 import argparse
 import contextlib
+import io
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -39,6 +45,10 @@ import extract_text_first_excel_v2 as pdf_plus_sheet_pipeline
 import extract_hybrid_text_first_v2 as pdf_only_pipeline
 import extract_excel_only_v2 as sheet_only_pipeline
 import extract_flat_csv as flat_csv_pipeline
+import run_report
+
+# How many of the pipeline's last progress lines go back with the JSON (ocr_run.log): enough to see the path and the error.
+LOG_TAIL_LINES = 60
 
 CHANNELS_FILE = os.path.join(HERE, "channels.json")
 PIPELINE_ERRORS = (pdf_plus_sheet_pipeline.PipelineError, pdf_only_pipeline.PipelineError,
@@ -125,10 +135,22 @@ def route(channel: str, files: list) -> dict:
                                            split_value_rate_cells_enabled=bool(cfg.get("split_value_rate_cells")),
                                            unlabeled_total_row=bool(cfg.get("unlabeled_total_row")),
                                            stacked_table=cfg.get("stacked_table"),
-                                           line_notes=cfg.get("line_notes"))
+                                           line_notes=cfg.get("line_notes"),
+                                           header_pages=cfg.get("header_pages"))
     else:
         result = sheet_only_pipeline.process(sheet)
     return {"channel": channel, "input": received, "pdf": pdf, "sheet": sheet, **result}
+
+
+def aws_error_code(e: BaseException):
+    """The AWS error code behind an error (InvalidS3ObjectException, AccessDeniedException ...), else None."""
+    seen = 0
+    while e is not None and seen < 5:
+        response = getattr(e, "response", None)
+        if isinstance(response, dict) and response.get("Error", {}).get("Code"):
+            return response["Error"]["Code"]
+        e, seen = e.__cause__ or e.__context__, seen + 1
+    return None
 
 
 def main():
@@ -137,16 +159,25 @@ def main():
     parser.add_argument("files", nargs="+", help="the PO file(s): a PDF, a spreadsheet, or both (local or s3://)")
     args = parser.parse_args()
 
+    run_report.reset()
+    started = time.time()
+    captured = io.StringIO()
     try:
-        # Quiet run: the pipelines' progress lines and warnings are dropped, the JSON below is the only output
-        with open(os.devnull, "w") as quiet, contextlib.redirect_stdout(quiet), contextlib.redirect_stderr(quiet):
+        # Quiet run: the pipelines' progress lines and warnings are kept in memory (their tail goes back in
+        # ocr_run.log), the JSON below is the only output
+        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
             output, code = route(args.channel, args.files), 0
     except UsageError as e:
-        output, code = {"channel": args.channel, "error": str(e)}, 2
+        output, code = {"channel": args.channel, "error": str(e), "error_type": "UsageError"}, 2
     except PIPELINE_ERRORS as e:
-        output, code = {"channel": args.channel, "error": str(e)}, 1
+        output, code = {"channel": args.channel, "error": str(e), "error_type": type(e).__name__,
+                        "error_code": aws_error_code(e)}, 1
     except Exception as e:                         # S3 / Bedrock / Textract / an unreadable file: same JSON, no traceback
-        output, code = {"channel": args.channel, "error": f"{type(e).__name__}: {e}"}, 1
+        output, code = {"channel": args.channel, "error": f"{type(e).__name__}: {e}", "error_type": type(e).__name__,
+                        "error_code": aws_error_code(e)}, 1
+    lines = [line for line in captured.getvalue().splitlines() if line.strip()]
+    output["ocr_run"] = {**run_report.summary(), "duration_ms": int((time.time() - started) * 1000),
+                         "log": lines[-LOG_TAIL_LINES:]}
     sys.stdout.reconfigure(encoding="utf-8")       # Windows defaults to cp1252 when redirected
     print(json.dumps(output, ensure_ascii=False))
     sys.exit(code)

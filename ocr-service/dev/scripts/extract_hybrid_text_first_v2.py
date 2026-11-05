@@ -28,6 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError, NoCredentialsError
+import run_report  # what this run did (stage, pages, paid calls) for POST_FG's logs (2026-11-05)
 
 try:
     import pymupdf as fitz
@@ -118,6 +119,11 @@ def read_pdf_bytes(s3, path: str) -> bytes:
 
 # --- text layer check ---
 
+def is_blank_page(page) -> bool:
+    """No text and no image at all: an empty page (e.g. a PO's empty second page), not a scan (a scan is an image)."""
+    return not page.get_text().strip() and not page.get_images()
+
+
 def assess_page(page, min_chars: int, require_keywords: bool) -> tuple:
     """(usable, reason): is this page real digital text rather than a scan or garbage?"""
     text = page.get_text()
@@ -185,7 +191,28 @@ def layout_text(page, y_tolerance: float = 3.0, column_gap: float = 18.0) -> str
     return "\n".join(out)
 
 
-def inspect_text_layer(pdf_bytes: bytes) -> dict:
+def choose_header_pages(pages: list, header_pages_cfg: dict = None) -> list:
+    """
+    Which pages the header is read from (POST_FG 2026-11-05: read only what is needed). Blank pages never.
+    Default: the first and the last page with content, plus the last page with totals on it.
+    Channel setting header_pages = {"mode": "first_and_totals", "totals_re": "<regex>"}: the first page plus the page
+    where the channel's totals marker is (First Club: "Grand Total"); the T&C pages after it are not read.
+    """
+    content = [i for i, p in enumerate(pages) if not p.get("blank")] or [0]
+    first, last = content[0], content[-1]
+    cfg = header_pages_cfg or {}
+    if cfg.get("mode") == "first_and_totals":
+        marker = re.compile(cfg.get("totals_re") or TOTALS_PAGE_RE.pattern, re.IGNORECASE)
+        with_totals = [i for i in content if marker.search(pages[i]["text"])]
+        return sorted({first, with_totals[-1]}) if with_totals else sorted({first, last})
+    chosen = {first, last}
+    totals_pages = [i for i in content if TOTALS_PAGE_RE.search(pages[i]["text"])]
+    if totals_pages:
+        chosen.add(totals_pages[-1])
+    return sorted(chosen)
+
+
+def inspect_text_layer(pdf_bytes: bytes, header_pages_cfg: dict = None) -> dict:
     """Check each page's text layer and collect the text needed for TEXT mode."""
     if fitz is None:
         raise RuntimeError("pymupdf is required to read the PDF. Run: pip install pymupdf")
@@ -195,20 +222,25 @@ def inspect_text_layer(pdf_bytes: bytes) -> dict:
         num_pages = doc.page_count
         pages = []
         for i, page in enumerate(doc):
+            if i > 0 and is_blank_page(page):
+                pages.append({"ok": True, "blank": True, "reason": "blank page (no text, no image): skipped",
+                              "text": "", "layout": ""})
+                continue
             ok, reason = assess_page(page, MIN_TEXT_CHARS if i == 0 else MIN_PAGE_TEXT_CHARS,
                                      require_keywords=(i == 0))
-            pages.append({"ok": ok, "reason": reason, "text": page.get_text(), "layout": ""})
+            pages.append({"ok": ok, "blank": False, "reason": reason, "text": page.get_text(), "layout": ""})
 
-        # also add the last page with totals on it, in case the final page is just T&Cs
-        header_pages = get_header_page_indices(num_pages)
-        totals_pages = [i for i, p in enumerate(pages) if TOTALS_PAGE_RE.search(p["text"])]
-        if totals_pages and totals_pages[-1] not in header_pages:
-            header_pages = sorted(header_pages + [totals_pages[-1]])
+        # first + last page with content (+ the last page with totals, in case the final page is just T&Cs),
+        # or the channel's own rule (header_pages setting); blank pages are never read
+        header_pages = choose_header_pages(pages, header_pages_cfg)
         for i in header_pages:
             pages[i]["layout"] = layout_text(doc[i])
     finally:
         doc.close()
 
+    run_report.note("pages", [{"page": i + 1, "chars": len(p["text"].strip()), "blank": p.get("blank", False),
+                               "usable": p["ok"], "reason": p["reason"]} for i, p in enumerate(pages)])
+    run_report.note("header_pages", [i + 1 for i in header_pages])
     bad = [f"page {i + 1}: {p['reason']}" for i, p in enumerate(pages) if not p["ok"]]
     header_bad = [f"page {i + 1}: {pages[i]['reason']}" for i in header_pages if not pages[i]["ok"]]
     return {
@@ -676,6 +708,8 @@ def call_model_json(bedrock, content_blocks: list, label: str) -> dict:
            (output_tokens / 1_000_000 * MODEL_OUTPUT_COST_PER_M)
     print(f"  [{label}] tokens {input_tokens} in / {output_tokens} out "
           f"({input_tokens + output_tokens} total), approx ${cost:.4f}")
+    run_report.add_call(label, BEDROCK_MODEL_ID, input_tokens, output_tokens, cost,
+                        MODEL_INPUT_COST_PER_M, MODEL_OUTPUT_COST_PER_M)
 
     if response_text.startswith("```"):
         response_text = response_text.strip("`")
@@ -1066,8 +1100,8 @@ def verify_line_items_against_text(columns: list, rows: list, all_text: str) -> 
 
 # --- header fields (runs in parallel with the tables) ---
 
-def render_header_pages_to_png(pdf_bytes: bytes, dpi: int = VISION_IMAGE_DPI) -> tuple:
-    """Render just the header pages to PNG."""
+def render_header_pages_to_png(pdf_bytes: bytes, dpi: int = VISION_IMAGE_DPI, page_indices: list = None) -> tuple:
+    """Render just the header pages to PNG (the ones inspect_text_layer chose; else first + last)."""
     if fitz is None:
         raise RuntimeError("pymupdf is required for vision extraction. Run: pip install pymupdf")
 
@@ -1077,7 +1111,7 @@ def render_header_pages_to_png(pdf_bytes: bytes, dpi: int = VISION_IMAGE_DPI) ->
     matrix = fitz.Matrix(zoom, zoom)
     try:
         total_pages = doc.page_count
-        page_indices = get_header_page_indices(total_pages)
+        page_indices = page_indices or get_header_page_indices(total_pages)
         for idx in page_indices:
             if 0 <= idx < total_pages:
                 pix = doc[idx].get_pixmap(matrix=matrix)
@@ -1241,8 +1275,9 @@ def run_header_stage(bedrock, pdf_bytes: bytes, text_info: dict, header_notes: s
         result = call_model_json(bedrock, [{"text": build_text_mode_prompt(text_info, header_notes)}],
                                  f"Header fields | TEXT mode, page(s) {pages}")
         result.update(mode="TEXT", num_images=0)
+        run_report.note("header_mode", f"TEXT, page(s) {pages}")
     else:
-        page_indices, page_images = render_header_pages_to_png(pdf_bytes)
+        page_indices, page_images = render_header_pages_to_png(pdf_bytes, page_indices=text_info["header_pages"])
         print(f"  [Header | VISION] {text_info['header_reason']}. Rendered page(s) "
               f"{[p + 1 for p in page_indices]} at {VISION_IMAGE_DPI} DPI, calling {BEDROCK_MODEL_ID} (vision)")
         content_blocks = [{"image": {"format": "png", "source": {"bytes": img}}} for img in page_images]
@@ -1250,6 +1285,7 @@ def run_header_stage(bedrock, pdf_bytes: bytes, text_info: dict, header_notes: s
         result = call_model_json(bedrock, content_blocks,
                                  f"Header fields | VISION mode, {len(page_images)} page image(s)")
         result.update(mode="VISION", num_images=len(page_images))
+        run_report.note("header_mode", f"VISION ({text_info['header_reason']}), page(s) {[p + 1 for p in page_indices]}")
 
     header_fields = tidy_header_fields(result["parsed"].get("header_fields", []))
     warnings = validate_header_fields(header_fields, header_source_text(text_info) if use_text else None)
@@ -1589,9 +1625,10 @@ def process_stacked(pdf_path: str, pdf_bytes: bytes, text_info: dict, clients: d
 
 def process(pdf_path: str, clients: dict = None, header_notes: str = None,
             split_value_rate_cells_enabled: bool = False, unlabeled_total_row: bool = False,
-            stacked_table: dict = None, line_notes: str = None) -> dict:
+            stacked_table: dict = None, line_notes: str = None, header_pages: dict = None) -> dict:
     """
     Run the full pipeline on one PO and return the extracted data as a dict. Raises PipelineError.
+    header_pages: which pages the header is read from (choose_header_pages; POST_FG 2026-11-05).
     header_notes are optional per-channel notes added to the header prompt; line_notes the same for
     the line-items prompt (fixed column names by meaning, POST_FG 2026-11-04).
     split_value_rate_cells_enabled and unlabeled_total_row are per-channel layout settings,
@@ -1605,9 +1642,10 @@ def process(pdf_path: str, clients: dict = None, header_notes: str = None,
 
     clients = clients or make_clients()
 
+    run_report.stage("read PDF + text layer")
     try:
         pdf_bytes = read_pdf_bytes(clients["s3"], pdf_path)
-        text_info = inspect_text_layer(pdf_bytes)
+        text_info = inspect_text_layer(pdf_bytes, header_pages)
     except NoCredentialsError as e:
         raise PipelineError("No AWS credentials found. Run `aws configure` first.") from e
     except ClientError as e:
@@ -1624,6 +1662,7 @@ def process(pdf_path: str, clients: dict = None, header_notes: str = None,
         return process_stacked(pdf_path, pdf_bytes, text_info, clients, header_notes, stacked_table, run_started)
 
     # tables and header run side by side; line items wait for the tables
+    run_report.stage("tables (+ header in parallel)")
     print("Running tables and header in parallel\n")
     pool = ThreadPoolExecutor(max_workers=2)
     tables_future = pool.submit(run_tables_stage, clients["textract"], pdf_path, pdf_bytes, text_info)
@@ -1632,18 +1671,19 @@ def process(pdf_path: str, clients: dict = None, header_notes: str = None,
     try:
         tables_result = tables_future.result()
     except NoCredentialsError as e:
-        pool.shutdown(wait=False, cancel_futures=True)
+        pool.shutdown(wait=True, cancel_futures=True)
         raise PipelineError("No AWS credentials found. Run `aws configure` first.") from e
     except ClientError as e:
-        pool.shutdown(wait=False, cancel_futures=True)
+        pool.shutdown(wait=True, cancel_futures=True)
         error_code = e.response.get("Error", {}).get("Code", "Unknown")
         raise PipelineError(f"{error_code} - {e}") from e
     except (RuntimeError, TimeoutError) as e:
-        pool.shutdown(wait=False, cancel_futures=True)
+        pool.shutdown(wait=True, cancel_futures=True)
         raise PipelineError(str(e)) from e
 
     table_source = tables_result["source"]
     num_pages = tables_result["num_pages"]
+    run_report.note("tables_source", table_source)
     all_tables, unstack_notes = unstack_two_row_items(tables_result["all_tables"])
     for note in unstack_notes:
         print(f"  [Tables] {note}")
@@ -1653,15 +1693,18 @@ def process(pdf_path: str, clients: dict = None, header_notes: str = None,
 
     textract_cost = num_pages * TEXTRACT_TABLES_COST_PER_PAGE if table_source == "TEXTRACT" else 0.0
     if table_source == "TEXTRACT":
+        run_report.add_textract(num_pages, textract_cost, TEXTRACT_TABLES_COST_PER_PAGE)
+    if table_source == "TEXTRACT":
         print(f"  [Textract] {num_pages} page(s) x ${TEXTRACT_TABLES_COST_PER_PAGE}/page "
               f"= ${textract_cost:.4f}\n")
     else:
         print("  [Textract] not used, $0.0000\n")
 
+    run_report.stage("line items (model)")
     try:
         line_result = run_line_items_stage(clients["bedrock"], all_tables, table_source, line_notes)
     except Exception as e:
-        pool.shutdown(wait=False, cancel_futures=True)
+        pool.shutdown(wait=True, cancel_futures=True)
         raise PipelineError(f"calling Bedrock (line items): {e}") from e
     total_llm_cost += line_result["cost"]
 
@@ -1682,6 +1725,7 @@ def process(pdf_path: str, clients: dict = None, header_notes: str = None,
         all_text = "\n".join(p["text"] for p in text_info["pages"]) + "\n" + all_tables_to_text(all_tables)
         line_warnings += verify_line_items_against_text(line_columns, line_rows, all_text)
 
+    run_report.stage("header (model)")
     try:
         header_result = header_future.result()
     except NoCredentialsError as e:
@@ -1693,6 +1737,7 @@ def process(pdf_path: str, clients: dict = None, header_notes: str = None,
     total_llm_cost += header_result["cost"]
 
     # take totals from the table's Total row rather than trusting the model's names for them
+    run_report.stage("totals + checks")
     table_totals = find_table_totals(all_tables, unlabeled_total_row)
     header_fields, totals_notes = merge_table_totals(header_result["header_fields"], table_totals)
     for note in totals_notes:
@@ -1729,6 +1774,7 @@ def process(pdf_path: str, clients: dict = None, header_notes: str = None,
     print(f"Took {time.time() - run_started:.1f}s")
     # merge_table_totals appended the Total-row values to the header list; return them separately
     header_only = [f for f in header_fields if f not in table_totals]
+    run_report.stage("done")
     return build_output(header_only, table_totals, line_columns, line_rows, all_warnings)
 
 

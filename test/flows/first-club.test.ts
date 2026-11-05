@@ -24,7 +24,7 @@ vi.mock('../../src/modules/ocr/ocr-runner', async (orig) => ({
   runOcr: vi.fn(async (channel: string, files: string[]) => {
     ocr.calls.push({ channel, files });
     return ocr.answer
-      ? { exitCode: 0, timedOut: false, durationMs: 1, result: ocr.answer, log: '' }
+      ? { exitCode: ocr.answer.error ? 1 : 0, timedOut: false, durationMs: 1, result: ocr.answer, log: '' }
       : { exitCode: 1, timedOut: false, durationMs: 1, result: { error: 'OCR is off in tests' }, log: '' };
   }),
 }));
@@ -234,5 +234,20 @@ describe('the whole Manual Upload flow: upload -> S3 -> OCR "first_club" -> proc
     expect(u.status).toBe('needs_review');
     expect((await rows<{ issue_type: string }>("SELECT issue_type FROM po_issues WHERE upload_id = ? AND status = 'open'", [u.id])).map((r) => r.issue_type)).toContain('SKU_NOT_MAPPED');
     expect(await rows('SELECT uid FROM master_purchase_orders')).toEqual([]);
+  });
+
+  it('an OCR failure: the Failed reason says what failed and at which OCR stage (not just "exited with code 1")', async () => {
+    const reviewer = await loginAs('operations-executive');
+    await seedFirstClub();
+    ocr.answer = { channel: 'first_club', error: 'InvalidS3ObjectException - Unable to get object metadata from S3', error_type: 'PipelineError',
+      error_code: 'InvalidS3ObjectException', ocr_run: { stage: 'tables (+ header in parallel)', totals: { cost_usd: 0.0141 } } };
+    const up = await api().post('/api/v1/manual-uploads').set('Cookie', reviewer.cookie).field('channel', 'first_club')
+      .attach('files', Buffer.from('%PDF-1.4 test'), 'PO-210392.pdf');
+    const [id] = up.body.data.ids as string[];
+    await api().post('/api/v1/manual-uploads/process').set('Cookie', reviewer.cookie).send({ ids: [id] }).expect(200);
+    await vi.waitFor(async () => expect((await rows<{ status: string }>('SELECT status FROM manual_uploads WHERE id = ?', [id]))[0].status).toBe('failed'), { timeout: 20_000 });
+    const [m] = await rows<{ note: string }>('SELECT note FROM manual_uploads WHERE id = ?', [id]);
+    expect(m.note).toContain('Unable to get object metadata from S3');
+    expect(m.note).toContain('OCR stage: tables (+ header in parallel)');
   });
 });

@@ -126,7 +126,7 @@ export const FIXES: Partial<Record<LogSource, Partial<Record<FailureKind, string
   },
   ocr: {
     NOT_INSTALLED: 'Check PYTHON_BIN (e.g. .venv-ocr/Scripts/python.exe) and OCR_SCRIPT in .env.',
-    FAILED: 'See `logTail` for the Python error; the PO stays queued for the next run.',
+    FAILED: 'See `error`, `errorCode`, `stage` and `logTail` (the last lines of the OCR log) on this line; the PO waits in Failed for Try again.',
     TIMEOUT: 'The OCR took longer than OCR_TIMEOUT_MS; a large file, or the OCR API is slow.',
   },
 };

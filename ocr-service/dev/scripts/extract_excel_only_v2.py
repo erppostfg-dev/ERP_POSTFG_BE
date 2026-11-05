@@ -27,6 +27,7 @@ import boto3
 import openpyxl
 from botocore.config import Config
 from botocore.exceptions import ClientError, NoCredentialsError
+import run_report  # what this run did (stage, paid calls) for POST_FG's logs (2026-11-05)
 
 AWS_REGION = "ap-south-1"           # S3 region
 
@@ -662,6 +663,8 @@ def call_model_for_header(bedrock, sheet_text: str) -> dict:
     print(f"  [Header | {BEDROCK_MODEL_ID}] tokens: "
           f"{input_tokens} in, {output_tokens} out, {input_tokens + output_tokens} total, "
           f"est. cost ${cost:.4f}")
+    run_report.add_call("Header", BEDROCK_MODEL_ID, input_tokens, output_tokens, cost,
+                        MODEL_INPUT_COST_PER_M, MODEL_OUTPUT_COST_PER_M)
 
     if response_text.startswith("```"):
         response_text = response_text.strip("`")

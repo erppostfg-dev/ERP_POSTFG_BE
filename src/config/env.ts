@@ -139,7 +139,8 @@ export const env = {
     runLimit: Number(process.env.OCR_RUN_LIMIT ?? 0),
     pythonBin: process.env.PYTHON_BIN ?? 'python',
     script: process.env.OCR_SCRIPT ?? 'ocr-service/dev/scripts/run_po.py',
-    timeoutMs: Number(process.env.OCR_TIMEOUT_MS ?? 10 * 60 * 1000),
+    // an empty OCR_TIMEOUT_MS is the default too (Number('') = 0 killed every OCR run at once; 2026-11-05)
+    timeoutMs: num('OCR_TIMEOUT_MS', 10 * 60 * 1000),
     concurrency: Number(process.env.OCR_CONCURRENCY ?? 2),
   },
   // Login: Google sign-in for the website (a Web application OAuth client; not the Gmail client above).
