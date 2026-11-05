@@ -90,6 +90,23 @@ export const readS3Json = async <T>(s3Url: string): Promise<T | undefined> => {
 /** A text file from S3 by its s3:// URL, or undefined when it isn't there (Myntra STR CSVs, 2026-11-03). */
 export const readS3Text = async (s3Url: string): Promise<string | undefined> => getText(keyOfS3Url(s3Url));
 
+/** An S3 file's bytes by its s3:// URL; undefined when it doesn't exist (2026-11-05: the sheet of an earlier PO copy). */
+export const readS3Bytes = async (s3Url: string): Promise<Uint8Array | undefined> => {
+  try {
+    return await (await s3().send(new GetObjectCommand({ Bucket: env.s3.bucket, Key: keyOfS3Url(s3Url) }))).Body?.transformToByteArray();
+  } catch (err) {
+    if ((err as { name?: string }).name === 'NoSuchKey') return undefined;
+    throw err;
+  }
+};
+
+/** The s3:// URLs of the files directly in the folder of this file's URL (not its sub-folders). */
+export const s3FolderFileUrls = async (s3Url: string): Promise<string[]> => {
+  const key = keyOfS3Url(s3Url);
+  const prefix = key.slice(0, key.lastIndexOf('/') + 1);
+  return [...(await listPrefix(prefix)).keys()].filter((k) => !k.slice(prefix.length).includes('/')).map((k) => s3UrlOfKey(k));
+};
+
 /** The key of an s3://<our bucket>/<key> URL (S3 must be on, and the bucket ours). */
 const keyOfS3Url = (s3Url: string): string => {
   if (!env.s3.enabled) throw appError(ERROR_CODES.S3_DISABLED);
