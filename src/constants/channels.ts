@@ -37,6 +37,11 @@ export const CHANNELS = {
   OCTAVOS: 'octavos',
   /** Noble Chemist (New Welcome Agencies): its order form (.xls), by Manual Upload only (user; read as a sheet, no OCR; 2026-11-05). */
   NOBLE_CHEMIST: 'noble_chemist',
+  /**
+   * Amazon RK World (Amazon Vendor Central, vendor XN8TZ): the "PO Item Export" (.xls, several POs per file), by Manual
+   * Upload only (user; read as a sheet, no OCR; 2026-11-06). Not CHANNELS.AMAZON (Seller Central API / FBA plans).
+   */
+  AMAZON_RK_WORLD: 'amazon_rk_world',
 } as const;
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS];
@@ -79,6 +84,8 @@ export const OCR_CHANNELS: Record<ChannelName, string> = {
   [CHANNELS.OCTAVOS]: 'octavos',
   /** Not OCR'd: its .xls is read by our sheet reader (channels.config reader: 'sheet'; ocr-service sheet_rows.py, no model). */
   [CHANNELS.NOBLE_CHEMIST]: 'noble_chemist',
+  /** Not OCR'd: its Vendor Central export (.xls) is read by our sheet reader (ocr-service sheet_rows.py, no model). */
+  [CHANNELS.AMAZON_RK_WORLD]: 'amazon_rk_world',
 };
 
 /** The Excel rows helper of the sheet reader (2026-11-05): ocr-service/dev/scripts/<SCRIPT>, no model call. */

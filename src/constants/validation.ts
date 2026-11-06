@@ -52,6 +52,7 @@ export const CHANNEL_TOLERANCES: Record<ChannelName, Tolerance> = {
   [CHANNELS.FIRST_CLUB]: DEFAULT_TOLERANCE,
   [CHANNELS.OCTAVOS]: DEFAULT_TOLERANCE,
   [CHANNELS.NOBLE_CHEMIST]: DEFAULT_TOLERANCE,
+  [CHANNELS.AMAZON_RK_WORLD]: DEFAULT_TOLERANCE,
 };
 
 /**
@@ -88,6 +89,12 @@ export const CHANNEL_MASTER_IDS: Record<ChannelName, number> = {
   [CHANNELS.OCTAVOS]: 22,
   /** "NOBLE CHEMIST" (15 SKU rows by EAN with rates, 1 location GOREGOAN_WEST; checked 2026-11-05). Not "NOBLE PLUS" (36). */
   [CHANNELS.NOBLE_CHEMIST]: 35,
+  /**
+   * "AMAZON RK WORLD" (Vendor Central). Checked 2026-11-06: 18 locations (FC codes HKA2 / HNR4 / HHY7 ... with Uniware
+   * codes), but 0 SKU rows: until the masters team adds them (channel_code = ASIN, rate = Cost x 1.18) every line goes to
+   * review as SKU not mapped. Not "Amazon" (9, its rates are 15% of MRP).
+   */
+  [CHANNELS.AMAZON_RK_WORLD]: 26,
 };
 
 /**
@@ -97,6 +104,14 @@ export const CHANNEL_MASTER_IDS: Record<ChannelName, number> = {
  * channel_code on 2 Nov).
  */
 export const SKU_ANY_CODE: ReadonlySet<ChannelName> = new Set([CHANNELS.SLIKK]);
+
+/**
+ * Channels whose PO line carries their own code AND the EAN AND our pep code in separate columns (Amazon RK World: ASIN,
+ * External ID, Model number; user 2026-11-05 "match ASIN, then EAN, then Model number"): when no channel row has the
+ * line's code as channel_code, the channel's rows by the line's EAN (ean_code), then by its pep code. Rows of several of
+ * our codes = review, as for a code.
+ */
+export const SKU_EAN_THEN_PEP: ReadonlySet<ChannelName> = new Set([CHANNELS.AMAZON_RK_WORLD]);
 
 /**
  * Channels whose channel_code is the EAN (Pop Tech, user 2026-11-02): when the code gives rows of several of our codes,
@@ -192,6 +207,8 @@ export const CHANNEL_LOCATION_MATCH: Record<ChannelName, LocationMatch> = {
   [CHANNELS.OCTAVOS]: LOCATION_MATCH.PINCODE,
   /** One location (GOREGOAN_WEST, New Welcome Agencies); the form has no pincode. */
   [CHANNELS.NOBLE_CHEMIST]: LOCATION_MATCH.ONLY,
+  /** "Ship-to location" = Amazon's FC code (HKA2 ...) = channel_location_code of AMAZON RK WORLD; the export has no address. */
+  [CHANNELS.AMAZON_RK_WORLD]: LOCATION_MATCH.CODE_THEN_PINCODE,
 };
 
 /** Result of validating one PO. */

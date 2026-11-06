@@ -42,6 +42,11 @@ const MESSAGES = {
 
   /** A line value the OCR left out or put under the wrong name, worked out from the line's other values (Gluzo first). */
   LINE_VALUE_FIXED: (where: string, field: string, how: string) => `${where}: ${field} ${how}`,
+
+  /** Amazon RK World (2026-11-06): a line left out of the PO (cancelled availability, nothing left to send ...). */
+  LINE_SKIPPED: (where: string, why: string) => `${where}: left out (${why})`,
+  /** Amazon RK World: the PO's status in the export is not one we take as an order (Unconfirmed / Confirmed). */
+  PO_STATUS_NOT_TAKEN: (status: string) => `status "${status}" is not an open order: its lines are left out`,
 };
 
 export type WarningCode = keyof typeof MESSAGES;

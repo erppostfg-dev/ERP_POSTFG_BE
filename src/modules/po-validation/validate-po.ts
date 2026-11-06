@@ -7,6 +7,7 @@ import {
   PriceChoice,
   PUNCH_S,
   SKU_ANY_CODE,
+  SKU_EAN_THEN_PEP,
   SKU_EAN_TIEBREAK,
   SKU_NAME_TIEBREAK,
   ChannelName,
@@ -266,12 +267,17 @@ const validateLine = (
   const anyCode = !byCode.length && SKU_ANY_CODE.has(channel);
   const asPep = anyCode ? (master.skusByPep.get(matchKey(line.channel_sku_code)) ?? []) : [];
   const asEan = anyCode && !asPep.length ? (master.skusByEan.get(matchKey(line.channel_sku_code)) ?? []) : [];
+  // Amazon RK World (SKU_EAN_THEN_PEP): the ASIN finds nothing -> the channel's rows by the line's EAN, then by its pep code
+  const eanThenPep = !byCode.length && SKU_EAN_THEN_PEP.has(channel);
+  const byLineEan = eanThenPep && line.ean.trim() ? (master.skusByEan.get(matchKey(line.ean)) ?? []) : [];
+  const byLinePep = eanThenPep && !byLineEan.length && line.pep_sku_code.trim() ? (master.skusByPep.get(matchKey(line.pep_sku_code)) ?? []) : [];
   const oneRow = (rows: typeof byCode) => {
     if (new Set(rows.map((r) => matchKey(r.pepCode))).size > 1) return rows;
     const r = rows.find((x) => x.rateAfterMargin !== null) ?? rows[0];
     return r ? [r] : [];
   };
-  const candidates = pickedPep ? (chosen ? [chosen] : []) : byCode.length ? byCode : asPep.length ? oneRow(asPep) : oneRow(asEan);
+  const candidates = pickedPep ? (chosen ? [chosen] : []) : byCode.length ? byCode : asPep.length ? oneRow(asPep)
+    : asEan.length ? oneRow(asEan) : byLineEan.length ? oneRow(byLineEan) : oneRow(byLinePep);
   const skuIssue = (detail: string) =>
     add(validationIssue(ISSUE_TYPE.SKU_NOT_MAPPED, { field: ISSUE_FIELDS.CHANNEL_SKU_CODE, lineNo, actual: line.channel_sku_code }, where, detail));
   if (pickedPep && !candidates.length) skuIssue(VALIDATION_TEXT.SKU_NONE(pickedPep));

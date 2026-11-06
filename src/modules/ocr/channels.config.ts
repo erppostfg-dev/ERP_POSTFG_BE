@@ -279,4 +279,18 @@ export const channelConfigs: ChannelConfig[] = [
     reader: 'sheet',
     sheetHeader: /\bCOMP\s*UPC\b/i,
   },
+  {
+    // Amazon RK World (Amazon Vendor Central, 2026-11-06): the "PO Item Export" (POItemExport_<date>.xls, old-style .xls;
+    // first sheet "Line Items": one row per PO line, several POs per file). Manual Upload only. No OCR: our sheet reader
+    // (Excel through ocr-service sheet_rows.py); the handler splits the rows by PO (as Nykaa).
+    channel: CHANNELS.AMAZON_RK_WORLD,
+    ocrChannel: OCR_CHANNELS[CHANNELS.AMAZON_RK_WORLD],
+    senders: [],
+    domains: [],
+    files: { sheet: /\.(xls|xlsx|csv)$/i },
+    reader: 'sheet',
+    // the column names (also refuses another export or sheet, with why)
+    sheetHeader: /\bASIN\b.*\bRequested quantity\b/i,
+    manyPosPerFile: true,
+  },
 ];

@@ -10,6 +10,7 @@ import { slikkHandler } from './slikk/slikk.handler';
 import { firstClubHandler } from './first-club/first-club.handler';
 import { octavosHandler } from './octavos/octavos.handler';
 import { nobleChemistHandler } from './noble-chemist/noble-chemist.handler';
+import { amazonRkWorldHandler } from './amazon-rk-world/amazon-rk-world.handler';
 import { popTechHandler } from './pop-tech/pop-tech.handler';
 import { nykaaHandler } from './nykaa/nykaa.handler';
 import { purplleHandler } from './purplle/purplle.handler';
@@ -48,4 +49,6 @@ export const channelHandlers: Partial<Record<ChannelName, ChannelHandler>> = {
   [octavosHandler.channel]: octavosHandler,
   // Its order form read as a sheet (no OCR; 1 sample, 5 Nov).
   [nobleChemistHandler.channel]: nobleChemistHandler,
+  // The Vendor Central PO Item Export read as a sheet (no OCR; several POs per file; 1 sample, 6 Nov).
+  [amazonRkWorldHandler.channel]: amazonRkWorldHandler,
 };
