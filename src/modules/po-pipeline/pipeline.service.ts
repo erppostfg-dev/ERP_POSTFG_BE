@@ -242,6 +242,7 @@ const chain = async (folder: string): Promise<{ poNumber: string; status: string
       await applyPlan(AppDataSource, p);
       return p;
     });
+    for (const s of plan.skipped ?? []) log(folder, `${s.poNumber}: already in POST_FG (${s.copy}), left out of this file`);
     for (const r of plan.rows) {
       log(folder, r.final ? `${r.poNumber}: already ${r.existing?.status}, unchanged` : `${r.poNumber}: ${r.status}${r.issues.create.length ? ` (${r.issues.create.length} new issue(s))` : ''}`);
       out.push({ poNumber: r.poNumber, status: r.final ? (r.existing?.status ?? r.status) : r.status });

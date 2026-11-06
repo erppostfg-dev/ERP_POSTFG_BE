@@ -49,6 +49,13 @@ const why = <C extends ErrorCode>(code: C, ...args: ErrorArgs<C>): { code: C; re
 
 /** The attachments the channel's OCR needs (run_po.py tells the PDF and the sheet apart itself). */
 const pickFiles = (config: ChannelConfig, filenames: string[]): { files: string[] } | { code: ErrorCode; reason: string } => {
+  // `either` (Purplle, 2026-11-06): ONE file, the sheet when there (no model to pay), else the PDF
+  if (config.either) {
+    const { pdf, sheet } = config.files;
+    const file = (sheet && filenames.find((f) => sheet.test(f))) || (pdf && filenames.find((f) => pdf.test(f)));
+    if (file) return { files: [file] };
+    return why(ERROR_CODES.OCR_FILES_MISSING, config.channel, 'pdf or sheet', `${String(pdf)} or ${String(sheet)}`, filenames.join(', '));
+  }
   const picked: string[] = [];
   for (const kind of ['pdf', 'sheet'] as const) {
     const pattern = config.files[kind];

@@ -72,8 +72,9 @@ export const detectChannel = (email: EmailInfo): { config: ChannelConfig } | { c
   if (email.files && !match.links) {
     const kinds = (['pdf', 'sheet'] as const).filter((k) => match.files[k] && !match.optional?.includes(k));
     const missing = kinds.filter((k) => !email.files!.some((f) => match.files[k]!.test(f)));
-    if (missing.length) {
-      const need = kinds.map((k) => String(match.files[k])).join(' + ');
+    // `either` (Purplle): one of the two is enough
+    if (match.either ? missing.length === kinds.length : missing.length) {
+      const need = kinds.map((k) => String(match.files[k])).join(match.either ? ' or ' : ' + ');
       return { code: ERROR_CODES.NOT_PO_NO_FILES, reason: errorMessage(ERROR_CODES.NOT_PO_NO_FILES, match.channel, need, email.files.join(', ')) };
     }
   }

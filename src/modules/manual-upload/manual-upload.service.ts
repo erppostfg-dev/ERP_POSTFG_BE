@@ -70,14 +70,15 @@ const sheetText = (c: ChannelConfig): string => {
 };
 /** The files one PO needs (an optional one, e.g. 1mg's PDF, is left out: optionalOf). */
 const needsOf = (c: ChannelConfig): string =>
-  [c.files.pdf && !c.optional?.includes('pdf') ? 'PDF' : '', !c.optional?.includes('sheet') ? sheetText(c) : ''].filter(Boolean).join(' + ');
+  [c.files.pdf && !c.optional?.includes('pdf') ? 'PDF' : '', !c.optional?.includes('sheet') ? sheetText(c) : ''].filter(Boolean).join(c.either ? ' or ' : ' + ');
 /** The file a PO may also have (same file name), e.g. "PDF" for Tata 1mg; "" when none. */
 const optionalOf = (c: ChannelConfig): string =>
   [c.files.pdf && c.optional?.includes('pdf') ? 'PDF' : '', c.files.sheet && c.optional?.includes('sheet') ? sheetText(c) : ''].filter(Boolean).join(' + ');
 
 /** How the channel normally sends POs (the Manual Upload list is grouped by it): api (Amazon), email; manual-only later. */
 export type UploadGroup = 'api' | 'email' | 'manual';
-export interface UploadChannel { channel: string; name: string; needs: string; twoFiles: boolean; group: UploadGroup; optional?: string; manyPos?: boolean }
+/** either: a PDF (one PO) or a sheet (it can hold many POs), each file on its own (Purplle, 2026-11-06). */
+export interface UploadChannel { channel: string; name: string; needs: string; twoFiles: boolean; group: UploadGroup; optional?: string; manyPos?: boolean; either?: boolean }
 
 /** Channels with a PO reader (channels.config) that are active in master_channels. */
 export const uploadChannels = async (): Promise<UploadChannel[]> => {
@@ -86,7 +87,10 @@ export const uploadChannels = async (): Promise<UploadChannel[]> => {
     .map((c): UploadChannel | null => {
       const m = masters.find((x) => x.id === masterIdOf(c.channel));
       return m
-        ? { channel: c.channel, name: m.displayName, needs: needsOf(c), twoFiles: !!(c.files.pdf && c.files.sheet) && !c.optional?.length, group: c.senders.length ? 'email' : 'manual', optional: optionalOf(c) || undefined, manyPos: c.manyPosPerFile || undefined }
+        ? {
+          channel: c.channel, name: m.displayName, needs: needsOf(c), twoFiles: !!(c.files.pdf && c.files.sheet) && !c.optional?.length && !c.either,
+          group: c.senders.length ? 'email' : 'manual', optional: optionalOf(c) || undefined, manyPos: c.manyPosPerFile || undefined, either: c.either || undefined,
+        }
         : null;
     })
     .filter((x): x is UploadChannel => x !== null)
@@ -120,6 +124,12 @@ const myntraMaster = (masters: MasterChannel[]): UploadChannel[] => {
  */
 const groupFiles = (c: ChannelConfig, files: UploadedFile[], channelName: string): UploadedFile[][] => {
   const { pdf, sheet } = c.files;
+  // PDF or sheet (Purplle): every file is read on its own (a PDF = one PO, a summary sheet = its POs).
+  if (c.either) {
+    const bad = files.filter((f) => !pdf?.test(f.originalname) && !sheet?.test(f.originalname));
+    if (bad.length) throw appError(ERROR_CODES.MANUAL_FILES_MISSING, channelName, needsOf(c), bad.map((f) => f.originalname).join(', '));
+    return files.map((f) => [f]);
+  }
   // A PDF + sheet channel whose PDF is optional (Tata 1mg): one PO per sheet, its PDF (same file name) added when there.
   if (pdf && sheet && c.optional?.includes('pdf')) {
     const pdfs = files.filter((f) => pdf.test(f.originalname));

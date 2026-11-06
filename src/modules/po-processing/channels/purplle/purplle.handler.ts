@@ -5,6 +5,7 @@ import { pincodeFrom, text } from '../../common/parse';
 import { ProcessedPo } from '../../common/processed-po';
 import { addReviewReason, missingFields } from '../../common/review';
 import { basePo, ChannelHandler, finishSources, PoContext } from '../channel-handler';
+import { processPurpllePdf } from './purplle-pdf';
 import { PURPLLE_FOC, PURPLLE_MAPPING, PURPLLE_PO_COLUMN, PURPLLE_REQUIRED, PURPLLE_VALUE_TOLERANCE } from './purplle.mapping';
 
 /**
@@ -12,11 +13,13 @@ import { PURPLLE_FOC, PURPLLE_MAPPING, PURPLLE_PO_COLUMN, PURPLLE_REQUIRED, PURP
  * PO Document Number (saved under POs/<PO number>/ in the email folder).
  * Later: location match on delivery_pincode (details_channels.consignee_pin_code), SKU match on Sku, master fills
  * for HSN / GST / GSTIN / full address, and the manual review of what is still missing.
+ * A PO PDF (Manual Upload, 2026-11-06) is one PO: purplle-pdf.ts.
  */
 export const purplleHandler: ChannelHandler = {
   channel: CHANNELS.PURPLLE,
 
-  async process(ctx: PoContext): Promise<ProcessedPo[]> {
+  async process(ctx: PoContext): Promise<ProcessedPo | ProcessedPo[]> {
+    if (ctx.raw.inputType === 'pdf') return processPurpllePdf(ctx);
     // Group the summary's lines by PO, in file order.
     const byPo = new Map<string, Record<string, string>[]>();
     for (const raw of ctx.raw.lines) {

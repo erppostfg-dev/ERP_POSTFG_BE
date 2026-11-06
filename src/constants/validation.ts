@@ -388,4 +388,6 @@ export const VALIDATION_TEXT = {
   OCR_NO_LINES: 'no line items were read',
   /** po_issues.remark when a re-run no longer finds an open issue (e.g. the master data was fixed). */
   AUTO_CLOSED: 'no longer found by validation',
+  /** skipKnownPos (Purplle, 2026-11-06): every PO of the file was already in POST_FG, so none was taken again. */
+  ALL_POS_ALREADY_IN: (pos: string) => `every PO of this file is already in POST_FG, none was taken again: ${pos}`,
 };
