@@ -28,6 +28,19 @@ export const PO_UNIWARE_SYNC = {
   MAX_PER_RUN: 500,
   /** A manual "Sync now" for picked POs. */
   MANUAL_MAX_IDS: 200,
+  /**
+   * Lighter runs (2026-11-06; the first runs read 500 POs in 481 s with 2,016 queries, 401 of them "Not in Uniware yet"):
+   * a PO not in Uniware yet is asked again only every NOT_FOUND_EVERY_MIN minutes (a timed run; Sync now reads it);
+   * an answer that changes nothing is not written PO by PO: their lastSyncedAt is set TOUCH_CHUNK at a time at the end.
+   */
+  NOT_FOUND_EVERY_MIN: 120,
+  TOUCH_CHUNK: 500,
+  /** Our own Uniware client (uniware-client.ts): saleorder/get (lower case: the camelCase path answers 404). */
+  GET_SO: '/services/rest/v1/oms/saleorder/get',
+  /** get of a code Uniware does not have (code 40005) = not uploaded yet. */
+  INVALID_SALE_ORDER_CODE: 'INVALID_SALE_ORDER_CODE',
+  HTTP_TIMEOUT_MS: 60_000,
+  RETRIES_ON_429: 7,
   ROUTES: { SYNC: '/uniware-sync' },
 } as const;
 

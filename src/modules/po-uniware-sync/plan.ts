@@ -2,7 +2,7 @@ import {
   IST_OFFSET_MS, UNIWARE_DISPATCHED, UNIWARE_LOGISTICS_OPEN, UNIWARE_NOT_FOUND, UNIWARE_PACKAGE_STEP, UNIWARE_PLANNING_OPEN, UNIWARE_SO_DONE,
   UNIWARE_WAREHOUSE_LADDER,
 } from '../../constants';
-import type { SoDetail, SoDetailPackage } from '../d2c-transfers/sync-plan';
+import type { SoDetail, SoDetailPackage } from './sale-order';
 
 /*
  * The pure part of the channel PO Uniware sync (2026-11-06, constants/po-uniware-sync.ts): one saleorder/get answer

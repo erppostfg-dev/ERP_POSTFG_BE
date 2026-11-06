@@ -1,15 +1,15 @@
 import fs from 'fs';
 import path from 'path';
 import { describe, expect, it } from 'vitest';
-import { soDetailOf } from '../../d2c-transfers/sync-plan';
+import { soDetailOf } from '../sale-order';
 import { fullyDispatched, planPoSync, PoSyncState, warehouseStepOf } from '../plan';
 
 /*
- * Channel PO Uniware sync, no database (2026-11-06): real saleorder/get answers (D2C's fixtures of 2026-11-03) and
+ * Channel PO Uniware sync, no database (2026-11-06): real saleorder/get answers (D2C's fixtures of 2026-11-03, copied here) and
  * small hand-made ones -> what changes on the PO: statuses forward only, dates / invoice only when empty.
  */
 const fixture = (name: string) =>
-  soDetailOf((JSON.parse(fs.readFileSync(path.join(__dirname, '../../d2c-transfers/__tests__/fixtures', name), 'utf8')) as { saleOrderDTO: Record<string, unknown> }).saleOrderDTO);
+  soDetailOf((JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', name), 'utf8')) as { saleOrderDTO: Record<string, unknown> }).saleOrderDTO);
 const NOW = new Date('2026-11-06T06:00:00Z');
 const state = (o: Partial<PoSyncState> = {}): PoSyncState => ({
   statusPlanning: 'Confirmed', statusWarehouse: null, statusLogistics: null, rtsDate: null, dispatchDate: null, invoiceChallanNumber: null,

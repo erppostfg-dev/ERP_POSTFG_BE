@@ -1,26 +1,26 @@
 import { randomUUID } from 'crypto';
 import { AppDataSource } from '../../config/data-source';
 import { env } from '../../config/env';
+import { EntityManager } from 'typeorm';
 import {
-  D2C_UNIWARE, ERROR_CODES, PO_UNIWARE_SYNC, SHIPMENT_LOG_ACTION, SHIPMENT_LOG_SOURCE, TABLES, UNIWARE_NOT_FOUND, UNIWARE_SO_DONE,
+  ERROR_CODES, PO_UNIWARE_SYNC, SHIPMENT_LOG_ACTION, SHIPMENT_LOG_SOURCE, TABLES, UNIWARE_NOT_FOUND, UNIWARE_SO_DONE,
 } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
-import { MasterPurchaseOrder } from '../../entities';
-import { AppError, appError } from '../../utils/AppError';
+import { MasterPurchaseOrder, ShipmentLog } from '../../entities';
+import { appError } from '../../utils/AppError';
 import { logError } from '../../utils/classify-error';
 import { runJob } from '../../utils/log-call';
 import { log } from '../../utils/logger';
-import { jsonOf } from '../d2c-transfers/settings';
-import { isThrottled, nextDelayOf, runGentle, soDetailOf, SoDetail } from '../d2c-transfers/sync-plan';
-import { writeLogs } from '../d2c-transfers/transfers.service';
-import { refusalOf, uniwareClient, UniwarePoster } from '../d2c-transfers/uniware-transfers';
-import { withLock } from '../intransit/s3/lock';
 import { flushChanges } from '../po-overview/po-overview.live';
+import { nextDelayOf, runGentle, withRunLock } from './pacing';
 import { planPoSync, PoSyncState } from './plan';
+import { readSaleOrder, SoDetail } from './sale-order';
+import { isThrottled, poUniwareClient, UniwarePoster } from './uniware-client';
 
 /*
- * Uniware sale order status of CHANNEL POs (2026-11-06, constants/po-uniware-sync.ts). The same way as D2C transfers
- * (d2c-transfers/sync.service.ts, whose Uniware client, saleorder/get parser and pacing it reuses), read-only:
+ * Uniware sale order status of CHANNEL POs (2026-11-06, constants/po-uniware-sync.ts). The same way as D2C transfers,
+ * read-only, with our OWN Uniware client, saleorder/get parser, pacing and lock (uniware-client.ts, sale-order.ts,
+ * pacing.ts; user: not Ajay's code):
  *   - which: master_purchase_orders with transferCode NULL, an SO code (orderNo1) and a facility, not done yet (Uniware
  *     COMPLETE / CANCELLED, or Status (Warehouse) already Dispatched); a timed run skips the ones read within the last
  *     EVERY_MIN - FRESH_SLACK_MIN minutes; oldest read first, MAX_PER_RUN at most;
@@ -41,6 +41,16 @@ export interface PoSyncRecord {
 }
 const EMPTY: PoSyncRecord = { lastStartedAt: null, lastEndedAt: null, lastOkAt: null, lastError: null, counts: {}, nextDelayMin: null, trigger: null };
 
+const jsonOf = <T>(v: unknown, fallback: T): T => {
+  if (v === null || v === undefined) return fallback;
+  if (typeof v !== 'string') return v as T;
+  try {
+    return JSON.parse(v) as T;
+  } catch {
+    return fallback;
+  }
+};
+
 const readRecord = async (): Promise<PoSyncRecord> => {
   const [row] = await AppDataSource.query<{ value: unknown }[]>(`SELECT value FROM ${TABLES.APP_STATE} WHERE state_key = ?`, [PO_UNIWARE_SYNC.STATE_KEY]);
   return { ...EMPTY, ...jsonOf<Partial<PoSyncRecord>>(row?.value, {}) };
@@ -53,13 +63,18 @@ const saveRecord = (r: PoSyncRecord) => AppDataSource.query(
 
 // ---- which POs ---------------------------------------------------------------------------------------------------------
 
-interface Candidate { uid: string; orderNo1: string; facility: string }
+const STATE_COLS: (keyof PoSyncState)[] = [
+  'statusPlanning', 'statusWarehouse', 'statusLogistics', 'rtsDate', 'dispatchDate', 'invoiceChallanNumber', 'invoiceDate', 'invoiceValue', 'uniwareStatus', 'syncError',
+];
+
+/** A PO to read, with what is stored now (so an answer that changes nothing needs no transaction). */
+interface Candidate { uid: string; orderNo1: string; facility: string; state: PoSyncState }
 
 /** The POs to read now (manual = also the ones read a moment ago). */
 const candidates = async (o: { uids?: string[]; manual?: boolean }, now = new Date()): Promise<Candidate[]> => {
   const done = UNIWARE_SO_DONE.map((s) => `${s}%`);
   const args: unknown[] = [...done, 'Dispatched'];
-  let sql = `SELECT uid, orderNo1, facility FROM ${TABLES.MASTER_PURCHASE_ORDERS}
+  let sql = `SELECT uid, orderNo1, facility, ${STATE_COLS.join(', ')} FROM ${TABLES.MASTER_PURCHASE_ORDERS}
     WHERE transferCode IS NULL AND orderNo1 IS NOT NULL AND orderNo1 <> '' AND facility IS NOT NULL AND facility <> ''
       AND (uniwareStatus IS NULL OR (${done.map(() => 'uniwareStatus NOT LIKE ?').join(' AND ')}))
       AND (statusWarehouse IS NULL OR statusWarehouse <> ?)`;
@@ -68,31 +83,36 @@ const candidates = async (o: { uids?: string[]; manual?: boolean }, now = new Da
     args.push(o.uids);
   }
   if (!o.manual) {
-    sql += ' AND (lastSyncedAt IS NULL OR lastSyncedAt < ?)';
-    args.push(new Date(now.getTime() - (PO_UNIWARE_SYNC.EVERY_MIN - PO_UNIWARE_SYNC.FRESH_SLACK_MIN) * 60_000));
+    // read within the last EVERY_MIN: skipped; "Not in Uniware yet": asked again only every NOT_FOUND_EVERY_MIN
+    const ago = (min: number) => new Date(now.getTime() - (min - PO_UNIWARE_SYNC.FRESH_SLACK_MIN) * 60_000);
+    sql += ' AND (lastSyncedAt IS NULL OR (lastSyncedAt < ? AND (uniwareStatus IS NULL OR uniwareStatus <> ? OR lastSyncedAt < ?)))';
+    args.push(ago(PO_UNIWARE_SYNC.EVERY_MIN), UNIWARE_NOT_FOUND, ago(PO_UNIWARE_SYNC.NOT_FOUND_EVERY_MIN));
   }
   sql += ' ORDER BY lastSyncedAt IS NOT NULL, lastSyncedAt LIMIT ?';
   args.push(PO_UNIWARE_SYNC.MAX_PER_RUN);
-  return (await AppDataSource.query<Candidate[]>(sql, args)).map((r) => ({ uid: String(r.uid), orderNo1: r.orderNo1, facility: r.facility }));
+  const found = await AppDataSource.query<(Record<string, unknown> & { uid: string | number; orderNo1: string; facility: string })[]>(sql, args);
+  return found.map((r) => ({
+    uid: String(r.uid), orderNo1: r.orderNo1, facility: r.facility,
+    state: Object.fromEntries(STATE_COLS.map((k) => [k, r[k] ?? null])) as unknown as PoSyncState,
+  }));
 };
 
 // ---- one PO ------------------------------------------------------------------------------------------------------------
 
-/** saleorder/get: the parsed SO, or null when Uniware does not know the code (not uploaded yet). Other errors throw. */
-const readSaleOrder = async (api: UniwarePoster, code: string, facility: string): Promise<SoDetail | null> => {
-  try {
-    const body = await api.post<{ saleOrderDTO?: Record<string, unknown> }>(D2C_UNIWARE.GET_SO, { code }, facility);
-    return body.saleOrderDTO ? soDetailOf(body.saleOrderDTO) : null;
-  } catch (err) {
-    const r = refusalOf(err);
-    if (r && r.messages.some((m) => m.includes(D2C_UNIWARE.INVALID_SALE_ORDER_CODE))) return null;
-    throw err;
-  }
+/** shipment_logs rows of one PO (source uniware). */
+const writeLogs = async (m: EntityManager, uid: string, logs: { field: string; oldValue: unknown; newValue: unknown }[], uniwareStatus: string) => {
+  if (!logs.length) return;
+  const text = (v: unknown): string | null => {
+    if (v === null || v === undefined) return null;
+    if (v instanceof Date) return v.toISOString();
+    return typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean' ? String(v) : JSON.stringify(v);
+  };
+  const batchId = randomUUID();
+  await m.getRepository(ShipmentLog).insert(logs.map((l) => ({
+    shipmentUid: uid, userId: null, action: SHIPMENT_LOG_ACTION.FIELD_CHANGED, source: SHIPMENT_LOG_SOURCE.UNIWARE, fieldName: l.field, lineId: null,
+    batchId, oldValue: text(l.oldValue), newValue: text(l.newValue), remark: null, uniwareStatus,
+  })));
 };
-
-const STATE_COLS: (keyof PoSyncState)[] = [
-  'statusPlanning', 'statusWarehouse', 'statusLogistics', 'rtsDate', 'dispatchDate', 'invoiceChallanNumber', 'invoiceDate', 'invoiceValue', 'uniwareStatus', 'syncError',
-];
 
 /** Applies one answer to the PO as stored now (row locked). Returns whether anything people see changed. */
 const applyAnswer = async (c: Candidate, so: SoDetail | null, now = new Date()): Promise<{ changed: boolean; done: boolean }> =>
@@ -104,9 +124,7 @@ const applyAnswer = async (c: Candidate, so: SoDetail | null, now = new Date()):
     const state = Object.fromEntries(STATE_COLS.map((k) => [k, row[k as keyof MasterPurchaseOrder]])) as unknown as PoSyncState;
     const plan = planPoSync(state, so, now);
     await repo.update({ uid: c.uid }, { ...plan.set, lastSyncedAt: now, ...(plan.logs.length ? { updatedAt: now } : {}) });
-    await writeLogs(m, plan.logs.map((l) => ({
-      uid: c.uid, action: SHIPMENT_LOG_ACTION.FIELD_CHANGED, field: l.field, oldValue: l.oldValue, newValue: l.newValue, uniwareStatus: plan.uniwareText,
-    })), randomUUID(), null, SHIPMENT_LOG_SOURCE.UNIWARE);
+    await writeLogs(m, c.uid, plan.logs, plan.uniwareText);
     return { changed: plan.logs.length > 0, done: plan.done };
   });
 
@@ -114,21 +132,36 @@ const applyAnswer = async (c: Candidate, so: SoDetail | null, now = new Date()):
 const saveError = (uid: string, text: string, now: Date) =>
   AppDataSource.getRepository(MasterPurchaseOrder).update({ uid }, { syncError: text.slice(0, 2000), lastSyncedAt: now });
 
+/** POs whose answer changed nothing: only "read at", in one UPDATE per TOUCH_CHUNK. */
+const touch = async (uids: string[], now: Date) => {
+  for (let i = 0; i < uids.length; i += PO_UNIWARE_SYNC.TOUCH_CHUNK) {
+    await AppDataSource.query(`UPDATE ${TABLES.MASTER_PURCHASE_ORDERS} SET lastSyncedAt = ? WHERE uid IN (?)`, [now, uids.slice(i, i + PO_UNIWARE_SYNC.TOUCH_CHUNK)]);
+  }
+};
+
 // ---- a run -------------------------------------------------------------------------------------------------------------
 
 export interface PoSyncRunOptions { uids?: string[]; manual?: boolean }
 
-export const runPoSyncPass = async (o: PoSyncRunOptions, api: UniwarePoster = uniwareClient()) => {
+export const runPoSyncPass = async (o: PoSyncRunOptions, api: UniwarePoster = poUniwareClient()) => {
   const startedAt = new Date().toISOString();
   const before = await readRecord();
   const list = await candidates(o);
   const counts = { picked: list.length, read: 0, notInUniware: 0, changed: 0, done: 0, errors: 0, notStarted: 0 };
   let logged = false;
+  const unchanged: string[] = [];
   const result = await runGentle(list, { concurrency: PO_UNIWARE_SYNC.CONCURRENCY, gapMs: PO_UNIWARE_SYNC.CALL_GAP_MS }, async (c) => {
     try {
       const so = await readSaleOrder(api, c.orderNo1, c.facility);
       counts.read++;
       if (!so) counts.notInUniware++;
+      // nothing to change on what is stored: no transaction, only "read at" (in bulk, below)
+      const quick = planPoSync(c.state, so, new Date());
+      if (!Object.keys(quick.set).length) {
+        unchanged.push(c.uid);
+        if (quick.done) counts.done++;
+        return;
+      }
       const r = await applyAnswer(c, so);
       if (r.changed) { counts.changed++; logged = true; }
       if (r.done) counts.done++;
@@ -139,6 +172,7 @@ export const runPoSyncPass = async (o: PoSyncRunOptions, api: UniwarePoster = un
     }
   });
   counts.notStarted = result.notStarted;
+  await touch(unchanged, new Date()).catch((err) => logError(LOG_SOURCE.APP, `${LOG} could not save "read at" of ${unchanged.length} PO(s)`, err));
   if (logged) void flushChanges();
   // nothing read at all while there was something to read = the run failed (Uniware down / login refused / 429)
   const failed = result.throttled || (list.length > 0 && counts.read === 0);
@@ -178,16 +212,16 @@ const loop = async (o: PoSyncRunOptions): Promise<void> => {
   nextRunAt = null;
   let waitMin: number = PO_UNIWARE_SYNC.EVERY_MIN;
   try {
-    const r = await withLock(PO_UNIWARE_SYNC.LOCK, () => runJob(PO_UNIWARE_SYNC.JOB, () => runPoSyncPass(o), { trigger: o.manual ? 'manual' : 'timer' }), o.manual ? 5 : 0);
-    waitMin = r.nextDelayMin;
-    lastWaitMin = r.failed ? r.nextDelayMin : null;
-  } catch (err) {
-    if (err instanceof AppError && err.code === ERROR_CODES.INTRANSIT_BUSY) log.info(LOG_SOURCE.APP, `${LOG} another server is running it: skipped`);
+    const r = await withRunLock(PO_UNIWARE_SYNC.LOCK, () => runJob(PO_UNIWARE_SYNC.JOB, () => runPoSyncPass(o), { trigger: o.manual ? 'manual' : 'timer' }), o.manual ? 5 : 0);
+    if (!r) log.info(LOG_SOURCE.APP, `${LOG} another server is running it: skipped`);
     else {
-      waitMin = nextDelayOf(waitMin, true, lastWaitMin);
-      lastWaitMin = waitMin;
-      logError(LOG_SOURCE.APP, `${LOG} run failed, next try in ${waitMin} min`, err);
+      waitMin = r.nextDelayMin;
+      lastWaitMin = r.failed ? r.nextDelayMin : null;
     }
+  } catch (err) {
+    waitMin = nextDelayOf(waitMin, true, lastWaitMin);
+    lastWaitMin = waitMin;
+    logError(LOG_SOURCE.APP, `${LOG} run failed, next try in ${waitMin} min`, err);
   } finally {
     running = false;
   }

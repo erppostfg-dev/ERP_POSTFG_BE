@@ -1,10 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { setUniwareClient } from '../../src/modules/d2c-transfers/uniware-transfers';
-import { HttpError } from '../../src/modules/intransit/sources/http';
-import type { UniwareApi } from '../../src/modules/intransit/sources/uniware';
 import { runPoSyncPass } from '../../src/modules/po-uniware-sync/sync.service';
+import { setPoUniwareClient, UniwareHttpError, type UniwarePoster } from '../../src/modules/po-uniware-sync/uniware-client';
 import { api, loginAs } from '../helpers/auth';
 import { closeDb, insert, resetDb, rows } from '../helpers/db';
 import { covers } from '../helpers/routes';
@@ -16,7 +14,7 @@ import { covers } from '../helpers/routes';
  */
 covers(['GET /po-overview/uniware-sync', 'POST /po-overview/uniware-sync']);
 
-const dto = (name: string) => (JSON.parse(fs.readFileSync(path.join(__dirname, '../../src/modules/d2c-transfers/__tests__/fixtures', name), 'utf8')) as { saleOrderDTO: Record<string, unknown> }).saleOrderDTO;
+const dto = (name: string) => (JSON.parse(fs.readFileSync(path.join(__dirname, '../../src/modules/po-uniware-sync/__tests__/fixtures', name), 'utf8')) as { saleOrderDTO: Record<string, unknown> }).saleOrderDTO;
 const refusal = (code: string) => new Error(`/services/rest/v1/oms/saleorder/get refused: ${JSON.stringify([{ code: 40005, message: code, description: code }])}`);
 
 let calls: { body: Record<string, unknown>; facility?: string }[];
@@ -30,7 +28,7 @@ const fake = {
       return Promise.reject(err instanceof Error ? err : new Error(String(err)));
     }
   },
-} as unknown as UniwareApi;
+} as unknown as UniwarePoster;
 
 /** A channel PO (or a D2C transfer) with its sale order code. */
 const po = (orderNo1: string, extra: Record<string, unknown> = {}) => insert('master_purchase_orders', {
@@ -42,9 +40,9 @@ beforeEach(async () => {
   await resetDb();
   calls = [];
   answer = () => { throw refusal('INVALID_SALE_ORDER_CODE'); };
-  setUniwareClient(fake);
+  setPoUniwareClient(fake);
 });
-afterEach(() => setUniwareClient(null));
+afterEach(() => setPoUniwareClient(null));
 afterAll(closeDb);
 
 describe('a run', () => {
@@ -85,11 +83,47 @@ describe('a run', () => {
 
     await rows('UPDATE master_purchase_orders SET uniwareStatus = NULL, statusWarehouse = NULL, lastSyncedAt = NULL');
     calls = [];
-    answer = () => { throw new HttpError(429, '429 from saleorder/get'); };
+    answer = () => { throw new UniwareHttpError(429, '429 from saleorder/get'); };
     const throttled = await runPoSyncPass({ manual: true }, fake);
     expect(throttled.failed).toBe(true);
     expect(throttled.counts.notStarted).toBeGreaterThanOrEqual(0);
     expect(calls.length).toBeLessThanOrEqual(2);
+  });
+});
+
+describe('lighter runs (2026-11-06: 500 POs took 481 s and 2,016 queries)', () => {
+  const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000);
+
+  it('a timed run asks again about a "Not in Uniware yet" PO only after 2 h; one in Uniware every 30 min', async () => {
+    await po('erp_20261106010', { uniwareStatus: 'Not in Uniware yet', lastSyncedAt: minutesAgo(60) });
+    await po('erp_20261106011', { uniwareStatus: 'Not in Uniware yet', lastSyncedAt: minutesAgo(180) });
+    await po('erp_20261106012', { uniwareStatus: 'PROCESSING', lastSyncedAt: minutesAgo(60) });
+    await runPoSyncPass({}, fake);
+    expect(calls.map((c) => c.body.code).sort()).toEqual(['erp_20261106011', 'erp_20261106012']);
+    calls = [];
+    // Sync now still reads them all
+    await runPoSyncPass({ manual: true }, fake);
+    expect(calls.map((c) => c.body.code).sort()).toEqual(['erp_20261106010', 'erp_20261106011', 'erp_20261106012']);
+  });
+
+  it('an answer that changes nothing: no History, no field written, only "read at" moves', async () => {
+    const uid = await po('erp_20261106013');
+    // still in the warehouse (packed): read every run until it ships
+    answer = () => ({ successful: true, saleOrderDTO: {
+      code: 'erp_20261106013', status: 'PROCESSING',
+      saleOrderItems: [{ code: 'A', itemSku: 'mcaf1', statusCode: 'FULFILLABLE', totalQuantity: 10, cancelledQuantity: 0, completedQuantity: 0 }],
+      shippingPackages: [{ code: 'SP/1', status: 'PACKED', items: { mcaf1: { itemSku: 'mcaf1', quantity: 10 } } }],
+    } });
+    await runPoSyncPass({ manual: true }, fake);
+    const first = await read(uid);
+    const logs = (await rows('SELECT id FROM shipment_logs WHERE shipment_uid = ?', [uid])).length;
+    await rows('UPDATE master_purchase_orders SET lastSyncedAt = ? WHERE uid = ?', [minutesAgo(45), uid]);
+    const r = await runPoSyncPass({}, fake);
+    expect(r.counts).toMatchObject({ picked: 1, read: 1, changed: 0, errors: 0 });
+    const again = await read(uid);
+    expect({ ...again, lastSyncedAt: null }).toEqual({ ...first, lastSyncedAt: null });
+    expect(new Date(String(again.lastSyncedAt)).getTime()).toBeGreaterThan(minutesAgo(5).getTime());
+    expect((await rows('SELECT id FROM shipment_logs WHERE shipment_uid = ?', [uid])).length).toBe(logs);
   });
 });
 
