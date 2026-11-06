@@ -236,5 +236,14 @@ fi
 log "nginx refuses requests without the CloudFront header (403)"
 
 # 8. clean -------------------------------------------------------------------
-docker image prune -af --filter "until=72h" >/dev/null || true
+# Keep only the running image and the one before it (rollback); each image is ~1.8 GB and
+# several deploys a day filled the 20 GB disk with a time-based prune. Every image stays in ECR.
+REMOVED=0
+for img in $(docker images --format '{{.Repository}}:{{.Tag}}' "${IMAGE%:*}"); do
+  if [ "$img" != "$IMAGE" ] && [ "$img" != "$PREVIOUS_IMAGE" ]; then
+    docker rmi "$img" >/dev/null 2>&1 && REMOVED=$((REMOVED + 1)) || true
+  fi
+done
+docker image prune -f >/dev/null || true
+log "removed ${REMOVED} old image(s); disk: $(df -h / | awk 'NR==2 {print $3 " used, " $4 " free (" $5 ")"}')"
 log "done: ${CONTAINER} runs ${IMAGE}"
