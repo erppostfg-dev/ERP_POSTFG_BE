@@ -188,6 +188,8 @@ export const ISSUE_TYPE = {
   TOTAL_MISMATCH: 'TOTAL_MISMATCH',
   PO_EXPIRED: 'PO_EXPIRED',
   OTHER: 'OTHER',
+  /** The PO is billed to one of our warehouses (its GSTIN) but its location is mapped to another (2026-11-06). */
+  ADDRESS_MISMATCH: 'ADDRESS_MISMATCH',
 } as const;
 export type IssueType = (typeof ISSUE_TYPE)[keyof typeof ISSUE_TYPE];
 

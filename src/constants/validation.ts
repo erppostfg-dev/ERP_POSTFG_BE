@@ -240,6 +240,8 @@ export const ISSUE_FIELDS = {
   VERIFICATION: 'verification',
   /** A rejected PO reopened (2026-11-03): one OTHER issue that a person must accept before it goes for approval. */
   REOPENED: 'reopened',
+  /** Address Mismatch (2026-11-06): the GSTIN the PO is billed to vs the location's warehouse. */
+  BILLED_TO: 'billed_to',
 } as const;
 export type IssueField = (typeof ISSUE_FIELDS)[keyof typeof ISSUE_FIELDS];
 
@@ -260,7 +262,25 @@ export const EXPECTED_UNIWARE_CHANNEL: Partial<Record<ChannelName, Record<string
   [CHANNELS.MYNTRA]: Object.fromEntries(MYNTRA_STR.DESTINATIONS.map((d) => [d.location, d.uniwareChannel])),
 };
 
-export const ACCEPTABLE_ISSUE_TYPES: readonly IssueType[] = [ISSUE_TYPE.OTHER, ISSUE_TYPE.PO_EXPIRED, ISSUE_TYPE.TOTAL_MISMATCH];
+export const ACCEPTABLE_ISSUE_TYPES: readonly IssueType[] = [ISSUE_TYPE.OTHER, ISSUE_TYPE.PO_EXPIRED, ISSUE_TYPE.TOTAL_MISMATCH, ISSUE_TYPE.ADDRESS_MISMATCH];
+
+/**
+ * Address Mismatch (2026-11-06, user: "check which address the PO is marked to: if it is our Mumbai warehouse but our
+ * database maps the location to GGN, flag it"): the GSTIN the PO is billed to (vendor_gstin, ours) must belong to the
+ * warehouse the matched location ships from (details_channels.facility_code). Different -> review with ADDRESS_MISMATCH;
+ * the reviewer decides (accept, or fix the location / the master). Not checked: the B2C channels below, a PO without our
+ * GSTIN (some channels don't print it), a warehouse whose GSTIN we don't know.
+ */
+export const ADDRESS_CHECK = {
+  SKIP_CHANNELS: [CHANNELS.AMAZON, CHANNELS.FLIPKART, CHANNELS.MYNTRA] as readonly ChannelName[],
+  /**
+   * Our warehouses' GSTINs, by Uniware facility code (compared ignoring case: MUM_Warehouse2 = MUM_WAREHOUSE2). From the
+   * POs themselves (80 processed POs, 6 Nov: only these two). master_facilities.bill_to_gstin wins when it is filled.
+   */
+  WAREHOUSE_GSTIN: { MUM_WAREHOUSE2: '27AAICP2804J1ZC', GGN_WAREHOUSE: '06AAICP2804J1ZG' } as Record<string, string>,
+  /** What the reviewer reads for each GSTIN. */
+  GSTIN_LABEL: { '27AAICP2804J1ZC': 'Mumbai warehouse (MH)', '06AAICP2804J1ZG': 'Gurgaon warehouse (HR)' } as Record<string, string>,
+} as const;
 
 /**
  * OTHER issues that are a gap in OUR master (2026-11-05, user: "if it is not in the masters keep it in review with proper
@@ -273,8 +293,11 @@ export const MASTER_GAP_FIELDS: readonly string[] = [ISSUE_FIELDS.RATE, ISSUE_FI
 /** Can a reviewer accept this issue with a remark? (type acceptable, and not a gap in our master) */
 export const isAcceptableIssue = (type: string, field: string | null | undefined): boolean =>
   ACCEPTABLE_ISSUE_TYPES.includes(type as IssueType) && !(type === ISSUE_TYPE.OTHER && MASTER_GAP_FIELDS.includes(field ?? ''));
-/** Price check (2026-10-30): a total still off after the line choices is accepted ("go with the line total") only with a remark. */
-export const REMARK_REQUIRED_ISSUE_TYPES: readonly IssueType[] = [ISSUE_TYPE.TOTAL_MISMATCH];
+/**
+ * Price check (2026-10-30): a total still off after the line choices is accepted ("go with the line total") only with a remark.
+ * Address Mismatch (2026-11-06): shipping from another warehouse than the PO is billed to changes the invoice: say why.
+ */
+export const REMARK_REQUIRED_ISSUE_TYPES: readonly IssueType[] = [ISSUE_TYPE.TOTAL_MISMATCH, ISSUE_TYPE.ADDRESS_MISMATCH];
 
 /** Rupee amounts are compared after rounding to paise, so 0.004 of float noise is never an issue. */
 export const round2 = (n: number): number => Math.round(n * 100) / 100;
@@ -300,6 +323,8 @@ const ISSUE_MESSAGES = {
   [ISSUE_TYPE.PO_EXPIRED]: (expiry: string, today: string) => `PO expired on ${expiry} (today ${today})`,
   [ISSUE_TYPE.OCR_ISSUE]: (detail: string) => `OCR output incomplete: ${detail}`,
   [ISSUE_TYPE.OTHER]: (detail: string) => detail,
+  [ISSUE_TYPE.ADDRESS_MISMATCH]: (gstin: string, billedTo: string, location: string, mappedTo: string) =>
+    `Address Mismatch: the PO is billed to ${billedTo} (GSTIN ${gstin}) but location ${location} is mapped to ${mappedTo}`,
 } satisfies Partial<Record<IssueType, (...args: never[]) => string>>;
 
 type IssueMessages = typeof ISSUE_MESSAGES;

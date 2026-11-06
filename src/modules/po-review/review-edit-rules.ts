@@ -36,6 +36,8 @@ export const editRules = (open: { issueType: string; lineNo: number | null }[]):
     const n = i.lineNo;
     switch (i.issueType) {
       case ISSUE_TYPE.LOCATION_NOT_MAPPED: r.location = true; break;
+      // billed to another warehouse (2026-11-06): the reviewer may pick a location of the billed warehouse (or accept)
+      case ISSUE_TYPE.ADDRESS_MISMATCH: r.location = true; break;
       case ISSUE_TYPE.SKU_NOT_MAPPED: if (n !== null) line(n, 'pepCode'); break;
       case ISSUE_TYPE.MRP_MISMATCH: if (n !== null) line(n, 'mrp'); break;
       case ISSUE_TYPE.PRICE_MISMATCH: if (n !== null) line(n, 'rate'); break;

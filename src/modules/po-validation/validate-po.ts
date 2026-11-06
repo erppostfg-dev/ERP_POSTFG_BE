@@ -29,6 +29,7 @@ import { Num, ProcessedLine, ProcessedPo } from '../po-processing/common/process
 import { pickOneLocation } from './location-tiebreak';
 import { pickByDescription } from './sku-name-tiebreak';
 import { ChannelMasterData, matchKey } from './master-data';
+import { addressMismatch } from './address-check';
 
 /*
  * Validation of one processed.json against our master data (read-only). It runs every check and lists every issue,
@@ -394,6 +395,9 @@ export const validatePo = async (
     issues.push(validationIssue(ISSUE_TYPE.PO_EXPIRED, { field: ISSUE_FIELDS.EXPIRY_DATE, actual: po.expiry_date }, po.expiry_date, today));
   }
   const location = findLocation(po, master, issues, overrides.locationId);
+  // Billed to one of our warehouses, mapped to another (2026-11-06): review (ADDRESS_MISMATCH, the reviewer decides)
+  const wrongWarehouse = location ? addressMismatch(po, channel, location, master) : null;
+  if (wrongWarehouse) issues.push(wrongWarehouse);
   // The location's Uniware channel differs from the channel's own location sheet (Myntra, 2026-11-03): review (OTHER)
   const expectedUniware = location ? EXPECTED_UNIWARE_CHANNEL[channel]?.[location.locationCode] : undefined;
   if (location && expectedUniware && location.uniwareChannel !== expectedUniware) {
