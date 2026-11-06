@@ -3,6 +3,7 @@ import { api, loginAs, type TestLogin } from '../helpers/auth';
 import { closeDb, count, resetDb, rows } from '../helpers/db';
 import { clearS3, s3Objects } from '../helpers/fake-s3';
 import { covers } from '../helpers/routes';
+import { clearOldNotifications } from '../../src/modules/feedback/feedback.service';
 
 /*
  * Feedback (2026-10-29): everyone signed in sees every item, adds items (up to 4 images) and comments; only the
@@ -12,6 +13,7 @@ covers([
   'GET /feedback', 'GET /feedback/people', 'GET /feedback/:id', 'POST /feedback', 'PATCH /feedback/:id',
   'POST /feedback/:id/comments', 'POST /feedback/:id/members', 'DELETE /feedback/:id/members/:userId',
   'POST /feedback/:id/images', 'GET /feedback/:id/images/:imageId', 'POST /feedback/:id/images/:imageId/remove',
+  'GET /feedback/notifications', 'POST /feedback/notifications/read',
 ]);
 
 const V = '/api/v1/feedback';
@@ -234,5 +236,95 @@ describe('comments, people and images', () => {
     expect(s3Objects('feedback/').size).toBe(4);
     // room again for one more
     await add(reporter, 1).expect(201);
+  });
+});
+
+describe('notifications (the top-bar bell)', () => {
+  type Bell = { unread: number; items: { id: string; kind: string; itemId: string; itemTitle: string; by: { id: number }; text: string; read: boolean }[] };
+  const bell = async (who: TestLogin): Promise<Bell> => (await api().get(`${V}/notifications`).set('Cookie', who.cookie).expect(200)).body.data;
+  const comment = (who: TestLogin, id: string, text: string) => api().post(`${V}/${id}/comments`).set('Cookie', who.cookie).send({ text }).expect(201);
+
+  it('assigned (on create and by PATCH) and added tell that person, never the one who did it', async () => {
+    const item = (await create(reporter, { assignedToId: String(dev.userId) }).expect(201)).body.data;
+    expect((await bell(dev)).items).toEqual([expect.objectContaining({ kind: 'assigned', itemId: item.id, itemTitle: 'PO list is slow', by: expect.objectContaining({ id: reporter.userId }), read: false })]);
+    expect((await bell(dev)).unread).toBe(1);
+    expect((await bell(reporter)).unread).toBe(0);
+
+    await api().patch(`${V}/${item.id}`).set('Cookie', reporter.cookie).send({ assignedToId: other.userId }).expect(200);
+    expect((await bell(other)).items.map((n) => n.kind)).toEqual(['assigned']);
+    // assigning yourself, or the same person again, tells nobody
+    await api().patch(`${V}/${item.id}`).set('Cookie', other.cookie).send({ assignedToId: other.userId }).expect(200);
+    await api().patch(`${V}/${item.id}`).set('Cookie', reporter.cookie).send({ assignedToId: reporter.userId }).expect(200);
+    expect((await bell(other)).unread).toBe(1);
+    expect((await bell(reporter)).unread).toBe(0);
+
+    await api().post(`${V}/${item.id}/members`).set('Cookie', reporter.cookie).send({ userId: dev.userId }).expect(200);
+    expect((await bell(dev)).items.map((n) => n.kind)).toEqual(['added', 'assigned']);
+  });
+
+  it('a comment tells the reporter, the assignee, the people on it and earlier commenters (once each, not the writer)', async () => {
+    const item = (await create(reporter, { assignedToId: String(dev.userId) }).expect(201)).body.data;
+    const admin = await loginAs('admin');
+    await comment(other, item.id, 'Same for me on PO 123');
+    expect((await bell(reporter)).items[0]).toMatchObject({ kind: 'comment', text: 'Same for me on PO 123', by: { id: other.userId } });
+    expect((await bell(dev)).unread).toBe(2); // assigned + comment
+    expect((await bell(other)).unread).toBe(0);
+    expect((await bell(admin)).unread).toBe(0);
+
+    // the earlier commenter hears the reply; admin added to the item hears it too
+    await api().post(`${V}/${item.id}/members`).set('Cookie', reporter.cookie).send({ userId: admin.userId }).expect(200);
+    await comment(dev, item.id, 'x'.repeat(400));
+    const o = await bell(other);
+    expect(o.items[0]).toMatchObject({ kind: 'comment', by: { id: dev.userId } });
+    expect(o.items[0].text).toHaveLength(300);
+    expect((await bell(admin)).items.map((n) => n.kind)).toEqual(['comment', 'added']);
+    expect(await count('feedback_notifications', 'user_id = ?', [dev.userId])).toBe(2);
+  });
+
+  it('read: by item (opened it), by ids, or all; only your own; bad input refused', async () => {
+    const a = (await create(reporter).expect(201)).body.data;
+    const b = (await create(reporter, { title: 'Second' }).expect(201)).body.data;
+    await comment(other, a.id, 'one');
+    await comment(other, a.id, 'two');
+    await comment(other, b.id, 'three');
+    expect((await bell(reporter)).unread).toBe(3);
+    const read = (who: TestLogin, body: Record<string, unknown>) => api().post(`${V}/notifications/read`).set('Cookie', who.cookie).send(body);
+
+    // someone else cannot clear mine
+    await read(other, {}).expect(200);
+    expect((await bell(reporter)).unread).toBe(3);
+
+    const afterItem: Bell = (await read(reporter, { itemId: a.id }).expect(200)).body.data;
+    expect(afterItem.unread).toBe(1);
+    expect(afterItem.items.filter((n) => n.read).map((n) => n.itemId)).toEqual([a.id, a.id]);
+    const left = afterItem.items.find((n) => !n.read)!;
+    expect((await read(reporter, { ids: [left.id] }).expect(200)).body.data.unread).toBe(0);
+
+    await comment(other, b.id, 'four');
+    expect((await read(reporter, {}).expect(200)).body.data.unread).toBe(0);
+
+    for (const bad of [{ itemId: 'abc' }, { ids: [] }, { ids: ['x'] }, { ids: 'nope' }]) {
+      expect((await read(reporter, bad).expect(400)).body.error.code).toBe('VALIDATION_FAILED');
+    }
+    expect((await api().get(`${V}/notifications`)).status).toBe(401);
+  });
+
+  it('not kept: older than 2 days (read or not) are hidden, and deleted when the next notification is written', async () => {
+    const item = (await create(reporter).expect(201)).body.data;
+    await comment(other, item.id, 'old one');
+    await comment(other, item.id, 'old and read');
+    await comment(other, item.id, 'new one');
+    const ids = (await rows<{ id: number }>('SELECT id FROM feedback_notifications ORDER BY id')).map((r) => r.id);
+    await rows('UPDATE feedback_notifications SET created_at = NOW(6) - INTERVAL 49 HOUR WHERE id IN (?, ?)', [ids[0], ids[1]]);
+    await rows('UPDATE feedback_notifications SET read_at = NOW(6) WHERE id = ?', [ids[1]]);
+    // hidden at once (not counted either), still in the table until something new is written
+    const now = await bell(reporter);
+    expect(now.items.map((n) => n.text)).toEqual(['new one']);
+    expect(now.unread).toBe(1);
+    expect(await count('feedback_notifications')).toBe(3);
+    // the next notification (anyone's) deletes them
+    await comment(reporter, item.id, 'reply');
+    expect((await rows<{ text: string }>('SELECT text FROM feedback_notifications ORDER BY id')).map((r) => r.text)).toEqual(['new one', 'reply']);
+    expect(await clearOldNotifications()).toBe(0);
   });
 });

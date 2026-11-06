@@ -84,6 +84,8 @@ export const TABLES = {
   FEEDBACK_MEMBERS: 'feedback_members',
   FEEDBACK_IMAGES: 'feedback_images',
   FEEDBACK_COMMENTS: 'feedback_comments',
+  // Feedback notifications (2026-11-06): the bell in the top bar (assigned, added, comment).
+  FEEDBACK_NOTIFICATIONS: 'feedback_notifications',
   // Gmail intake (2026-10-29, constants/gmail-intake.ts): each labelled email's channel once read; catch-ups as rows.
   GMAIL_MESSAGES: 'gmail_messages',
   INTAKE_CATCHUPS: 'intake_catchups',
