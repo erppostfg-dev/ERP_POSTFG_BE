@@ -3,7 +3,7 @@ import path from 'path';
 import { In, Like, Not } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
 import {
-  ChannelName, COPY_ACTION, COPY_WHY, CopyAction, FILE_NAME_PO, FILES, MANUAL_UPLOAD, MANUAL_UPLOAD_STATUS, UPLOAD_STATUS,
+  ChannelName, COPY_ACTION, COPY_WHY, CopyAction, FILE_NAME_PO, FILES, MANUAL_REPLACES_KEY, MANUAL_UPLOAD, MANUAL_UPLOAD_STATUS, UPLOAD_STATUS,
 } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
 import { ManualUpload, MasterPurchaseOrder, PoUpload, User } from '../../entities';
@@ -109,7 +109,7 @@ export const findCopies = async (channel: ChannelName, displayName: string, file
 };
 
 /** The copies a new upload replaces (Process again), kept in its metadata.json until it is processed. */
-export const REPLACES_KEY = 'replaces';
+export const REPLACES_KEY = MANUAL_REPLACES_KEY;
 
 /**
  * When the new upload is processed (before its OCR): its old copies are taken out of the way, so only the new one is

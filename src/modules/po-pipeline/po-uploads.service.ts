@@ -10,6 +10,7 @@ import {
   ISSUE_FIELDS,
   ISSUE_STATUS,
   ISSUE_TYPE,
+  MANUAL_REPLACES_KEY,
   PIPELINE_STEP,
   PO_FILE_EXTENSIONS,
   PROVIDERS,
@@ -25,7 +26,6 @@ import {
 } from '../../constants';
 import { PoIssue, PoIssueAction, PoUpload } from '../../entities';
 import { EmailMetadata } from '../email-intake/s3-layout';
-import { REPLACES_KEY } from '../manual-upload/upload-copies';
 import { channelConfigs } from '../ocr/channels.config';
 import { ProcessedPo } from '../po-processing/common/processed-po';
 import { s3UrlFor } from '../po-processing/common/processed-store';
@@ -319,7 +319,7 @@ export const planEmail = async (db: DataSource, reader: MasterDataReader, folder
   let emailRow = existingRows.find((r) => r.poNumber === null) ?? null;
   // skipKnownPos (Purplle, 2026-11-06): a PO of a several-PO file (POs/<PO>/) already in POST_FG from another email or
   // upload is left out quietly; not when a person chose Process again for this upload (it replaces those copies).
-  const skipKnown = !!channelConfigs.find((c) => c.channel === channel)?.skipKnownPos && !(meta as Record<string, unknown>)[REPLACES_KEY];
+  const skipKnown = !!channelConfigs.find((c) => c.channel === channel)?.skipKnownPos && !(meta as Record<string, unknown>)[MANUAL_REPLACES_KEY];
   const skipped: { poNumber: string; copy: string }[] = [];
 
   const rows: RowPlan[] = [];

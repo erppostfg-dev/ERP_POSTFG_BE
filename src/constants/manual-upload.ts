@@ -24,6 +24,9 @@ export const MANUAL_UPLOAD_STATUS = {
 } as const;
 export type ManualUploadStatus = (typeof MANUAL_UPLOAD_STATUS)[keyof typeof MANUAL_UPLOAD_STATUS];
 
+/** metadata.json key of the copies a new upload replaces (Process again); here so po-pipeline reads it without a cycle. */
+export const MANUAL_REPLACES_KEY = 'replaces';
+
 export const MANUAL_UPLOAD = {
   BASE: '/manual-uploads',
   ROUTES: { LIST: '/', CHANNELS: '/channels', UPLOAD: '/', PROCESS: '/process', CANCEL: '/:id/cancel', RETRY: '/:id/retry' },
