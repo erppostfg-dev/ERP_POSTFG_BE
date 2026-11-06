@@ -379,6 +379,13 @@ export class MasterPurchaseOrder {
   @Column({ name: 'syncError', type: 'text', nullable: true })
   syncError: string | null;
 
+  /**
+   * What Uniware says about this PO's sale order (2026-11-06, channel PO sync: modules/po-uniware-sync): "COMPLETE |
+   * SP/1 DISPATCHED", or "Not in Uniware yet"; null = not read yet. lastSyncedAt / syncError are shared with D2C.
+   */
+  @Column({ name: 'uniwareStatus', type: 'varchar', length: 100, nullable: true })
+  uniwareStatus: string | null;
+
   /** fk_master_po_channel: channel -> master_channels.display_name. */
   @ManyToOne(() => MasterChannel, { nullable: true, onUpdate: 'CASCADE' })
   @JoinColumn({ name: 'channel', referencedColumnName: 'displayName', foreignKeyConstraintName: 'fk_master_po_channel' })

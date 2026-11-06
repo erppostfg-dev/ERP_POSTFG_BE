@@ -14,6 +14,7 @@ import {
   PO_REVIEW_REMARK_MAX,
   UPLOAD_ID_PATTERN,
 } from '../constants';
+import { poSyncStatus, startPoSync } from '../modules/po-uniware-sync/sync.service';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
 import { Paging, PoOverviewFilters } from '../modules/po-overview/po-overview.queries';
 import { accessFor } from '../modules/po-overview/po-overview.access';
@@ -202,6 +203,22 @@ router.get(PO_OVERVIEW_ROUTES.SHIPMENT_HISTORY, ...viewer, async (req, res, next
     const { uid } = req.params;
     if (!UPLOAD_ID_PATTERN.test(uid)) throw appError(ERROR_CODES.SHIPMENT_NOT_FOUND, uid);
     res.json({ data: await shipmentHistory(uid, hiddenFields(await accessFor(req.auth!.user, req.auth!.roles))) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Uniware sale order status (2026-11-06, modules/po-uniware-sync): the last run, and Sync now (read-only on Uniware).
+router.get(PO_OVERVIEW_ROUTES.UNIWARE_SYNC, ...viewer, async (_req, res, next) => {
+  try {
+    res.json({ data: await poSyncStatus() });
+  } catch (err) {
+    next(err);
+  }
+});
+router.post(PO_OVERVIEW_ROUTES.UNIWARE_SYNC, ...editor, async (req, res, next) => {
+  try {
+    res.status(202).json({ data: await startPoSync(req.body) });
   } catch (err) {
     next(err);
   }

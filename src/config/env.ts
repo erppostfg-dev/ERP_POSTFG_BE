@@ -20,7 +20,7 @@ dotenv.config();
 const laptopMode = process.env.LAPTOP_MODE === 'true';
 export const LAPTOP_MODE_OFF = {
   PUBSUB_ENABLED: 'false', OCR_ENABLED: 'false', OCR_BACKLOG: 'false', PIPELINE_RESUME: 'false', CHANNEL_API_ENABLED: 'false',
-  LOCAL_CLEANUP_ENABLED: 'false', WORKER_IN_SERVER: 'false', QUEUE_MODE: 'local', RECHECK_MINUTES: '0', D2C_SYNC_ENABLED: 'false',
+  LOCAL_CLEANUP_ENABLED: 'false', WORKER_IN_SERVER: 'false', QUEUE_MODE: 'local', RECHECK_MINUTES: '0', D2C_SYNC_ENABLED: 'false', PO_UNIWARE_SYNC_ENABLED: 'false',
   // not an off switch: laptop mode is ALWAYS D2C local test mode (env.d2c.testOnly), whatever .env says
   D2C_TEST_ONLY: 'true',
 } as const;
@@ -283,6 +283,9 @@ export const env = {
   // the in-transit feed is written empty. D2C_TEST_ONLY=true|false wins; unset = on unless NODE_ENV=production (the
   // Docker image sets NODE_ENV=production, so the dev / prod EC2 are not in test mode unless their .env says so).
   // Laptop mode (npm run dev) always forces it on (LAPTOP_MODE_OFF).
+  // Uniware sale order status of channel POs (2026-11-06, modules/po-uniware-sync): the timer (read-only on Uniware);
+  // off on a laptop; Sync now on PO Overview works either way.
+  poUniwareSync: { enabled: flag('PO_UNIWARE_SYNC_ENABLED', 'true') },
   d2c: {
     uniwareWrites: flag('D2C_UNIWARE_WRITES'),
     syncEnabled: flag('D2C_SYNC_ENABLED', 'true'),
