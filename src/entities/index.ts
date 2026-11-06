@@ -18,6 +18,7 @@ export * from './intransit-run.entity';
 export * from './manual-upload.entity';
 export * from './mail-list.entities';
 export * from './master-change-log.entity';
+export * from './margin-change-request.entity';
 export * from './master-channel-sku.entity';
 export * from './master-appointment-remark.entity';
 export * from './master-channel.entity';

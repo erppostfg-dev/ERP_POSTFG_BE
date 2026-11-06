@@ -23,6 +23,7 @@ export * from './monitor';
 export * from './logging';
 export * from './mail-lists';
 export * from './manual-upload';
+export * from './margin-approval';
 export * from './masters';
 export * from './po-issues';
 export * from './po-jobs';

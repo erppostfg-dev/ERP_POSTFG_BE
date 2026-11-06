@@ -4,6 +4,7 @@ import { api, loginAs, type TestLogin } from '../helpers/auth';
 import { closeDb, count, db, resetDb, rows } from '../helpers/db';
 import { bigBasketPo, seedMasters, type Masters } from '../helpers/fixtures';
 import { runPo, type Upload } from '../helpers/po-flow';
+import { approveAllMargins } from '../helpers/margins';
 import { covers } from '../helpers/routes';
 
 /*
@@ -130,6 +131,9 @@ describe('bulk approve', () => {
     expect(await masterRate()).toBe('349.30');
     const ok = await bulk('bulk-approve', { ids, confirmMasterUpdates: true }).expect(200);
     expect(ok.body.data.map((r: { result: string }) => r.result)).toEqual(['approved', 'approved']);
+    // the rate waits for the two margin approvals (2026-11-06), then it is the PO's
+    expect(await masterRate()).toBe('349.30');
+    expect(await approveAllMargins()).toBe(1);
     expect(await masterRate()).toBe('360.00');
   });
 

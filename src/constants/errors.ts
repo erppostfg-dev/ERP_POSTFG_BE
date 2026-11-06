@@ -188,6 +188,13 @@ export const ERRORS = {
   SUBMISSION_NOT_FOUND: define(404, (id: string) => `No PO review submission ${id}`),
   SUBMISSION_NOT_PENDING: define(409, (id: string, status: string) => `Submission ${id} is ${status}, not pending any more; reload it`),
   NOT_AN_APPROVER: define(403, (roles: string) => `Only ${roles} can approve or reject PO reviews`),
+  // --- Margin changes, two-layer approval (2026-11-06, constants/margin-approval.ts) ---
+  MARGIN_REQUEST_NOT_FOUND: define(404, (id: string) => `No margin change request ${id}`),
+  MARGIN_REQUEST_PENDING: define(409, (what: string, id: string) => `${what} already has a margin change waiting for approval (request #${id}): approve or reject it first`),
+  MARGIN_REQUEST_NOT_OPEN: define(409, (id: string, status: string) => `Margin change request #${id} is ${status}: nothing to decide`),
+  MARGIN_APPROVER_ROLE: define(403, (layer: string, roles: string) => `Only ${roles} can decide at ${layer}`),
+  MARGIN_APPROVER_SAME_PERSON: define(403, (why: string) => `You cannot approve this request: ${why}`),
+  MARGIN_REQUEST_STALE: define(409, (id: string, detail: string) => `Margin change request #${id} no longer fits the master (${detail}): reject it and ask again`),
   REVIEW_RETURNED: define(409, (count: number) => `The PO no longer passes the checks (${count} issue(s)); it went back to In Review with the reason`),
   MASTER_UPDATE_NOT_CONFIRMED: define(409, (count: number) => `${count} of the selected approval(s) update the master on approval: confirm to go on`),
   ISSUE_REMARK_REQUIRED: define(422, (issueId: string, type: string) => `Issue ${issueId} (${type}) is accepted only with a remark: say why`),

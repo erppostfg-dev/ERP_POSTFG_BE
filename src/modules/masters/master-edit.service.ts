@@ -1,8 +1,8 @@
 import { EntityManager } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
 import {
-  ERROR_CODES, MASTER_ADD, MASTER_LOG_ACTION, MASTER_LOG_SOURCE, MASTER_LOG_TYPE, MasterLogSource, MasterLogType, REVIEW_RECHECK, STOCK_BUCKETS,
-  STOCK_EDIT_KEYS, STOCK_FEEDS, STOCK_FORMULAS, STOCK_NOT_COUNTED, TABLES,
+  ERROR_CODES, MARGIN_APPROVAL, MARGIN_REQUEST_SOURCE, MarginRequestSource, MASTER_ADD, MASTER_LOG_ACTION, MASTER_LOG_SOURCE, MASTER_LOG_TYPE, MasterLogSource,
+  MasterLogType, REVIEW_RECHECK, STOCK_BUCKETS, STOCK_EDIT_KEYS, STOCK_FEEDS, STOCK_FORMULAS, STOCK_NOT_COUNTED, TABLES,
 } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
 import { D2C_ALLOW, D2C_EDIT_KEYS, D2C_PO_PREFIX_MAX, D2C_UNIWARE_CODE_MAX } from '../../constants/d2c-transfers';
@@ -13,6 +13,7 @@ import { recheckInReview } from '../po-review/recheck.service';
 import { Actor, checker } from './master-add.service';
 import { isMasterLogType } from './master-history.service';
 import { logMasterChanges } from './master-log';
+import { requestMarginEdit } from './margin-requests';
 import { forgetPoIssues } from '../po-issues/po-issues.cache';
 import { assertTestMasterEdit } from '../d2c-transfers/test-mode';
 
@@ -29,6 +30,9 @@ import { assertTestMasterEdit } from '../d2c-transfers/test-mode';
  *     deleted (switch off instead);
  *   - afterwards the POs in review are re-checked in the background (that channel, or all for a PEP SKU / warehouse).
  * Switched-off rows are skipped by the PO checks (master-data.ts / validate-po.ts).
+ * A channel SKU's margin % / rate after margin (2026-11-06, two-layer approval): NOT changed here; saved as a margin
+ * change request (margin-requests.ts) that layer 1 and layer 2 approve (margin-approval.service.ts applies it with
+ * direct: true). The other fields of the same edit are saved at once as before.
  */
 
 type Value = string | number | null;
@@ -70,6 +74,9 @@ const orNone = (vals: readonly string[]): readonly string[] => [...vals, STOCK_N
 const noneToNull = (v: unknown): unknown => (v === STOCK_NOT_COUNTED ? null : v);
 const nullToNone = (v: unknown): Value => (typeof v === 'string' && v !== '' ? v : STOCK_NOT_COUNTED);
 const aliasesOf = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : typeof v === 'string' && v ? (JSON.parse(v) as string[]) : []);
+
+/** A DB text / number cell as text ('' for anything else). */
+const str = (v: unknown): string => (typeof v === 'string' || typeof v === 'number' ? String(v) : '');
 
 const col = (c: string, check: FieldSpec['check'], more: Partial<FieldSpec> = {}): FieldSpec => ({ col: c, check, ...more });
 
@@ -263,7 +270,8 @@ const crossChecks = async (m: EntityManager, type: MasterLogType, row: Row, next
 export const editRow = async (rawType: unknown, rawId: unknown, body: unknown, by: Actor) => {
   const result = await AppDataSource.transaction((m) => editRowIn(m, rawType, rawId, body, by));
   afterEdit(result);
-  return { changed: result.changed };
+  // marginRequestId: the margin / rate part waits for the two approvals (2026-11-06)
+  return { changed: result.changed, ...(result.marginRequestId ? { marginRequestId: result.marginRequestId } : {}) };
 };
 
 /** After a committed edit: the PO issues answer is fresh again and the POs in review are re-checked (background). */
@@ -285,7 +293,8 @@ export const afterEdit = (result: { changed: string[]; channels: string[] | null
  */
 export const editRowIn = async (
   m: EntityManager, rawType: unknown, rawId: unknown, body: unknown, by: Actor, source: MasterLogSource = MASTER_LOG_SOURCE.SCREEN,
-): Promise<{ changed: string[]; channels: string[] | null; noPoChecks?: boolean }> => {
+  opts: { direct?: boolean; requestSource?: MarginRequestSource } = {},
+): Promise<{ changed: string[]; channels: string[] | null; noPoChecks?: boolean; marginRequestId?: string }> => {
   const type = typeOf(rawType);
   const id = idOf(rawId);
   const spec = SPECS[type];
@@ -317,8 +326,24 @@ export const editRowIn = async (
   const conflicts = keys.filter((k) => k in original && !same(original[k], shown(k))).map((k) => ({ field: k, now: shown(k) }));
   if (conflicts.length) throw appError(ERROR_CODES.MASTER_EDIT_CONFLICT).withDetails(conflicts);
 
-  const changed = keys.filter((k) => !same(next[k], shown(k)));
+  let changed = keys.filter((k) => !same(next[k], shown(k)));
   if (!changed.length) return { changed: [], channels: null };
+  // a channel SKU's margin / rate: a request for the two approvals instead (direct = the approval applying it)
+  let marginRequestId: string | undefined;
+  const marginKeys = type === MASTER_LOG_TYPE.CHANNEL_SKU && !opts.direct ? changed.filter((k) => MARGIN_APPROVAL.FIELDS.includes(k)) : [];
+  if (marginKeys.length) {
+    const stored = (k: string) => (row[spec.fields[k].col] === null || row[spec.fields[k].col] === undefined ? null : Number(row[spec.fields[k].col]));
+    const asStored = (k: string) => Number((spec.fields[k].write ?? ((v: unknown) => v))(next[k]));
+    marginRequestId = await requestMarginEdit(m, {
+      id, channelId: Number(row.channel_id), channelName: str(row.channel_name), channelCode: str(row.channel_code), pepCode: str(row.pep_code),
+    }, {
+      ...(marginKeys.includes('marginPercent') ? { oldMargin: stored('marginPercent'), newMargin: asStored('marginPercent') } : {}),
+      ...(marginKeys.includes('rateAfterMargin') ? { oldRate: stored('rateAfterMargin'), newRate: asStored('rateAfterMargin') } : {}),
+    }, by, remark, opts.requestSource ?? MARGIN_REQUEST_SOURCE.MASTERS);
+    log.info(LOG_SOURCE.APP, `[masters] ${by.email} asked to change ${await rowKeyOf(m, spec, row)}: ${marginKeys.join(', ')} (margin request #${marginRequestId})`);
+    changed = changed.filter((k) => !marginKeys.includes(k));
+    if (!changed.length) return { changed: [], channels: null, marginRequestId };
+  }
   for (const k of changed) {
     const f = spec.fields[k];
     if (!(f.col in set)) set[f.col] = (f.write ?? ((v: unknown) => v))(next[k]);
@@ -331,7 +356,7 @@ export const editRowIn = async (
     type, recordId: id, rowKey, action: MASTER_LOG_ACTION.FIELD_CHANGED, field: k, oldValue: shown(k), newValue: next[k],
   })), by, source, remark);
   log.info(LOG_SOURCE.APP, `[masters] ${by.email} edited ${type} ${rowKey}: ${changed.join(', ')}`);
-  return { changed, channels: await channelsToRecheck(m, type, row), noPoChecks: spec.noPoChecks };
+  return { changed, channels: await channelsToRecheck(m, type, row), noPoChecks: spec.noPoChecks, ...(marginRequestId ? { marginRequestId } : {}) };
 };
 
 /** Switches one row on / off inside the caller's transaction (also the transfer route PATCH, 2026-11-03). */

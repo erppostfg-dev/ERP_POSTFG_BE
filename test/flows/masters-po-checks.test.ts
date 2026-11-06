@@ -5,6 +5,8 @@ import { validatePo } from '../../src/modules/po-validation/validate-po';
 import { api, loginAs, type TestLogin } from '../helpers/auth';
 import { closeDb, db, resetDb } from '../helpers/db';
 import { bigBasketPo, seedMasters, type Masters } from '../helpers/fixtures';
+import { approveMargin } from '../helpers/margins';
+
 
 /*
  * Flow (2026-10-28): what is changed on the Masters pages must change what the PO checks decide for NEW POs.
@@ -64,7 +66,10 @@ describe('Masters changes -> PO checks', () => {
   });
 
   it('a rate edited on the page is the rate the PO is checked against', async () => {
-    await api().patch(`${P}/edit/channel_sku/${m.channelSkuId}`).set('Cookie', admin.cookie).send({ changes: { rateAfterMargin: 300 } }).expect(200);
+    const asked = await api().patch(`${P}/edit/channel_sku/${m.channelSkuId}`).set('Cookie', admin.cookie).send({ changes: { rateAfterMargin: 300 } }).expect(200);
+    // the old rate until both margin approvals (2026-11-06)
+    expect((await check()).r.lines[0].ourRate).toBe(349.3);
+    await approveMargin(asked.body.data.marginRequestId);
     const c = await check();
     expect(c.r.lines[0].ourRate).toBe(300);
     expect(c.issues).toContain('PRICE_MISMATCH');

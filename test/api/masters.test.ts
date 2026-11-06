@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { api, loginAs, type TestLogin } from '../helpers/auth';
 import { closeDb, count, resetDb, rows } from '../helpers/db';
 import { seedMasters, type Masters } from '../helpers/fixtures';
+import { approveMargin } from '../helpers/margins';
 import { covers } from '../helpers/routes';
 
 /*
@@ -115,7 +116,10 @@ describe('Add forms', () => {
     await api().post(`${P}/active/channel_sku/${m.channelSkuId}`).set('Cookie', admin.cookie).send({ active: false }).expect(200);
     const ok = await api().post(`${P}/channel-skus`).set('Cookie', admin.cookie).send(body).expect(201);
     expect(ok.body.data.channel).toBe('BigBasket');
-    const [row] = await rows<{ margin: string; pep_sku_id: number; is_active: number }>('SELECT margin, pep_sku_id, is_active FROM master_channel_skus WHERE id = ?', [ok.body.data.id]);
+    // a new channel SKU waits for the two margin approvals (2026-11-06), then it is added
+    expect(await count('master_channel_skus', 'channel_code = ? AND is_active = 1', [m.channelCode])).toBe(0);
+    const applied = await approveMargin(ok.body.data.requestId);
+    const [row] = await rows<{ margin: string; pep_sku_id: number; is_active: number }>('SELECT margin, pep_sku_id, is_active FROM master_channel_skus WHERE id = ?', [applied.channelSkuId]);
     expect(row).toMatchObject({ margin: '0.3000', pep_sku_id: m.pepSkuId, is_active: 1 });
   });
 
@@ -178,7 +182,11 @@ describe('Edit', () => {
   });
 
   it('channel SKU margin is edited as a percent and stored as a fraction; a new PEP code sets pep_sku_id', async () => {
-    await edit('channel_sku', m.channelSkuId, { changes: { marginPercent: 25 } }).expect(200);
+    const asked = await edit('channel_sku', m.channelSkuId, { changes: { marginPercent: 25 } }).expect(200);
+    // waits for the two approvals (2026-11-06): unchanged until then
+    expect(asked.body.data).toMatchObject({ changed: [], marginRequestId: expect.any(String) });
+    expect((await rows<{ margin: string }>('SELECT margin FROM master_channel_skus WHERE id = ?', [m.channelSkuId]))[0].margin).toBe('0.3000');
+    await approveMargin(asked.body.data.marginRequestId);
     expect((await rows<{ margin: string }>('SELECT margin FROM master_channel_skus WHERE id = ?', [m.channelSkuId]))[0].margin).toBe('0.2500');
     const bad = await edit('channel_sku', m.channelSkuId, { changes: { pepCode: 'NOPE', rateAfterMargin: 9999 } }).expect(400);
     expect(bad.body.error.details.map((d: { field: string }) => d.field).sort()).toEqual(['pepCode', 'rateAfterMargin']);

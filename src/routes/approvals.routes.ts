@@ -9,6 +9,7 @@ import {
   APPROVER_ROLES,
   ERROR_CODES,
   errorMessage,
+  MARGIN_APPROVAL,
   PAGE,
   PO_REVIEW_BODY,
   PO_REVIEW_LIST,
@@ -25,6 +26,7 @@ import { rejectSubmission } from '../modules/po-review/po-review-actions.service
 import { approveWithPrices } from '../modules/po-review/price-check.service';
 import { getApproval, listApprovals } from '../modules/po-review/po-review-approvals.service';
 import { reviewEvents, reviewVersion } from '../modules/po-review/po-review.live';
+import { approveMarginRequest, listMarginRequests, MarginActor, rejectMarginRequest } from '../modules/masters/margin-approval.service';
 import { appError } from '../utils/AppError';
 import { bodyReader, Problem } from './po-review.routes';
 
@@ -44,6 +46,11 @@ import { bodyReader, Problem } from './po-review.routes';
  *   POST /approvals/po-reviews/:id/reject    { remark }    rejected with the reason.
  *   GET  /approvals/events, /approvals/live-state   live updates (same stream as PO Review).
  * Viewer on /approvals to read; editor on /approvals AND one of APPROVER_ROLES (admin, developer) to decide.
+ * Margin changes (2026-11-06, two-layer approval; modules/masters/margin-approval.service.ts):
+ *   GET  /approvals/margin-changes?status=open|applied|rejected
+ *   POST /approvals/margin-changes/:id/approve { remark? }   layer 1 (Operations Manager) then layer 2 (Admin)
+ *   POST /approvals/margin-changes/:id/reject  { remark }
+ *   Viewer on /approvals is enough (Operations Manager only views the page); the service checks the role per layer.
  */
 
 const router = Router();
@@ -195,6 +202,31 @@ router.post('/po-reviews/:id/reject', requireAuth, requirePage(PAGE.APPROVALS, A
     const remark = bodyReader(problems).remark((req.body as Record<string, unknown> | undefined)?.[PO_REVIEW_BODY.REMARK], PO_REVIEW_BODY.REMARK, true);
     if (problems.length || !remark) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails(problems);
     res.json({ data: await rejectSubmission(id, remark, actor(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const marginActor = (req: Request): MarginActor => ({ id: req.auth!.user.id, email: req.auth!.user.email, roles: req.auth!.roles });
+const body = (req: Request) => (req.body ?? {}) as Record<string, unknown>;
+
+router.get(MARGIN_APPROVAL.ROUTES.LIST, requireAuth, requirePage(PAGE.APPROVALS, ACCESS_LEVEL.VIEWER), async (req, res, next) => {
+  try {
+    res.json({ data: await listMarginRequests(req.query.status, marginActor(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+router.post(MARGIN_APPROVAL.ROUTES.APPROVE, requireAuth, requirePage(PAGE.APPROVALS, ACCESS_LEVEL.VIEWER), async (req, res, next) => {
+  try {
+    res.json({ data: await approveMarginRequest(req.params.id, body(req), marginActor(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+router.post(MARGIN_APPROVAL.ROUTES.REJECT, requireAuth, requirePage(PAGE.APPROVALS, ACCESS_LEVEL.VIEWER), async (req, res, next) => {
+  try {
+    res.json({ data: await rejectMarginRequest(req.params.id, body(req), marginActor(req)) });
   } catch (err) {
     next(err);
   }

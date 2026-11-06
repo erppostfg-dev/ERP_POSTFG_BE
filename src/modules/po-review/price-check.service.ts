@@ -1,5 +1,5 @@
 import { EntityManager } from 'typeorm';
-import { MASTER_LOG_TYPE, PRICE_CHOICE, PRICE_DIFF_FIELD, PriceChoice, round2 } from '../../constants';
+import { MARGIN_REQUEST_SOURCE, MASTER_LOG_SOURCE, MASTER_LOG_TYPE, PRICE_CHOICE, PRICE_DIFF_FIELD, PriceChoice, round2 } from '../../constants';
 import { PoPriceDifference } from '../../entities';
 import { afterEdit, editRowIn } from '../masters/master-edit.service';
 import { Actor, approveSubmission } from './po-review-actions.service';
@@ -12,6 +12,9 @@ import { ValidatedLine, ValidationResult } from '../po-validation/validate-po';
  *   - every line set to the CHANNEL's value with "update master" -> the channel SKU's rate_after_margin / mrp becomes the
  *     PO's value, through the Masters edit (same checks, History row by the reviewer with the PO in the remark). The
  *     caller re-checks the channel's other POs in review once committed (afterEdit).
+ *     2026-11-06 (two-layer margin approval): the RATE part is not changed here; it becomes a margin change request
+ *     (layer 1 Operations Manager, layer 2 Admin). The MRP part is changed at once as before. This PO itself uses the
+ *     channel's price either way.
  */
 
 export interface PriceCheckLine {
@@ -83,7 +86,7 @@ const applyPriceChoices = async (
   const results: { changed: string[]; channels: string[] | null }[] = [];
   for (const [id, e] of edits) {
     const remark = `From PO review: ${c.v.channelDisplayName} PO ${c.v.poNumber} line ${e.lines.join(', ')} (upload ${c.uploadId}), the channel's value`;
-    results.push(await editRowIn(m, MASTER_LOG_TYPE.CHANNEL_SKU, id, { changes: e.changes, original: e.original, remark }, c.reviewer));
+    results.push(await editRowIn(m, MASTER_LOG_TYPE.CHANNEL_SKU, id, { changes: e.changes, original: e.original, remark }, c.reviewer, MASTER_LOG_SOURCE.SCREEN, { requestSource: MARGIN_REQUEST_SOURCE.PRICE_CHECK }));
   }
   return results;
 };

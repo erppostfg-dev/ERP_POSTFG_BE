@@ -14,6 +14,7 @@ import { runJob } from '../../utils/log-call';
 import { log } from '../../utils/logger';
 import { recheckInReview } from '../po-review/recheck.service';
 import { addedWith, logMasterChanges } from './master-log';
+import { NewChannelSku, requestChannelSkuAdd } from './margin-requests';
 import { forgetPoIssues } from '../po-issues/po-issues.cache';
 
 /*
@@ -114,7 +115,7 @@ const logCreated = (m: EntityManager, by: Actor, type: MasterLogType, recordId: 
     by, MASTER_LOG_SOURCE.SCREEN, remark);
 
 /** Re-check the channel's POs in review after a mapping was added (background; failures only logged). */
-const recheckChannel = (channel: string) => {
+export const recheckChannel = (channel: string) => {
   // after the commit: a new channel SKU / location may make "still a problem?" fixed at once (2026-10-29)
   forgetPoIssues();
   void runJob('recheck', () => recheckInReview({ channels: [channel], trigger: REVIEW_RECHECK.TRIGGER.MASTER_ADD }), { channel }).catch(() => undefined);
@@ -180,6 +181,32 @@ export const addPepSku = async (body: unknown, by: Actor) => {
 
 // ---- Channel SKU (master_channel_skus) -----------------------------------------------------------------------------
 
+/** The channel code is already an active row of that channel (only active rows count, 2026-10-28). */
+export const channelCodeTaken = async (m: EntityManager, channelId: number, channelCode: string): Promise<boolean> =>
+  !!(await one(m, `SELECT id FROM ${TABLES.MASTER_CHANNEL_SKUS} WHERE channel_id = ? AND LOWER(TRIM(channel_code)) = LOWER(?) AND is_active = 1 LIMIT 1`, [channelId, channelCode]));
+
+/**
+ * Adds the row (when the margin request's layer 2 approves, 2026-11-06): the insert + its activity and History rows, in
+ * the caller's transaction. The caller re-checks the channel's POs in review once committed (recheckChannel).
+ */
+export const insertChannelSku = async (m: EntityManager, by: Actor, v: NewChannelSku, remark: string | null): Promise<string> => {
+  const r = await m.getRepository(MasterChannelSku).insert({
+    pepCode: v.pepCode, pepSkuId: v.pepSkuId, channelId: v.channelId, channelName: v.channelName, channelCode: v.channelCode,
+    productName: v.productName, brandName: v.brand, mrp: v.mrp, margin: v.margin, rateAfterMargin: v.rateAfterMargin, eanCode: v.eanCode,
+  });
+  const id = String(r.identifiers[0]?.id ?? '');
+  await audit(m, by, `masters: added channel SKU ${v.channelName} ${v.channelCode} -> ${v.pepCode}`);
+  await logCreated(m, by, MASTER_LOG_TYPE.CHANNEL_SKU, id, `${v.channelName} | ${v.channelCode}`,
+    { channel: v.channelName, channelCode: v.channelCode, pepCode: v.pepCode, productName: v.productName, brand: v.brand, mrp: v.mrp,
+      marginPercent: Math.round(v.margin * 10000) / 100, rateAfterMargin: v.rateAfterMargin, eanCode: v.eanCode }, remark);
+  log.info(LOG_SOURCE.APP, `[masters] ${by.email} mapped ${v.channelName} ${v.channelCode} -> ${v.pepCode}`);
+  return id;
+};
+
+/**
+ * POST /masters/channel-skus: the row is checked as before, then saved as a MARGIN REQUEST (2026-11-06, two-layer
+ * approval of margins): it is added to master_channel_skus only when layer 1 and layer 2 have approved it.
+ */
 export const addChannelSku = async (body: unknown, by: Actor) => {
   const c = checker(body);
   const v = {
@@ -189,28 +216,24 @@ export const addChannelSku = async (body: unknown, by: Actor) => {
   };
   const remark = c.remark();
   if (v.mrp !== null && v.rateAfterMargin !== null && v.rateAfterMargin > v.mrp) c.bad('rateAfterMargin', 'FIELD_OUT_OF_RANGE', 'rateAfterMargin', 0, v.mrp);
-  const result = await AppDataSource.transaction(async (m) => {
+  return AppDataSource.transaction(async (m) => {
     const channel = v.channelId ? await one<{ id: number; display_name: string }>(m, `SELECT id, display_name FROM ${TABLES.MASTER_CHANNELS} WHERE id = ?`, [v.channelId]) : undefined;
     if (v.channelId && !channel) c.bad('channelId', 'FIELD_NOT_FOUND', 'channelId', String(v.channelId));
     const sku = v.pepCode ? await one<{ id: number; pep_code: string }>(m, `SELECT id, pep_code FROM ${TABLES.MASTER_SKUS} WHERE LOWER(pep_code) = LOWER(?) LIMIT 1`, [v.pepCode]) : undefined;
     if (v.pepCode && !sku) c.bad('pepCode', 'FIELD_NOT_FOUND', 'pepCode', v.pepCode);
-    if (channel && v.channelCode && (await one(m, `SELECT id FROM ${TABLES.MASTER_CHANNEL_SKUS} WHERE channel_id = ? AND LOWER(TRIM(channel_code)) = LOWER(?) AND is_active = 1 LIMIT 1`, [channel.id, v.channelCode]))) {
+    if (channel && v.channelCode && (await channelCodeTaken(m, channel.id, v.channelCode))) {
       c.bad('channelCode', 'FIELD_ALREADY_EXISTS', 'channelCode', `${channel.display_name} ${v.channelCode}`);
     }
     c.done();
-    const r = await m.getRepository(MasterChannelSku).insert({
-      pepCode: sku!.pep_code, pepSkuId: Number(sku!.id), channelId: channel!.id, channelName: channel!.display_name, channelCode: v.channelCode,
-      productName: v.productName, brandName: v.brand, mrp: v.mrp, margin: Math.round((v.marginPercent! / 100) * 10000) / 10000,
+    const row: NewChannelSku = {
+      channelId: channel!.id, channelName: channel!.display_name, channelCode: v.channelCode!, pepCode: sku!.pep_code, pepSkuId: Number(sku!.id),
+      productName: v.productName, brand: v.brand, mrp: v.mrp, margin: Math.round((v.marginPercent! / 100) * 10000) / 10000,
       rateAfterMargin: v.rateAfterMargin, eanCode: v.eanCode,
-    });
-    await audit(m, by, `masters: added channel SKU ${channel!.display_name} ${v.channelCode} -> ${sku!.pep_code}`);
-    await logCreated(m, by, MASTER_LOG_TYPE.CHANNEL_SKU, r.identifiers[0]?.id, `${channel!.display_name} | ${v.channelCode}`,
-      { ...v, channelId: undefined, channel: channel!.display_name, pepCode: sku!.pep_code }, remark);
-    log.info(LOG_SOURCE.APP, `[masters] ${by.email} mapped ${channel!.display_name} ${v.channelCode} -> ${sku!.pep_code}`);
-    return { id: String(r.identifiers[0]?.id ?? ''), channel: channel!.display_name };
+    };
+    const requestId = await requestChannelSkuAdd(m, row, by, remark);
+    log.info(LOG_SOURCE.APP, `[masters] ${by.email} asked to map ${row.channelName} ${row.channelCode} -> ${row.pepCode} (margin request #${requestId})`);
+    return { requestId, channel: row.channelName };
   });
-  recheckChannel(result.channel);
-  return result;
 };
 
 // ---- Channel (master_channels) -------------------------------------------------------------------------------------
