@@ -20,7 +20,7 @@ dotenv.config();
 const laptopMode = process.env.LAPTOP_MODE === 'true';
 export const LAPTOP_MODE_OFF = {
   PUBSUB_ENABLED: 'false', OCR_ENABLED: 'false', OCR_BACKLOG: 'false', PIPELINE_RESUME: 'false', CHANNEL_API_ENABLED: 'false',
-  LOCAL_CLEANUP_ENABLED: 'false', WORKER_IN_SERVER: 'false', QUEUE_MODE: 'local', RECHECK_MINUTES: '0', D2C_SYNC_ENABLED: 'false', PO_UNIWARE_SYNC_ENABLED: 'false',
+  LOCAL_CLEANUP_ENABLED: 'false', WORKER_IN_SERVER: 'false', QUEUE_MODE: 'local', RECHECK_MINUTES: '0', D2C_SYNC_ENABLED: 'false', PO_UNIWARE_SYNC_ENABLED: 'false', UNIWARE_CREATE_ENABLED: 'false',
   // not an off switch: laptop mode is ALWAYS D2C local test mode (env.d2c.testOnly), whatever .env says
   D2C_TEST_ONLY: 'true',
 } as const;
@@ -286,6 +286,9 @@ export const env = {
   // Uniware sale order status of channel POs (2026-11-06, modules/po-uniware-sync): the timer (read-only on Uniware);
   // off on a laptop; Sync now on PO Overview works either way.
   poUniwareSync: { enabled: flag('PO_UNIWARE_SYNC_ENABLED', 'true') },
+  // Create in Uniware (2026-11-09, constants/uniware-create.ts): the ONE write to Uniware (sale order create). OFF unless
+  // UNIWARE_CREATE_ENABLED=true; always off on a laptop. orderPhone = the phone on the sale order address (required by the API).
+  uniwareCreate: { enabled: flag('UNIWARE_CREATE_ENABLED'), orderPhone: (process.env.UNIWARE_ORDER_PHONE ?? '').trim() },
   d2c: {
     uniwareWrites: flag('D2C_UNIWARE_WRITES'),
     syncEnabled: flag('D2C_SYNC_ENABLED', 'true'),

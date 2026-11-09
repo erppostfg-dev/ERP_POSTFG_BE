@@ -16,6 +16,7 @@ import {
   PriceChoice,
   REVIEW_LIVE,
   REVIEW_RECHECK,
+  UNIWARE_CREATE,
   UNIWARE_HANDOFF,
   UPLOAD_ID_PATTERN,
   UPLOAD_STATUS,
@@ -27,6 +28,7 @@ import { getPoFile, getPoReview, listPoReview, PoReviewListQuery } from '../modu
 import { reviewEvents, reviewVersion } from '../modules/po-review/po-review.live';
 import { recheckInReview } from '../modules/po-review/recheck.service';
 import { downloadCombined, downloadOne, markUploaded } from '../modules/po-review/uniware-handoff.service';
+import { createStates, previewCreates, queueCreates } from '../modules/uniware-create/create.service';
 import { lineItems, reviewLineItems } from '../modules/po-review/line-items.service';
 import { getRejection, reopenRejected } from '../modules/po-review/po-review-reopen.service';
 import { LineCorrection, rejectPo, ResubmitBody, submitForApproval } from '../modules/po-review/po-review-actions.service';
@@ -453,6 +455,41 @@ router.post(UNIWARE_HANDOFF.MARK_UPLOADED, requireAuth, requirePage(PAGE.PO_REVI
   try {
     const undo = (req.body as Record<string, unknown> | undefined)?.[UNIWARE_HANDOFF.BODY_UNDO] === true;
     res.json({ data: await markUploaded(idsOf(req.body), actorOf(req), undo) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---- Create in Uniware (2026-11-09, constants/uniware-create.ts): the one write to Uniware, OFF unless switched on ----
+
+/** uploadIds from the body for Create in Uniware: digits only, each once (the service checks the count). */
+const createIdsOf = (body: unknown): string[] => {
+  const v = (body as Record<string, unknown> | undefined)?.[UNIWARE_CREATE.BODY_IDS];
+  return Array.isArray(v) ? [...new Set(v.map(String).filter((x) => UPLOAD_ID_PATTERN.test(x)))] : [];
+};
+
+/** POST /po-review/uniware-create { uploadIds }: queue the ticked, verified POs (editor, like the CSV download). */
+router.post(UNIWARE_CREATE.ROUTE, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
+  try {
+    res.status(202).json({ data: await queueCreates(createIdsOf(req.body), actorOf(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /po-review/uniware-create/preview { uploadIds }: what Create would send, per PO; nothing sent or written (editor). */
+router.post(UNIWARE_CREATE.PREVIEW_ROUTE, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
+  try {
+    res.json({ data: await previewCreates(createIdsOf(req.body)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /po-review/uniware-create/states { uploadIds }: the latest create request of each + whether it is switched on. */
+router.post(`${UNIWARE_CREATE.ROUTE}/states`, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.VIEWER), async (req, res, next) => {
+  try {
+    res.json({ data: await createStates(createIdsOf(req.body).slice(0, UNIWARE_HANDOFF.MAX_IDS)) });
   } catch (err) {
     next(err);
   }

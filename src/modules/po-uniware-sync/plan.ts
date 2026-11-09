@@ -1,6 +1,6 @@
 import {
-  IST_OFFSET_MS, UNIWARE_DISPATCHED, UNIWARE_LOGISTICS_OPEN, UNIWARE_NOT_FOUND, UNIWARE_PACKAGE_STEP, UNIWARE_PLANNING_OPEN, UNIWARE_SO_DONE,
-  UNIWARE_WAREHOUSE_LADDER,
+  IST_OFFSET_MS, PO_UNIWARE_SYNC, UNIWARE_DISPATCHED, UNIWARE_LOGISTICS_OPEN, UNIWARE_NOT_FOUND, UNIWARE_PACKAGE_STEP, UNIWARE_PLANNING_OPEN,
+  UNIWARE_SO_DONE, UNIWARE_UPLOADED_MISSING, UNIWARE_WAREHOUSE_LADDER,
 } from '../../constants';
 import type { SoDetail, SoDetailPackage } from './sale-order';
 
@@ -66,7 +66,15 @@ const live = (so: SoDetail): SoDetailPackage[] => so.packages.filter((p) => p.st
 const isDispatched = (p: SoDetailPackage) => UNIWARE_PACKAGE_STEP[p.status] === UNIWARE_DISPATCHED;
 const atLeastRts = (p: SoDetailPackage) => rank(UNIWARE_PACKAGE_STEP[p.status] ?? null) >= rank('RTS');
 
-export const planPoSync = (s: PoSyncState, so: SoDetail | null, now: Date): PoSyncPlan => {
+/** What the sync knows about the PO besides its fields (2026-11-09). */
+export interface PoSyncContext {
+  /** When it was marked uploaded into Uniware (by a person, or created by us); null = not marked. */
+  uploadedAt?: Date | null;
+  /** Uniware already said it is done (after-care read): Uniware's new status text goes to History. */
+  wasDone?: boolean;
+}
+
+export const planPoSync = (s: PoSyncState, so: SoDetail | null, now: Date, ctx: PoSyncContext = {}): PoSyncPlan => {
   const set: Partial<PoSyncState> = {};
   const logs: PoSyncPlan['logs'] = [];
   const change = <K extends keyof PoSyncState>(k: K, v: PoSyncState[K], logged = true) => {
@@ -76,12 +84,16 @@ export const planPoSync = (s: PoSyncState, so: SoDetail | null, now: Date): PoSy
   };
 
   if (!so) {
-    change('uniwareStatus', UNIWARE_NOT_FOUND, false);
+    // marked uploaded long enough ago and Uniware still has no such code: say so (the upload may have failed)
+    const missing = !!ctx.uploadedAt && now.getTime() - ctx.uploadedAt.getTime() >= PO_UNIWARE_SYNC.UPLOADED_MISSING_HOURS * 3_600_000;
+    const text = missing ? UNIWARE_UPLOADED_MISSING : UNIWARE_NOT_FOUND;
+    change('uniwareStatus', text, false);
     change('syncError', null, false);
-    return { set, logs, done: false, uniwareText: UNIWARE_NOT_FOUND };
+    return { set, logs, done: false, uniwareText: text };
   }
   const text = uniwareTextOf(so);
-  change('uniwareStatus', text, false);
+  // after done (returns, late changes): Uniware's own new wording is kept in History, nothing else moves backwards
+  change('uniwareStatus', text, !!ctx.wasDone);
   change('syncError', null, false);
 
   // Statuses: forward only, and only while Planning is Confirmed and the current status is on Uniware's ladder

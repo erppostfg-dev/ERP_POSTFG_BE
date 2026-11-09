@@ -218,7 +218,7 @@ router.get(PO_OVERVIEW_ROUTES.UNIWARE_SYNC, ...viewer, async (_req, res, next) =
 });
 router.post(PO_OVERVIEW_ROUTES.UNIWARE_SYNC, ...editor, async (req, res, next) => {
   try {
-    res.status(202).json({ data: await startPoSync(req.body) });
+    res.status(202).json({ data: await startPoSync(req.body, req.auth!.user.email) });
   } catch (err) {
     next(err);
   }

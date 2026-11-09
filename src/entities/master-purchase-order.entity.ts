@@ -386,6 +386,13 @@ export class MasterPurchaseOrder {
   @Column({ name: 'uniwareStatus', type: 'varchar', length: 100, nullable: true })
   uniwareStatus: string | null;
 
+  /**
+   * When Uniware itself first said this PO is done (COMPLETE / CANCELLED / everything dispatched; 2026-11-09). From then
+   * on the sync reads it once a day for PO_UNIWARE_SYNC.AFTER_DONE_DAYS, then never. Null = not done in Uniware.
+   */
+  @Column({ name: 'uniwareDoneAt', type: 'datetime', precision: 6, nullable: true })
+  uniwareDoneAt: Date | null;
+
   /** fk_master_po_channel: channel -> master_channels.display_name. */
   @ManyToOne(() => MasterChannel, { nullable: true, onUpdate: 'CASCADE' })
   @JoinColumn({ name: 'channel', referencedColumnName: 'displayName', foreignKeyConstraintName: 'fk_master_po_channel' })
