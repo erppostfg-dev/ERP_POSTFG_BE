@@ -3,7 +3,8 @@ import {
   CHANNEL_MASTER_IDS, CHANNEL_TOLERANCES, ChannelName, ISSUE_STATUS, ISSUE_TYPE, PO_ISSUES, PO_VERIFY_ACTION, REVIEW_SUBMISSION_STATUS, TABLES,
 } from '../../constants';
 import { matchKey } from '../masters/master-match';
-import { cachedPoIssues } from './po-issues.cache';
+import { CACHE_NS } from '../../constants/cache';
+import { cached } from '../cache/cache.service';
 
 /*
  * PO issues per channel (user, 2026-10-22: "channel based: what kind of issues each channel has, and inside it every
@@ -65,8 +66,10 @@ export interface PoIssuesResult { days: number; since: string; channels: Channel
  */
 export const poIssuesByChannel = async (days: number, opts: { fresh?: boolean } = {}): Promise<PoIssuesResult & { computedAt: string; cached: boolean }> => {
   if (opts.fresh) return { ...(await computePoIssues(days)), computedAt: new Date().toISOString(), cached: false };
-  const r = cachedPoIssues(days, PO_ISSUES.CACHE_SECONDS * 1000, () => computePoIssues(days));
-  return { ...(await r.value), computedAt: new Date(r.at).toISOString(), cached: r.cached };
+  const asked = Date.now();
+  const r = await cached(CACHE_NS.PO_ISSUES, String(days), async () => ({ at: Date.now(), result: await computePoIssues(days) }), PO_ISSUES.CACHE_SECONDS);
+  // computed before this call started = a shared answer
+  return { ...r.result, computedAt: new Date(r.at).toISOString(), cached: r.at < asked };
 };
 
 const computePoIssues = async (days: number): Promise<PoIssuesResult> => {

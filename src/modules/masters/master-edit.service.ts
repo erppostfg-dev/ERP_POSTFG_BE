@@ -15,6 +15,7 @@ import { isMasterLogType } from './master-history.service';
 import { logMasterChanges } from './master-log';
 import { requestMarginEdit } from './margin-requests';
 import { forgetPoIssues } from '../po-issues/po-issues.cache';
+import { forgetMasters } from './masters.cache';
 import { assertTestMasterEdit } from '../d2c-transfers/test-mode';
 
 /*
@@ -277,6 +278,8 @@ export const editRow = async (rawType: unknown, rawId: unknown, body: unknown, b
 /** After a committed edit: the PO issues answer is fresh again and the POs in review are re-checked (background). */
 export const afterEdit = (result: { changed: string[]; channels: string[] | null; noPoChecks?: boolean }): void => {
   if (!result.changed.length) return;
+  // the cached Masters lists / PO Overview dropdowns (shared cache, 2026-11-10): any edit, also the ones no PO check reads
+  void forgetMasters();
   // a D2C transfer route (2026-11-03): no PO check reads it
   if (result.noPoChecks) return;
   // a warehouse's in-transit stock settings feed only the in-transit report: no PO check reads them
@@ -392,6 +395,7 @@ export const setActive = async (rawType: unknown, rawId: unknown, body: unknown,
   c.done();
 
   const result = await AppDataSource.transaction((m) => setActiveIn(m, type, id, active!, remark, by));
+  if (result.changed) await forgetMasters();
   if (result.changed && spec.noPoChecks) return { active, changed: result.changed };
   if (result.changed) forgetPoIssues();
   // switched on: POs waiting on this row may pass now (switching off only affects new POs)

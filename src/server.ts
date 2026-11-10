@@ -28,6 +28,7 @@ import { LOG_SOURCE } from './constants/logging';
 import { logError } from './utils/classify-error';
 import { runJob } from './utils/log-call';
 import { log, logEvent } from './utils/logger';
+import { startCache, stopCache } from './modules/cache/cache.service';
 import { logCrashes, startProcessMonitor } from './utils/process-monitor';
 import { startStrRetry } from './modules/channel-api/myntra/str.service';
 import { startDiskCheck } from './modules/admin/server-health.service';
@@ -88,6 +89,8 @@ const start = async (): Promise<void> => {
     log: { level: env.log.level, format: env.log.format, dbSlowMs: env.log.dbSlowMs, apiSlowMs: env.log.apiSlowMs, extSlowMs: env.log.extSlowMs },
   });
   const monitor = startProcessMonitor();
+  // shared cache: AWS ElastiCache when REDIS_URL is set, else server memory (modules/cache, 2026-11-10)
+  startCache();
 
   // Gmail watch + Pub/Sub pull: labelled emails are sent to their route's endpoint.
   let listener: { stop: () => Promise<void> } | undefined;
@@ -198,6 +201,7 @@ const start = async (): Promise<void> => {
     stopPeriodKeeper();
     stopFacilityCheck();
     await stopQueue().catch(() => undefined); // in-transit files still waiting for S3 are sent at the next start
+    await stopCache().catch(() => undefined);
     server.close(async () => {
       if (AppDataSource.isInitialized) await AppDataSource.destroy();
       process.exit(0);

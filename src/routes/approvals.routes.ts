@@ -1,6 +1,7 @@
 import { NextFunction, Request, Response, Router } from 'express';
 import {
   ACCESS_LEVEL,
+  CACHE_NS,
   APPROVAL_BULK,
   APPROVAL_KIND,
   APPROVAL_LIST_STATUSES,
@@ -21,6 +22,7 @@ import {
   type ApprovalKind,
 } from '../constants';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
+import { cached } from '../modules/cache/cache.service';
 import { bulkApprove, bulkReject } from '../modules/po-review/approvals-bulk.service';
 import { rejectSubmission } from '../modules/po-review/po-review-actions.service';
 import { approveWithPrices } from '../modules/po-review/price-check.service';
@@ -123,11 +125,14 @@ router.get('/po-reviews', requireAuth, requirePage(PAGE.APPROVALS, ACCESS_LEVEL.
     const page = int(PO_REVIEW_QUERY.PAGE, 1, Number.MAX_SAFE_INTEGER);
     const pageSize = int(PO_REVIEW_QUERY.PAGE_SIZE, PO_REVIEW_LIST.DEFAULT_PAGE_SIZE, PO_REVIEW_LIST.MAX_PAGE_SIZE);
     if (problems.length) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails(problems);
-    const { items, total, counts, filterOptions } = await listApprovals({
+    const query = {
       status: status as ReviewSubmissionStatus, q: str(PO_REVIEW_QUERY.Q), channels: list(PO_REVIEW_QUERY.CHANNEL),
       kind: kind as ApprovalKind | undefined, issues: list(APPROVAL_QUERY.ISSUE), submittedBy: list(APPROVAL_QUERY.SUBMITTED_BY), from, to, page, pageSize,
       reopened: str(APPROVAL_QUERY.REOPENED) === 'true',
-    });
+    };
+    // the same answer for everyone with the page (the sidebar badge asks every 60 s): shared cache, dropped by every
+    // review change (bumpReview) (2026-11-10, modules/cache)
+    const { items, total, counts, filterOptions } = await cached(CACHE_NS.APPROVALS, `list:${JSON.stringify(query)}`, () => listApprovals(query));
     const canDecide = !!req.auth?.roles.some((r) => (APPROVER_ROLES as readonly string[]).includes(r));
     res.json({ data: items, meta: { page, pageSize, total, counts, canDecide, filterOptions } });
   } catch (err) {

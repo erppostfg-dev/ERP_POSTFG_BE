@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { AppDataSource } from '../config/data-source';
 import { env } from '../config/env';
 import { HEALTH_STATUS } from '../constants';
+import { cacheMode } from '../modules/cache/cache.service';
 
 const router = Router();
 
@@ -29,6 +30,8 @@ router.get('/', async (_req, res) => {
       status: HEALTH_STATUS.OK,
       database,
       emailListener: env.pubsub.enabled ? HEALTH_STATUS.ENABLED : HEALTH_STATUS.DISABLED,
+      // where cached answers are kept: redis | memory | redis_down | off (modules/cache)
+      cache: cacheMode(),
       timestamp: new Date().toISOString(),
     },
   });

@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { EntityManager, In, IsNull, LessThan, MoreThanOrEqual } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
 import {
-  ERROR_CODES, FEEDBACK, FEEDBACK_COMMENT_KIND, FEEDBACK_IMAGE_TYPES, FEEDBACK_NOTIFY_KIND, FEEDBACK_SEVERITY, FEEDBACK_STATUS, FEEDBACK_TYPE,
+  CACHE_NS, ERROR_CODES, FEEDBACK, FEEDBACK_COMMENT_KIND, FEEDBACK_IMAGE_TYPES, FEEDBACK_NOTIFY_KIND, FEEDBACK_SEVERITY, FEEDBACK_STATUS, FEEDBACK_TYPE,
   FeedbackCommentKind, FeedbackImageKind, FeedbackNotifyKind, FeedbackSeverity, FeedbackStatus, FeedbackType, USER_STATUS,
 } from '../../constants';
 import { USER_ADMIN_ROLES } from '../../constants/users';
@@ -10,6 +10,7 @@ import { FeedbackComment, FeedbackImage, FeedbackItem, FeedbackMember, FeedbackN
 import { LOG_SOURCE } from '../../constants/logging';
 import { appError } from '../../utils/AppError';
 import { log } from '../../utils/logger';
+import { forgetCache } from '../cache/cache.service';
 import { openS3File, s3UrlOfKey, writeS3File } from '../email-intake/s3-mirror.service';
 
 /*
@@ -241,6 +242,16 @@ const notify = async (m: EntityManager, itemId: string, kind: FeedbackNotifyKind
   await m.getRepository(FeedbackNotification).insert(to.map((userId) => ({ userId, itemId, kind, actorId: actor.id, text: text.slice(0, FEEDBACK.NOTIFY_TEXT_MAX) })));
 };
 
+/**
+ * A change that may notify people or rename an item: the transaction, then every cached bell is dropped (shared cache,
+ * GET /feedback/notifications; 2026-11-10). After the commit, so a bell read meanwhile cannot keep the old answer.
+ */
+const txThenBell = async <T>(work: (m: EntityManager) => Promise<T>): Promise<T> => {
+  const result = await AppDataSource.transaction(work);
+  await forgetCache(CACHE_NS.FEEDBACK_BELL);
+  return result;
+};
+
 /** The captured details (page, browser, last error...): a JSON object of at most FEEDBACK.CONTEXT_MAX_BYTES, else null. */
 const contextOf = (v: unknown): Record<string, unknown> | null => {
   let obj: unknown = v;
@@ -276,7 +287,7 @@ export const createFeedback = async (body: Record<string, unknown>, files: Image
   const assignee = await assigneeOf(body[FEEDBACK.FIELD_ASSIGNEE]);
   const page = typeof body.page === 'string' && body.page.trim() ? body.page.trim().slice(0, FEEDBACK.PAGE_MAX) : null;
   const stored = await storeImages(files, 0);
-  const id = await AppDataSource.transaction(async (m) => {
+  const id = await txThenBell(async (m) => {
     const saved = await m.getRepository(FeedbackItem).save(m.getRepository(FeedbackItem).create({
       type: type as FeedbackType, title, description,
       severity: type === FEEDBACK_TYPE.PROBLEM ? (rawSeverity as FeedbackSeverity) : null,
@@ -339,7 +350,7 @@ export const updateFeedback = async (id: string, body: Record<string, unknown>, 
     lines.push(`Assigned to: ${was} → ${assignee?.name ?? '—'}`);
   }
   if (lines.length) {
-    await AppDataSource.transaction(async (m) => {
+    await txThenBell(async (m) => {
       await m.getRepository(FeedbackItem).update({ id: item.id }, { ...next, updatedBy: actor.id });
       await m.getRepository(FeedbackComment).insert(lines.map((l) => changeLine(item.id, actor.id, l)));
       if (next.assignedTo) await notify(m, item.id, FEEDBACK_NOTIFY_KIND.ASSIGNED, actor, [next.assignedTo]);
@@ -361,7 +372,7 @@ export const addComment = async (id: string, body: Record<string, unknown>, acto
       .where({ itemId: item.id, kind: FEEDBACK_COMMENT_KIND.COMMENT }).getRawMany<{ userId: number }>(),
   ]);
   const followers = [item.reporterId, ...(item.assignedTo ? [item.assignedTo] : []), ...members, ...commenters.map((c) => Number(c.userId))];
-  await AppDataSource.transaction(async (m) => {
+  await txThenBell(async (m) => {
     await m.getRepository(FeedbackComment).insert({ itemId: item.id, userId: actor.id, kind: FEEDBACK_COMMENT_KIND.COMMENT, text: t });
     await notify(m, item.id, FEEDBACK_NOTIFY_KIND.COMMENT, actor, followers, t);
   });
@@ -372,7 +383,7 @@ export const addMember = async (id: string, body: Record<string, unknown>, actor
   const item = await itemToChange(id, actor);
   const user = await activeUser(body.userId);
   if (!(await memberIds(item.id)).includes(user.id)) {
-    await AppDataSource.transaction(async (m) => {
+    await txThenBell(async (m) => {
       await m.getRepository(FeedbackMember).insert({ itemId: item.id, userId: user.id, addedBy: actor.id });
       await m.getRepository(FeedbackComment).insert(changeLine(item.id, actor.id, `Added ${user.name}`));
       await notify(m, item.id, FEEDBACK_NOTIFY_KIND.ADDED, actor, [user.id]);
@@ -478,6 +489,7 @@ export const readNotifications = async (body: Record<string, unknown>, actor: Ac
     where.id = In(ids);
   }
   await AppDataSource.getRepository(FeedbackNotification).update(where, { readAt: new Date() });
+  await forgetCache(CACHE_NS.FEEDBACK_BELL, String(actor.id));
   return listNotifications(actor);
 };
 

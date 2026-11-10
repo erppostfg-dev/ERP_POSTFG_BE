@@ -1,7 +1,8 @@
 import { NextFunction, Request, Response, Router } from 'express';
 import multer from 'multer';
-import { FEEDBACK } from '../constants';
+import { CACHE_NS, FEEDBACK } from '../constants';
 import { requireAuth } from '../modules/auth/auth.middleware';
+import { cached } from '../modules/cache/cache.service';
 import {
   Actor, addComment, addImages, addMember, createFeedback, feedbackPeople, getFeedback, ImageFile, listFeedback, listNotifications, listQueryOf,
   openFeedbackImage, readNotifications, removeImage, removeMember, updateFeedback,
@@ -41,7 +42,8 @@ const send = (fn: (req: Request) => Promise<unknown>, status = 200) => async (re
 router.get(FEEDBACK.ROUTES.LIST, requireAuth, send((req) => listFeedback(listQueryOf(req.query as Record<string, unknown>), actor(req))));
 router.get(FEEDBACK.ROUTES.PEOPLE, requireAuth, send(() => feedbackPeople()));
 // before '/:id', which would take "notifications" as an id
-router.get(FEEDBACK.ROUTES.NOTIFICATIONS, requireAuth, send((req) => listNotifications(actor(req))));
+// every signed-in person asks every 30 s: their answer is cached (dropped when they are notified or read, 2026-11-10)
+router.get(FEEDBACK.ROUTES.NOTIFICATIONS, requireAuth, send((req) => cached(CACHE_NS.FEEDBACK_BELL, String(req.auth!.user.id), () => listNotifications(actor(req)))));
 router.post(FEEDBACK.ROUTES.NOTIFICATIONS_READ, requireAuth, send((req) => readNotifications(body(req), actor(req))));
 // Auth first, so images are only read for a signed-in person.
 router.post(FEEDBACK.ROUTES.LIST, requireAuth, images, send((req) => createFeedback(body(req), filesOf(req), actor(req)), 201));

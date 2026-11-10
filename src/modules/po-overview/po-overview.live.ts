@@ -4,6 +4,8 @@ import { LIVE, SHIPMENT_LOG_ACTION, TABLES } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
 import { logError } from '../../utils/classify-error';
 import { inBackground } from '../../utils/log-context';
+import { CACHE_NS } from '../../constants/cache';
+import { forgetCache } from '../cache/cache.service';
 
 /*
  * Live updates of the PO Overview (2026-10-14, self-healing design):
@@ -79,6 +81,8 @@ export const flushChanges = (): Promise<void> => {
       for (let more = true; more; ) {
         const changes = await changesSince(lastSent);
         more = changes.length > 0;
+        // a new PO (any process / server) may bring a new channel / location / brand to the cached dropdowns (2026-11-10)
+        if (changes.some((c) => c.action === SHIPMENT_LOG_ACTION.CREATED)) await forgetCache(CACHE_NS.PO_OVERVIEW_FILTERS);
         for (const c of changes) {
           if (Number(c.logId) > lastSent) lastSent = Number(c.logId);
           bus.emit('change', c);

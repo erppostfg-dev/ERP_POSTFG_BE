@@ -24,6 +24,9 @@ export interface LogContext {
   dbQueries: number;
   extCalls: number;
   extMs: number;
+  /** Answers taken from the shared cache / loaded because not cached (modules/cache, 2026-11-10). */
+  cacheHits?: number;
+  cacheMisses?: number;
   /** "<source>:<op>:<key>" -> times called, for API_REPEATED_CALLS. */
   repeats: Map<string, number>;
 }

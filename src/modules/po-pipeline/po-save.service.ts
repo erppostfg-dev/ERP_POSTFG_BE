@@ -19,6 +19,8 @@ import {
 } from '../../constants';
 import { DetailsPurchaseOrder, MasterPurchaseOrder, PoUpload, SaleOrderCodeCounter, ShipmentLog } from '../../entities';
 import { flushChanges } from '../po-overview/po-overview.live';
+import { CACHE_NS } from '../../constants/cache';
+import { forgetCache } from '../cache/cache.service';
 import { EmailMetadata } from '../email-intake/s3-layout';
 import { syncEmailToS3 } from '../email-intake/s3-mirror.service';
 import { s3UrlFor } from '../po-processing/common/processed-store';
@@ -252,7 +254,11 @@ export const applySave = async (db: DataSource, folder: string, plans: SavePlan[
     }
     results.push(r);
   }
-  if (results.some((x) => x.poUid)) void flushChanges();
+  if (results.some((x) => x.poUid)) {
+    // new POs: the PO Overview dropdowns (shared cache) are read again, also when no PO Overview screen is open (2026-11-10)
+    void forgetCache(CACHE_NS.PO_OVERVIEW_FILTERS);
+    void flushChanges();
+  }
   return results;
 };
 

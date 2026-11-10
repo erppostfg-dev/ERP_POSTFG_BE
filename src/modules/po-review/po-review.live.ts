@@ -5,6 +5,8 @@ import { LIVE, REVIEW_LIVE, TABLES } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
 import { logError } from '../../utils/classify-error';
 import { inBackground } from '../../utils/log-context';
+import { CACHE_NS } from '../../constants/cache';
+import { forgetCache } from '../cache/cache.service';
 import { forgetPoIssues } from '../po-issues/po-issues.cache';
 
 /*
@@ -56,6 +58,8 @@ const check = (): Promise<string> => {
 export const bumpReview = (): void => {
   // a review decision / re-check / upload changed what PO issues shows: its shared answer is dropped (2026-10-29)
   forgetPoIssues();
+  // the Approvals lists / badge (shared cache, 2026-11-10): dropped at once, on every server
+  void forgetCache(CACHE_NS.APPROVALS);
   if (bus.listenerCount('change')) void check();
 };
 

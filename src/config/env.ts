@@ -2,6 +2,7 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { CACHE } from '../constants/cache';
 import { ERROR_CODES } from '../constants/errors';
 import { GMAIL_PACE } from '../constants/gmail-intake';
 import { LOG_DEFAULTS, LOG_FORMAT, LOG_LEVEL_RANK, type LogFormat, type LogLevel } from '../constants/logging';
@@ -333,6 +334,21 @@ export const env = {
     memoryWarnMb: num('MEMORY_WARN_MB', LOG_DEFAULTS.MEMORY_WARN_MB),
     monitorSeconds: num('MONITOR_SECONDS', LOG_DEFAULTS.MONITOR_SECONDS),
     heartbeatMinutes: num('MONITOR_HEARTBEAT_MINUTES', LOG_DEFAULTS.HEARTBEAT_MINUTES),
+  },
+  // Shared cache (2026-11-10; constants/cache.ts, modules/cache). REDIS_URL empty = this server's memory (laptop, tests).
+  // AWS ElastiCache (Redis OSS / Valkey): REDIS_URL=rediss://<primary or configuration endpoint>:6379 (rediss = in-transit
+  // encryption ON), the AUTH token in REDIS_PASSWORD (SSM SecureString, never in the URL), REDIS_CLUSTER=true for
+  // ElastiCache Serverless or cluster mode enabled. Only the host part of the URL is ever logged.
+  cache: {
+    enabled: flag('CACHE_ENABLED', 'true'),
+    ttlSeconds: Math.max(1, num('CACHE_TTL_SECONDS', CACHE.TTL_SECONDS)),
+    keyPrefix: (process.env.CACHE_KEY_PREFIX ?? '').trim() || CACHE.KEY_PREFIX,
+    redisUrl: (process.env.REDIS_URL ?? '').trim(),
+    redisUsername: process.env.REDIS_USERNAME || undefined,
+    redisPassword: process.env.REDIS_PASSWORD || undefined,
+    // TLS: from the URL (rediss://) unless REDIS_TLS says otherwise
+    redisTls: process.env.REDIS_TLS ? flag('REDIS_TLS') : (process.env.REDIS_URL ?? '').trim().startsWith('rediss://'),
+    redisCluster: flag('REDIS_CLUSTER'),
   },
   storage: {
     emailDir: process.env.EMAIL_STORAGE_DIR ?? 'storage/emails',

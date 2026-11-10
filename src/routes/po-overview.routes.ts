@@ -22,6 +22,8 @@ import { editOptions, FieldChanges, saveShipment, shipmentHistory } from '../mod
 import { changesSince, lastLogId, onShipmentChange, ShipmentChange, startLive } from '../modules/po-overview/po-overview.live';
 import { getColumns, getFilterOptions, getShipment, hiddenFields, listLines, listShipments } from '../modules/po-overview/po-overview.service';
 import { appError } from '../utils/AppError';
+import { cached } from '../modules/cache/cache.service';
+import { CACHE_NS } from '../constants/cache';
 import { LOG_SOURCE } from '../constants/logging';
 import { logError } from '../utils/classify-error';
 
@@ -171,7 +173,8 @@ router.get(PO_OVERVIEW_ROUTES.LINES, ...viewer, async (req, res, next) => {
 
 router.get(PO_OVERVIEW_ROUTES.FILTER_OPTIONS, ...viewer, async (_req, res, next) => {
   try {
-    res.json({ data: await getFilterOptions() });
+    // same for everyone: shared cache, dropped by every PO change (flushChanges) and master change (2026-11-10)
+    res.json({ data: await cached(CACHE_NS.PO_OVERVIEW_FILTERS, 'all', getFilterOptions) });
   } catch (err) {
     next(err);
   }

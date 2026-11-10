@@ -16,6 +16,7 @@ import { recheckInReview } from '../po-review/recheck.service';
 import { addedWith, logMasterChanges } from './master-log';
 import { NewChannelSku, requestChannelSkuAdd } from './margin-requests';
 import { forgetPoIssues } from '../po-issues/po-issues.cache';
+import { forgetMasters } from './masters.cache';
 
 /*
  * The Add forms of the Masters pages (user, 2026-10-27): PEP SKU, channel SKU, channel, channel location.
@@ -118,6 +119,7 @@ const logCreated = (m: EntityManager, by: Actor, type: MasterLogType, recordId: 
 export const recheckChannel = (channel: string) => {
   // after the commit: a new channel SKU / location may make "still a problem?" fixed at once (2026-10-29)
   forgetPoIssues();
+  void forgetMasters(); // the cached Masters lists (2026-11-10)
   void runJob('recheck', () => recheckInReview({ channels: [channel], trigger: REVIEW_RECHECK.TRIGGER.MASTER_ADD }), { channel }).catch(() => undefined);
 };
 

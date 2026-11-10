@@ -79,6 +79,7 @@
     "google-auth-library": "^11.2.0",
     "googleapis": "^182.0.0",
     "helmet": "^8.0.0",
+    "ioredis": "^5.11.1",
     "jose": "^6.2.12",
     "multer": "^2.4.0",
     "mysql2": "^3.11.5",

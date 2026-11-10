@@ -6,6 +6,7 @@ import { usesSqs } from './modules/po-jobs/po-jobs.queue';
 import { startPoWorker } from './modules/po-jobs/po-jobs.worker';
 import { logError } from './utils/classify-error';
 import { log, logEvent } from './utils/logger';
+import { startCache, stopCache } from './modules/cache/cache.service';
 import { logCrashes, startProcessMonitor } from './utils/process-monitor';
 
 /*
@@ -31,12 +32,15 @@ const start = async (): Promise<void> => {
     concurrency: env.queue.concurrency, pauseMs: env.queue.pauseMs,
   });
   const monitor = startProcessMonitor();
+  // shared cache: AWS ElastiCache when REDIS_URL is set, else server memory (modules/cache, 2026-11-10)
+  startCache();
   const worker = startPoWorker();
 
   const shutdown = async (signal: string): Promise<void> => {
     logEvent('PROCESS_STOP', `worker: ${signal} received, finishing the current job`, { uptimeMin: Math.round(process.uptime() / 60) });
     monitor.stop();
     await worker.stop();
+    await stopCache().catch(() => undefined);
     if (AppDataSource.isInitialized) await AppDataSource.destroy();
     process.exit(0);
   };
