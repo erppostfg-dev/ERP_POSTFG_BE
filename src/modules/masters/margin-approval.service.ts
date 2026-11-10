@@ -17,6 +17,7 @@ import { afterEdit, editRowIn } from './master-edit.service';
  *   GET  /approvals/margin-changes?status=open|applied|rejected   newest first, with who / when per layer and canApprove
  *   POST /approvals/margin-changes/:id/approve { remark? }
  *        pending_l1 + a layer 1 person (Operations Manager / admin / developer)          -> pending_l2
+ *        kind add (a new channel SKU, 2026-11-10): ONE approval by a layer 1 person -> applied (row added)
  *        pending_l2 + a layer 2 person (admin / developer), not the layer 1 approver       -> applied: the channel SKU
  *        row changed (Masters Edit with direct: true: conflict check, History rows) or added (insertChannelSku), in the
  *        same transaction; then that channel's POs in review are re-checked.
@@ -52,6 +53,8 @@ export interface MarginRequestView {
   l1: { by: MarginPerson | null; at: string; remark: string | null } | null;
   l2: { by: MarginPerson | null; at: string; remark: string | null } | null;
   rejected: { by: MarginPerson | null; at: string; reason: string | null } | null;
+  /** 1 = a new channel SKU (the first approval adds it), 2 = a change to an existing row (layer 1 then layer 2). */
+  approvalsNeeded: 1 | 2;
   /** The person asking may approve / reject it now (right layer, right role, not their own, not layer 1 again). */
   canDecide: boolean;
   /** Why not, when they may not (for the screen). */
@@ -68,6 +71,8 @@ const hasRole = (a: MarginActor, roles: readonly string[]) => a.roles.some((r) =
 const whyNot = (r: MarginChangeRequest, a: MarginActor): string | null => {
   if (!(MARGIN_REQUEST_OPEN as readonly string[]).includes(r.status)) return `it is ${r.status}`;
   if (r.requestedBy === a.id) return 'you asked for this change';
+  // a new channel SKU: one approval by a layer 1 person (also one asked before 2026-11-10, now waiting at layer 2)
+  if (r.kind === MARGIN_REQUEST_KIND.ADD) return hasRole(a, MARGIN_APPROVAL.L1_ROLES) ? null : 'layer 1 is for Operations Manager';
   if (r.status === MARGIN_REQUEST_STATUS.PENDING_L1) return hasRole(a, MARGIN_APPROVAL.L1_ROLES) ? null : 'layer 1 is for Operations Manager';
   if (!hasRole(a, MARGIN_APPROVAL.L2_ROLES)) return 'layer 2 is for Admin';
   return r.l1By === a.id ? 'you approved layer 1: layer 2 must be someone else' : null;
@@ -85,7 +90,7 @@ const view = (r: MarginChangeRequest, people: Map<number, MarginPerson>, a: Marg
   const why = whyNot(r, a);
   return {
     id: String(r.id), kind: r.kind, source: r.source, status: r.status, channelSkuId: r.channelSkuId === null ? null : String(r.channelSkuId),
-    channel: r.channelName, channelCode: r.channelCode, pepCode: r.pepCode,
+    channel: r.channelName, channelCode: r.channelCode, pepCode: r.pepCode, approvalsNeeded: MARGIN_APPROVAL.APPROVALS_NEEDED[r.kind],
     oldMarginPercent: pct(r.oldMargin), newMarginPercent: pct(r.newMargin), oldRate: numOrNull(r.oldRate), newRate: numOrNull(r.newRate),
     row: r.kind === MARGIN_REQUEST_KIND.ADD ? r.payload : null, remark: r.remark,
     requestedBy: person(r.requestedBy), requestedAt: r.requestedAt.toISOString(),
@@ -132,7 +137,7 @@ const lockForDecision = async (m: import('typeorm').EntityManager, id: string, a
   if (why) {
     const roleProblem = why.startsWith('layer');
     if (roleProblem) {
-      const layer2 = r.status === MARGIN_REQUEST_STATUS.PENDING_L2;
+      const layer2 = r.status === MARGIN_REQUEST_STATUS.PENDING_L2 && r.kind !== MARGIN_REQUEST_KIND.ADD;
       throw appError(ERROR_CODES.MARGIN_APPROVER_ROLE, layer2 ? 'layer 2' : 'layer 1', (layer2 ? MARGIN_APPROVAL.L2_ROLES : MARGIN_APPROVAL.L1_ROLES).join(' / '));
     }
     throw appError(ERROR_CODES.MARGIN_APPROVER_SAME_PERSON, why);
@@ -149,15 +154,17 @@ export const approveMarginRequest = async (rawId: string, body: Record<string, u
   await AppDataSource.transaction(async (m) => {
     const r = await lockForDecision(m, id, a);
     const repo = m.getRepository(MarginChangeRequest);
-    if (r.status === MARGIN_REQUEST_STATUS.PENDING_L1) {
+    const single = r.kind === MARGIN_REQUEST_KIND.ADD; // a new channel SKU: this one approval adds it
+    if (!single && r.status === MARGIN_REQUEST_STATUS.PENDING_L1) {
       await repo.update({ id: r.id }, { status: MARGIN_REQUEST_STATUS.PENDING_L2, l1By: a.id, l1At: now, l1Remark: remark });
       log.info(LOG_SOURCE.APP, `[margins] ${a.email} approved layer 1 of margin request #${id} (${r.channelName} ${r.channelCode})`);
       return;
     }
-    // layer 2: apply. The History says who asked and who approved both layers.
+    // apply (layer 2 of a change, or the one approval of a new channel SKU). The History says who asked and who approved.
     const people = await peopleOf([r.requestedBy, r.l1By]);
     const nameOf = (uid: number | null) => (uid === null ? '-' : people.get(uid)?.email ?? `user ${uid}`);
-    const why = `Margin change #${id}: asked by ${nameOf(r.requestedBy)}, layer 1 ${nameOf(r.l1By)}, layer 2 ${a.email}${r.remark ? `. ${r.remark}` : ''}`.slice(0, 500);
+    const approvedBy = single ? `approved by ${a.email}` : `layer 1 ${nameOf(r.l1By)}, layer 2 ${a.email}`;
+    const why = `${single ? 'New channel SKU' : 'Margin change'} #${id}: asked by ${nameOf(r.requestedBy)}, ${approvedBy}${r.remark ? `. ${r.remark}` : ''}`.slice(0, 500);
     let channelSkuId = r.channelSkuId;
     try {
       if (r.kind === MARGIN_REQUEST_KIND.EDIT) {
@@ -180,8 +187,12 @@ export const approveMarginRequest = async (rawId: string, body: Record<string, u
       }
       throw err;
     }
-    await repo.update({ id: r.id }, { status: MARGIN_REQUEST_STATUS.APPLIED, l2By: a.id, l2At: now, l2Remark: remark, channelSkuId });
-    log.info(LOG_SOURCE.APP, `[margins] ${a.email} approved layer 2 of margin request #${id}: applied to ${r.channelName} ${r.channelCode}`);
+    // the one approval of a new SKU is recorded as layer 1 (an old one already past layer 1 records it as layer 2)
+    const decision = single && r.status === MARGIN_REQUEST_STATUS.PENDING_L1
+      ? { l1By: a.id, l1At: now, l1Remark: remark }
+      : { l2By: a.id, l2At: now, l2Remark: remark };
+    await repo.update({ id: r.id }, { status: MARGIN_REQUEST_STATUS.APPLIED, ...decision, channelSkuId });
+    log.info(LOG_SOURCE.APP, `[margins] ${a.email} approved ${single ? 'new channel SKU' : 'layer 2 of margin'} request #${id}: applied to ${r.channelName} ${r.channelCode}`);
   });
   (recheck as (() => void) | null)?.();
   return getOne(id, a);

@@ -186,7 +186,7 @@ export const channelCodeTaken = async (m: EntityManager, channelId: number, chan
   !!(await one(m, `SELECT id FROM ${TABLES.MASTER_CHANNEL_SKUS} WHERE channel_id = ? AND LOWER(TRIM(channel_code)) = LOWER(?) AND is_active = 1 LIMIT 1`, [channelId, channelCode]));
 
 /**
- * Adds the row (when the margin request's layer 2 approves, 2026-11-06): the insert + its activity and History rows, in
+ * Adds the row (when the margin request is approved: one approval since 2026-11-10): the insert + its activity and History rows, in
  * the caller's transaction. The caller re-checks the channel's POs in review once committed (recheckChannel).
  */
 export const insertChannelSku = async (m: EntityManager, by: Actor, v: NewChannelSku, remark: string | null): Promise<string> => {
@@ -205,7 +205,8 @@ export const insertChannelSku = async (m: EntityManager, by: Actor, v: NewChanne
 
 /**
  * POST /masters/channel-skus: the row is checked as before, then saved as a MARGIN REQUEST (2026-11-06, two-layer
- * approval of margins): it is added to master_channel_skus only when layer 1 and layer 2 have approved it.
+ * approval of margins): it is added to master_channel_skus when it is approved. Since 2026-11-10 (user) a new channel SKU
+ * needs ONE approval (Operations Manager / admin / developer); changes to existing rows keep two.
  */
 export const addChannelSku = async (body: unknown, by: Actor) => {
   const c = checker(body);

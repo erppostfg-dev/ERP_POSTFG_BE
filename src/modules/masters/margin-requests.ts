@@ -12,7 +12,7 @@ import { appError } from '../../utils/AppError';
  * time (409 MARGIN_REQUEST_PENDING). Deciding: margin-approval.service.ts.
  */
 
-/** A checked new channel SKU row (kept as a margin request's payload until both approvals). */
+/** A checked new channel SKU row (kept as a margin request's payload until its one approval, 2026-11-10). */
 export interface NewChannelSku {
   channelId: number; channelName: string; channelCode: string; pepCode: string; pepSkuId: number;
   productName: string | null; brand: string | null; mrp: number | null; margin: number; rateAfterMargin: number | null; eanCode: string | null;

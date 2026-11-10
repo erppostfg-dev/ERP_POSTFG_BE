@@ -8,6 +8,7 @@ import { covers } from '../helpers/routes';
  * Two-layer approval of margin changes (2026-11-06, user): a channel SKU's margin % / rate after margin (Masters Edit)
  * and a new channel SKU row (Masters Add) wait as a request; layer 1 = Operations Manager, layer 2 = Admin; the
  * requester never approves their own; layer 1 and layer 2 are different people. Applied only at layer 2.
+ * 2026-11-10 (user): a NEW channel SKU needs ONE approval (Operations Manager / admin / developer); edits keep two.
  */
 covers(['GET /approvals/margin-changes', 'POST /approvals/margin-changes/:id/approve', 'POST /approvals/margin-changes/:id/reject']);
 
@@ -97,16 +98,36 @@ describe('a margin edit', () => {
 });
 
 describe('a new channel SKU row', () => {
-  it('is not added until both approvals; the same code cannot be asked twice', async () => {
-    const body = { channelId: m.channelId, channelCode: 'BB-NEW-9', pepCode: m.pepCode, productName: 'x', brand: 'mCaffeine', mrp: 499, marginPercent: 30, rateAfterMargin: 349.3, eanCode: '8906000000017' };
-    const asked = (await api().post(`${M}/channel-skus`).set('Cookie', requester.cookie).send(body).expect(201)).body.data;
+  const body = () => ({ channelId: m.channelId, channelCode: 'BB-NEW-9', pepCode: m.pepCode, productName: 'x', brand: 'mCaffeine', mrp: 499, marginPercent: 30, rateAfterMargin: 349.3, eanCode: '8906000000017' });
+  const addSku = (who = requester) => api().post(`${M}/channel-skus`).set('Cookie', who.cookie).send(body());
+
+  it('needs ONE approval (Operations Manager): added at once with History; the same code cannot be asked twice', async () => {
+    const asked = (await addSku().expect(201)).body.data;
     expect(await count('master_channel_skus', 'channel_code = ?', ['BB-NEW-9'])).toBe(0);
-    expect((await api().post(`${M}/channel-skus`).set('Cookie', requester.cookie).send(body).expect(409)).body.error.code).toBe('MARGIN_REQUEST_PENDING');
-    expect((await list(manager)).items[0]).toMatchObject({ kind: 'add', channelCode: 'BB-NEW-9', newMarginPercent: 30, newRate: 349.3, row: expect.objectContaining({ productName: 'x' }) });
-    await approve(asked.requestId, manager).expect(200);
-    const done = (await approve(asked.requestId, admin2).expect(200)).body.data;
+    expect((await addSku().expect(409)).body.error.code).toBe('MARGIN_REQUEST_PENDING');
+    expect((await list(manager)).items[0]).toMatchObject({ kind: 'add', approvalsNeeded: 1, channelCode: 'BB-NEW-9', newMarginPercent: 30, newRate: 349.3, canDecide: true, row: expect.objectContaining({ productName: 'x' }) });
+    const done = (await approve(asked.requestId, manager, 'ok').expect(200)).body.data;
+    expect(done).toMatchObject({ status: 'applied', approvalsNeeded: 1, l1: { remark: 'ok', by: expect.objectContaining({ id: manager.userId }) }, l2: null, channelSkuId: expect.any(String) });
     expect(await count('master_channel_skus', 'channel_code = ? AND is_active = 1', ['BB-NEW-9'])).toBe(1);
-    expect(done.channelSkuId).toEqual(expect.any(String));
+    const logs = await rows<{ remark: string }>('SELECT remark FROM master_change_logs WHERE remark LIKE ?', [`New channel SKU #${asked.requestId}%`]);
+    expect(logs.length).toBeGreaterThan(0);
+    expect(logs[0].remark).toContain(`asked by ${requester.email}, approved by ${manager.email}`);
+    // an edit still needs both layers
+    const edit = (await editSku({ marginPercent: 25 }).expect(200)).body.data.marginRequestId as string;
+    expect((await approve(edit, manager).expect(200)).body.data).toMatchObject({ status: 'pending_l2', approvalsNeeded: 2 });
+  });
+
+  it('not by the requester, not by a role outside layer 1; an add asked before the rule (waiting at layer 2) is added by one more approval', async () => {
+    const asked = (await addSku(admin2).expect(201)).body.data;
+    expect((await approve(asked.requestId, admin2).expect(403)).body.error.message).toContain('you asked for this change');
+    const viewer = await loginAs('viewer');
+    expect([403, 401]).toContain((await approve(asked.requestId, viewer)).status);
+    expect(await count('master_channel_skus', 'channel_code = ?', ['BB-NEW-9'])).toBe(0);
+    // as left by the old two-layer rule: layer 1 done, waiting at layer 2
+    await rows('UPDATE margin_change_requests SET status = ?, l1_by = ?, l1_at = NOW() WHERE id = ?', ['pending_l2', requester.userId, asked.requestId]);
+    const done = (await approve(asked.requestId, requester).expect(200)).body.data; // the layer 1 person may finish it
+    expect(done).toMatchObject({ status: 'applied', l2: { by: expect.objectContaining({ id: requester.userId }) } });
+    expect(await count('master_channel_skus', 'channel_code = ? AND is_active = 1', ['BB-NEW-9'])).toBe(1);
   });
 });
 

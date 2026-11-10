@@ -7,7 +7,8 @@ import { User } from './auth.entities';
 
 /**
  * margin_change_requests (2026-11-06, constants/margin-approval.ts): a channel SKU's margin % / rate after margin
- * change, or a new channel SKU row, waiting for its two approvals (layer 1 Operations Manager, layer 2 Admin).
+ * change, or a new channel SKU row, waiting for its two approvals (layer 1 Operations Manager, layer 2 Admin; a new row
+ * needs only layer 1 since 2026-11-10).
  * master_channel_skus is changed only when layer 2 approves (status applied, in the same transaction, with its
  * master_change_logs rows). Nothing is deleted: a rejected request stays with its reason.
  */
