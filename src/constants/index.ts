@@ -34,6 +34,7 @@ export * from './po-uniware-sync';
 export * from './uniware-create';
 export * from './po-verify';
 export * from './price-differences';
+export * from './notices';
 export * from './sale-order';
 export * from './statuses';
 export * from './users';

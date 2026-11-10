@@ -90,6 +90,9 @@ export const TABLES = {
   MARGIN_CHANGE_REQUESTS: 'margin_change_requests',
   // Create in Uniware (2026-11-09, constants/uniware-create.ts): one row per request to create a PO's sale order.
   UNIWARE_CREATES: 'uniware_creates',
+  // Notices (2026-11-10, constants/notices.ts): one-way notes in the bell, kept 2 days; seen = newest notice id per person.
+  NOTICES: 'notices',
+  NOTICE_SEEN: 'notice_seen',
   // Gmail intake (2026-10-29, constants/gmail-intake.ts): each labelled email's channel once read; catch-ups as rows.
   GMAIL_MESSAGES: 'gmail_messages',
   INTAKE_CATCHUPS: 'intake_catchups',

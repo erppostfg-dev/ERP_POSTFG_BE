@@ -82,6 +82,9 @@
   "GET /masters/pep-skus",
   "GET /masters/transfer-routes",
   "GET /masters/warehouses/pep",
+  "GET /notices",
+  "GET /notices/people",
+  "GET /notices/settings",
   "GET /po-overview/changes",
   "GET /po-overview/columns",
   "GET /po-overview/edit-options",
@@ -176,6 +179,8 @@
   "POST /masters/channel-skus",
   "POST /masters/channels",
   "POST /masters/pep-skus",
+  "POST /notices",
+  "POST /notices/seen",
   "POST /po-intake/email",
   "POST /po-overview/uniware-sync",
   "POST /po-review/:uploadId/reject",
@@ -197,5 +202,6 @@
   "POST /po-verify/:uploadId/verify",
   "POST /po-verify/verify",
   "POST /price-differences/sent",
-  "PUT /admin/mail-lists/:key"
+  "PUT /admin/mail-lists/:key",
+  "PUT /notices/settings"
 ]

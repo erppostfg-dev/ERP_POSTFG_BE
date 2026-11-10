@@ -93,6 +93,11 @@ export const ERRORS = {
   UNIWARE_CREATE_NO_PHONE: define(409, () => 'Create in Uniware needs UNIWARE_ORDER_PHONE (the phone on the sale order address): ask a developer'),
   UNIWARE_CREATE_TOO_MANY: define(400, (max: number) => `Pick at most ${max} POs to create in Uniware at once`),
   UNIWARE_SYNC_TOO_SOON: define(409, (ago: number, by: string, left: number) => `Sync from Uniware was run ${ago} min ago by ${by}: available again in ${left} min (the server also syncs every 30 min by itself)`),
+  // --- Notices (2026-11-10) ---
+  NOTICES_OFF: define(409, () => 'Notices are switched off (Users & Roles -> Settings)'),
+  NOTICE_EVERYONE_NOT_ALLOWED: define(403, () => 'Only an admin or a developer can send a notice to everyone'),
+  NOTICE_DAILY_LIMIT: define(429, (max: number) => `You have sent ${max} notices in the last 24 hours: try again later`),
+  NOTICE_REPLY_NOT_ALLOWED: define(400, () => 'You can reply only to a notice sent to you alone (not to one sent to everyone or by you)'),
   // --- Line items download (2026-10-26) ---
   LINE_ITEMS_TOO_MANY: define(400, (max: number) => `Pick at most ${max} POs for one line items download`),
   LINE_ITEMS_NOT_PROCESSED: define(409, (ids: string) => `Only processed POs have saved line items: upload(s) ${ids} are not processed`),
