@@ -60,6 +60,8 @@ export const bumpReview = (): void => {
   forgetPoIssues();
   // the Approvals lists / badge (shared cache, 2026-11-10): dropped at once, on every server
   void forgetCache(CACHE_NS.APPROVALS);
+  // the PO Review lists too (their key also holds the version: changes by other processes make new keys anyway)
+  void forgetCache(CACHE_NS.PO_REVIEW_LISTS);
   if (bus.listenerCount('change')) void check();
 };
 

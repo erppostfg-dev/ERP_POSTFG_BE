@@ -49,12 +49,18 @@ export const CACHE_NS = {
   APPROVALS: 'approvals',
   /** The Feedback bell per person (GET /feedback/notifications): dropped when someone is notified / reads. */
   FEEDBACK_BELL: 'feedback-bell',
-  /** Masters lists + Add form choices (GET /masters/...): dropped on any master add / edit / switch / approval. */
+  /** Masters lists + Add form choices (GET /masters/...) + the master data behind the PO panels: dropped on any master
+   *  add / edit / switch / approval. */
   MASTERS: 'masters',
   /** PO Overview dropdowns (GET /po-overview/filter-options): dropped on a new / changed PO and a master change. */
   PO_OVERVIEW_FILTERS: 'po-overview-filters',
   /** PO issues per channel (GET /po-review/issues): dropped on review / master changes (was in memory since 2026-10-29). */
   PO_ISSUES: 'po-issues',
+  /** PO Review lists, one page each (GET /po-review): the key holds the review version, so any PO change (any process)
+   *  makes a new key; bumpReview also drops them (part 2, 2026-11-10). */
+  PO_REVIEW_LISTS: 'po-review-lists',
+  /** processed.json of a PO for the panels (review, approval, verify): dropped when that S3 file is written. */
+  PO_FILES: 'po-files',
 } as const;
 export type CacheNs = (typeof CACHE_NS)[keyof typeof CACHE_NS];
 

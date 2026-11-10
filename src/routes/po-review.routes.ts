@@ -24,6 +24,8 @@ import {
 } from '../constants';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
 import { hasCapability } from '../modules/auth/access.service';
+import { cached } from '../modules/cache/cache.service';
+import { CACHE_NS } from '../constants/cache';
 import { getPoFile, getPoReview, listPoReview, PoReviewListQuery } from '../modules/po-review/po-review.service';
 import { reviewEvents, reviewVersion } from '../modules/po-review/po-review.live';
 import { recheckInReview } from '../modules/po-review/recheck.service';
@@ -124,7 +126,11 @@ const parseListQuery = (req: Request): PoReviewListQuery => {
 router.get('/', requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.VIEWER), async (req, res, next) => {
   try {
     const query = parseListQuery(req);
-    const { items, total } = await listPoReview(query);
+    // the same page for every viewer (each live change made every open screen reload it): shared cache (part 2,
+    // 2026-11-10). The key holds the review version (1 indexed read), so a change by ANY process / server = a new key;
+    // our own actions also drop them at once (bumpReview).
+    const version = await reviewVersion();
+    const { items, total } = await cached(CACHE_NS.PO_REVIEW_LISTS, `${version}:${JSON.stringify(query)}`, () => listPoReview(query));
     res.json({ data: items, meta: { page: query.page, pageSize: query.pageSize, total } });
   } catch (err) {
     next(err);

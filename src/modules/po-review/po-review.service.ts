@@ -18,9 +18,9 @@ import {
 } from '../../constants';
 import { DetailsChannel, DetailsPurchaseOrder, PoIssue, PoReopen, PoReviewSubmission, PoUpload, User } from '../../entities';
 import { appError } from '../../utils/AppError';
-import { openS3File, readS3Json, s3DownloadLink } from '../email-intake/s3-mirror.service';
+import { openS3File, readS3JsonCached, s3DownloadLink } from '../email-intake/s3-mirror.service';
 import { Num, ProcessedPo } from '../po-processing/common/processed-po';
-import { MasterDataReader, matchKey } from '../po-validation/master-data';
+import { matchKey, panelMasterFor } from '../po-validation/master-data';
 import { validatePo } from '../po-validation/validate-po';
 import { verifyStatesOf, type VerifyStateItem } from '../po-verify/po-verify.service';
 
@@ -377,10 +377,11 @@ export const getPoReview = async (uploadId: string): Promise<PoReviewDetail> => 
   if (!upload) throw appError(ERROR_CODES.UPLOAD_NOT_FOUND, uploadId);
 
   const processedUrl = upload.ocrResult?.processed_json;
-  const po = typeof processedUrl === 'string' ? await readS3Json<ProcessedPo>(processedUrl) : undefined;
+  // a panel (what a person looks at): processed.json + the channel's master data from the shared cache (2026-11-10)
+  const po = typeof processedUrl === 'string' ? await readS3JsonCached<ProcessedPo>(processedUrl) : undefined;
   if (!po) throw appError(ERROR_CODES.PROCESSED_JSON_MISSING, uploadId);
 
-  const master = await new MasterDataReader(AppDataSource).forChannel(po.channel_name as ChannelName);
+  const master = await panelMasterFor(AppDataSource, po.channel_name as ChannelName);
   const validation = await validatePo(po, master);
 
   const issueRows = await AppDataSource.getRepository(PoIssue).find({ where: { uploadId }, order: { id: 'ASC' } });

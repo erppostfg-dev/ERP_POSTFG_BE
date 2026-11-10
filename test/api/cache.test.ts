@@ -1,5 +1,12 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PutObjectCommand } from '@aws-sdk/client-s3';
+import { AppDataSource } from '../../src/config/data-source';
 import { env } from '../../src/config/env';
+import { s3Client } from '../../src/config/s3';
+import { CHANNELS } from '../../src/constants';
+import { readS3JsonCached, writeS3Text } from '../../src/modules/email-intake/s3-mirror.service';
+import { forgetMasters } from '../../src/modules/masters/masters.cache';
+import { MasterDataReader, panelMasterFor } from '../../src/modules/po-validation/master-data';
 import { CACHE, CACHE_NS } from '../../src/constants/cache';
 import { MemoryStore } from '../../src/modules/cache/cache.store';
 import { cached, cacheMode, forgetCache, logCacheStatsForTests, resetCacheForTests, useRemoteStore, type RemoteStore } from '../../src/modules/cache/cache.service';
@@ -355,5 +362,55 @@ describe('APIs on the cache', () => {
     expect((await bell()).unread).toBe(1);
     await api().post('/api/v1/feedback/notifications/read').set('Cookie', dev.cookie).send({}).expect(200);
     expect((await bell()).unread).toBe(0);
+  });
+});
+
+describe('part 2: PO Review lists, PO panel master data, processed.json', () => {
+  let admin: TestLogin;
+  beforeEach(async () => {
+    await resetDb();
+    admin = await loginAs('admin');
+  });
+
+  it('PO Review lists: the same page is shared; a new PO (any process) shows at once; our actions drop them', async () => {
+    await seedMasters();
+    const list = async () => (await api().get('/api/v1/po-review?status=needs_review').set('Cookie', admin.cookie).expect(200)).body.data as { poNumber: string; openIssues: number }[];
+    const first = await insert('po_uploads', { source: 'manual', channel: 'BigBasket', po_number: 'PO-L1', status: 'needs_review', ocr_status: 'success' });
+    expect((await list()).map((i) => i.openIssues)).toEqual([0]);
+    // a change the version does not see (issue rows): still the cached page...
+    await insert('po_issues', { upload_id: first, issue_type: 'SKU_NOT_MAPPED', status: 'open' });
+    expect((await list()).map((i) => i.openIssues)).toEqual([0]);
+    // ...our own actions drop the lists at once
+    bumpReview();
+    expect((await list()).map((i) => i.openIssues)).toEqual([1]);
+    // a new upload written by another process (no bumpReview): new version = new key, seen at once
+    await insert('po_uploads', { source: 'manual', channel: 'BigBasket', po_number: 'PO-L2', status: 'needs_review', ocr_status: 'success' });
+    expect((await list()).map((i) => i.poNumber)).toEqual(['PO-L1', 'PO-L2']);
+  });
+
+  it('panel master data: cached and dropped by a master change; decisions (MasterDataReader) always read fresh', async () => {
+    const m = await seedMasters();
+    const codes = async () => [...((await panelMasterFor(AppDataSource, CHANNELS.BIGBASKET))?.skusByCode.keys() ?? [])];
+    expect(await codes()).toEqual([m.channelCode.toLowerCase()]);
+    await insert('master_channel_skus', {
+      pep_code: m.pepCode, pep_sku_id: m.pepSkuId, channel_id: m.channelId, channel_name: 'BigBasket', channel_code: 'BB-DIRECT-2', product_name: 'x',
+      brand_name: 'mCaffeine', mrp: 499, margin: 0.3, rate_after_margin: 349.3, is_active: 1,
+    });
+    expect(await codes()).toHaveLength(1); // the panel: cached
+    expect((await new MasterDataReader(AppDataSource).forChannel(CHANNELS.BIGBASKET))?.skusByCode.size).toBe(2); // a decision: fresh
+    await forgetMasters();
+    expect(await codes()).toHaveLength(2);
+  });
+
+  it('processed.json for the panels: cached; writing that file again drops it', async () => {
+    const url = `s3://${env.s3.bucket}/test/cache/processed.json`;
+    await writeS3Text(url, JSON.stringify({ v: 1 }));
+    expect(await readS3JsonCached(url)).toEqual({ v: 1 });
+    // changed behind our back (not through putBody): the panel keeps the cached copy for at most 60 s
+    await s3Client().send(new PutObjectCommand({ Bucket: env.s3.bucket, Key: 'test/cache/processed.json', Body: JSON.stringify({ v: 2 }) }));
+    expect(await readS3JsonCached(url)).toEqual({ v: 1 });
+    // written by our code (re-read, corrected.json ...): dropped at once
+    await writeS3Text(url, JSON.stringify({ v: 3 }));
+    expect(await readS3JsonCached(url)).toEqual({ v: 3 });
   });
 });

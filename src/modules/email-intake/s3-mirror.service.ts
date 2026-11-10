@@ -2,6 +2,8 @@ import crypto from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
 import { Readable } from 'stream';
+import { CACHE_NS } from '../../constants/cache';
+import { cached, forgetCache } from '../cache/cache.service';
 import { DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { env } from '../../config/env';
@@ -86,6 +88,14 @@ export const readS3Json = async <T>(s3Url: string): Promise<T | undefined> => {
   const text = await getText(keyOfS3Url(s3Url));
   return text === undefined ? undefined : (JSON.parse(text) as T);
 };
+
+/**
+ * readS3Json for the PO PANELS (review, approval, verify; part 2 of the cache, 2026-11-10): from the shared cache, kept
+ * CACHE_TTL_SECONDS and dropped the moment that S3 file is written again (putBody below: re-read, corrected.json ...).
+ * Anything that decides (pipeline, submit, approve, re-check) keeps readS3Json: always read from S3.
+ */
+export const readS3JsonCached = async <T>(s3Url: string): Promise<T | undefined> =>
+  cached(CACHE_NS.PO_FILES, s3Url, () => readS3Json<T>(s3Url));
 
 /** A text file from S3 by its s3:// URL, or undefined when it isn't there (Myntra STR CSVs, 2026-11-03). */
 export const readS3Text = async (s3Url: string): Promise<string | undefined> => getText(keyOfS3Url(s3Url));
@@ -193,6 +203,8 @@ const putBody = async (key: string, body: Buffer | string, fileName: string): Pr
       ContentType: CONTENT_TYPES[path.extname(fileName).toLowerCase()] ?? 'application/octet-stream',
     }),
   );
+  // a cached copy of this file (PO panels) is old now: dropped on every server
+  await forgetCache(CACHE_NS.PO_FILES, s3UrlOfKey(key));
 };
 
 const md5 = (body: Buffer): string => crypto.createHash('md5').update(body).digest('hex');
