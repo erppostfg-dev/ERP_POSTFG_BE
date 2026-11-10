@@ -10,6 +10,7 @@ import { MasterDataReader, panelMasterFor } from '../../src/modules/po-validatio
 import { CACHE, CACHE_NS } from '../../src/constants/cache';
 import { MemoryStore } from '../../src/modules/cache/cache.store';
 import { cached, cacheMode, forgetCache, logCacheStatsForTests, resetCacheForTests, useRemoteStore, type RemoteStore } from '../../src/modules/cache/cache.service';
+import { logContext, newContext, runInContext } from '../../src/utils/log-context';
 import { bumpReview } from '../../src/modules/po-review/po-review.live';
 import { api, loginAs, type TestLogin } from '../helpers/auth';
 import { closeDb, insert, resetDb } from '../helpers/db';
@@ -141,16 +142,18 @@ describe('cache layer', () => {
     const redis = new FakeRedis();
     useRemoteStore(redis);
     expect(cacheMode()).toBe('redis');
+    await cached(CACHE_NS.FEEDBACK_BELL, 'connect', loader(0)); // connected (drops what Redis kept from before)
+    await new Promise((r) => setTimeout(r, 10));
     const load = loader([1, 2]);
     await cached(CACHE_NS.APPROVALS, 'list', load);
-    expect(redis.keys[0]).toMatch(new RegExp(`^${env.cache.keyPrefix}approvals:\\d+:list$`));
+    expect(redis.keys.at(-1)).toMatch(new RegExp(`^${env.cache.keyPrefix}approvals:\\d+:list$`));
 
-    resetCacheForTests(); // "another server": its own memory is empty, Redis is shared
+    resetCacheForTests(true); // "another server" (already running): its own memory is empty, Redis is shared
     expect(await cached(CACHE_NS.APPROVALS, 'list', load)).toEqual([1, 2]);
     expect(load).toHaveBeenCalledTimes(1);
 
     await forgetCache(CACHE_NS.APPROVALS);
-    resetCacheForTests();
+    resetCacheForTests(true);
     await cached(CACHE_NS.APPROVALS, 'list', load);
     expect(load).toHaveBeenCalledTimes(2);
   });
@@ -261,6 +264,23 @@ describe('cache logs: few lines, each says what to fix', () => {
     expect(down).toContain('security group');
   });
 
+  it('a server start drops what Redis kept from before (a deploy / migration / script may have changed the DB)', async () => {
+    const redis = new FakeRedis();
+    useRemoteStore(redis);
+    expect(await cached(CACHE_NS.MASTERS, 'list', loader('old'))).toBe('old');
+    await new Promise((r) => setTimeout(r, 10));
+    // restart: Redis still holds 'old'; the DB was changed directly meanwhile (migration / script)
+    resetCacheForTests();
+    useRemoteStore(redis);
+    const lines = await linesOf(async () => {
+      await cached(CACHE_NS.APPROVALS, 'x', loader(1)); // first command: connected
+      await new Promise((r) => setTimeout(r, 10));
+    });
+    expect(codes(lines)).toEqual(['CACHE_CONNECTED']);
+    expect(lines[0]).toContain('dropped once');
+    expect(await cached(CACHE_NS.MASTERS, 'list', loader('new'))).toBe('new');
+  });
+
   it('still down: CACHE_STILL_DOWN at most every 5 minutes, with the count', async () => {
     const redis = new FakeRedis();
     useRemoteStore(redis);
@@ -306,6 +326,19 @@ describe('cache logs: few lines, each says what to fix', () => {
     expect(codes(lines)).toEqual(['CACHE_STATS']);
     expect(lines[0]).toContain('2 of 3 answers from the cache (67%)');
     expect(lines[0]).toContain('approvals');
+  });
+
+  it('a request that waits for a load another request started is marked cacheShared (its dbQueries are on the other)', async () => {
+    const slow = () => new Promise<number>((r) => setTimeout(() => r(1), 20));
+    const call = () => runInContext(newContext({ requestId: 'r' }), async () => {
+      await cached(CACHE_NS.MASTERS, 'shared', slow);
+      return { ...logContext() };
+    });
+    const [first, second] = await Promise.all([call(), call()]);
+    expect([first.cacheMisses, first.cacheShared]).toEqual([1, undefined]);
+    expect([second.cacheMisses, second.cacheShared]).toEqual([1, 1]);
+    const later = await call();
+    expect([later.cacheHits, later.cacheShared]).toEqual([1, undefined]);
   });
 
   it('normal requests write no cache lines at all', async () => {

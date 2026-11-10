@@ -38,7 +38,9 @@ import { MemoryStore, RedisStore, redisHost, type KvStore } from './cache.store'
  *   CACHE_STATS       every CACHE_STATS_MINUTES (60) when used: hit %, per kind (hits, misses, load ms), Redis speed /
  *                     errors, calls served from memory while Redis was down
  *   CACHE_INFO debug  every load (only with LOG_LEVEL=debug)
- * Every API_REQUEST line carries cacheHits / cacheMisses when the request used the cache.
+ * Every API_REQUEST line carries cacheHits / cacheMisses when the request used the cache, and cacheShared when a miss
+ * waited for a load another request had started (e.g. the browser sent the same call twice): its dbQueries = 0 then,
+ * the queries are counted on the request that started the load.
  */
 
 /** A store that may be unavailable (Redis). */
@@ -114,7 +116,10 @@ const markUp = (): void => {
     health.everReady = true;
     const failedFirst = health.downSince ? { failedForSec: Math.round((now - health.downSince) / 1000), errors: health.downErrors } : {};
     health.downSince = 0;
-    logEvent('CACHE_CONNECTED', `[cache] Redis connected: ${where?.host ?? ''}`, { ...where, connectMs: now - health.startedAt, ...failedFirst });
+    logEvent('CACHE_CONNECTED', `[cache] Redis connected: ${where?.host ?? ''}; every cached answer dropped once (data may have changed while this server was not running)`, { ...where, connectMs: now - health.startedAt, ...failedFirst });
+    // Redis keeps answers across deploys / restarts: a migration, a script or another process may have changed the DB
+    // meanwhile without dropping them, and writes made before this connect cleared only memory (user OK 2026-11-10)
+    void forgetAllCaches();
     return;
   }
   if (!health.downSince) return;
@@ -211,7 +216,11 @@ export const cached = async <T>(ns: CacheNs, key: string, load: () => Promise<T>
 
   const id = `${ns}:${key}`;
   const running = inflight.get(id);
-  if (running) return running as Promise<T>;
+  if (running) {
+    const ctx = logContext();
+    if (ctx) ctx.cacheShared = (ctx.cacheShared ?? 0) + 1;
+    return running as Promise<T>;
+  }
   const job = (async () => {
     const started = Date.now();
     const value = await load();
@@ -264,7 +273,7 @@ export const forgetCache = async (ns: CacheNs, key?: string): Promise<void> => {
   }
 };
 
-/** Every kind dropped (Redis came back). */
+/** Every kind dropped (Redis connected at start, or came back after an outage). */
 const forgetAllCaches = async (): Promise<void> => {
   for (const ns of Object.values(CACHE_NS)) await forgetCache(ns);
 };
@@ -345,13 +354,14 @@ export const stopCache = async (): Promise<void> => {
   if (r) await r.close();
 };
 
-/** Tests: empty memory, counters and Redis state. */
-export const resetCacheForTests = (): void => {
+/** Tests: empty memory, counters and Redis state (`running`: keep the Redis state, as another server already running). */
+export const resetCacheForTests = (running = false): void => {
   memory.clear();
   inflight.clear();
   stats = newStats();
   repeats.clear();
   tooBigLogged.clear();
+  if (running) return;
   Object.assign(health, { everReady: false, startedAt: Date.now(), downSince: 0, downErrors: 0, lastDownLine: 0, lastError: '', stopping: false });
 };
 

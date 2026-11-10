@@ -27,6 +27,8 @@ export interface LogContext {
   /** Answers taken from the shared cache / loaded because not cached (modules/cache, 2026-11-10). */
   cacheHits?: number;
   cacheMisses?: number;
+  /** Misses that waited for a load another request had already started (its DB queries are counted on THAT request). */
+  cacheShared?: number;
   /** "<source>:<op>:<key>" -> times called, for API_REPEATED_CALLS. */
   repeats: Map<string, number>;
 }
