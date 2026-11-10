@@ -349,6 +349,8 @@ export const env = {
     // TLS: from the URL (rediss://) unless REDIS_TLS says otherwise
     redisTls: process.env.REDIS_TLS ? flag('REDIS_TLS') : (process.env.REDIS_URL ?? '').trim().startsWith('rediss://'),
     redisCluster: flag('REDIS_CLUSTER'),
+    // one CACHE_STATS summary line every this many minutes (0 = never)
+    statsMinutes: Math.max(0, num('CACHE_STATS_MINUTES', CACHE.STATS_EVERY_MINUTES)),
   },
   storage: {
     emailDir: process.env.EMAIL_STORAGE_DIR ?? 'storage/emails',

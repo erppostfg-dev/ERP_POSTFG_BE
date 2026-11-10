@@ -192,6 +192,14 @@ export const LOG_EVENTS = {
   PROCESS_MEMORY_HIGH: { level: 'warn', reason: 'Process memory (RSS) is above MEMORY_WARN_MB: a large file or list held in memory, or a leak if it keeps growing.' },
   PROCESS_UNHANDLED_REJECTION: { level: 'error', reason: 'A promise failed and nothing handled it: a missing catch. The process exits and pm2 restarts it.' },
   PROCESS_UNCAUGHT_EXCEPTION: { level: 'error', reason: 'An error was thrown that nothing caught. The process exits and pm2 restarts it.' },
+  // --- the shared cache (modules/cache, 2026-11-10): one line per change of state, never one per request ---
+  CACHE_START: { level: 'info', reason: 'The cache started: where answers are kept (redis / memory / off), host, TLS, key prefix, life in seconds.' },
+  CACHE_CONNECTED: { level: 'info', reason: 'Connected to Redis (ElastiCache) for the first time since the start.' },
+  CACHE_DOWN: { level: 'warn', reason: 'Redis stopped answering (or never connected): every answer comes from server memory / the DB until it is back. `fix` says what to check.' },
+  CACHE_STILL_DOWN: { level: 'warn', reason: 'Redis is still not answering (repeated every 5 minutes while down, with the number of errors).' },
+  CACHE_UP: { level: 'info', reason: 'Redis answers again after an outage; every cached answer was dropped once (writes made meanwhile could not reach it).' },
+  CACHE_STATS: { level: 'info', reason: 'Summary since the last one: answers from the cache vs loaded, per kind, Redis speed and errors, calls served from memory while Redis was down.' },
+  CACHE_TOO_BIG: { level: 'warn', reason: 'An answer is bigger than CACHE VALUE_MAX_KB, so it is not cached and is loaded from the DB every time: page or shrink it.' },
   // --- our app ---
   APP_INFO: { level: 'info', reason: 'A step of our own app.' },
   APP_WARN: { level: 'warn', reason: 'Something in our own app needs attention but the work went on.' },

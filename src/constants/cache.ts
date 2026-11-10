@@ -18,11 +18,28 @@ export const CACHE = {
   CONNECT_TIMEOUT_MS: 5_000,
   /** Reconnect waits grow to at most this. */
   RETRY_MAX_MS: 30_000,
-  /** Redis errors are logged at most once per this (the first one always). */
-  ERROR_LOG_EVERY_MS: 60_000,
-  /** A summary line (hits / misses per kind) every this many minutes, only when the cache was used. */
-  STATS_EVERY_MINUTES: 15,
+  /** Repeats are quiet: "still down" and a repeated command error at most once per this (the first one always). */
+  REPEAT_LOG_EVERY_MS: 300_000,
+  /** One CACHE_STATS summary every this many minutes when the cache was used (CACHE_STATS_MINUTES; 0 = never). */
+  STATS_EVERY_MINUTES: 60,
+  /** "Not cached: too big" for the same key at most once per this. */
+  TOO_BIG_LOG_EVERY_MS: 3_600_000,
 } as const;
+
+/**
+ * What to fix, from the words of a Redis / network error (first match wins). Written on CACHE_DOWN / CACHE_<FAILURE> lines
+ * as `fix`, so the line alone says what to change. `kind` = the failure kind (constants/logging FAILURES).
+ */
+export const CACHE_HINTS: readonly { test: RegExp; kind: 'UNREACHABLE' | 'BAD_CREDENTIALS' | 'TIMEOUT' | 'CONFIG' | 'ERROR'; fix: string }[] = [
+  { test: /ENOTFOUND|EAI_AGAIN|getaddrinfo/i, kind: 'CONFIG', fix: 'The host in REDIS_URL does not exist: copy the Primary endpoint (or Configuration endpoint) of the ElastiCache cluster.' },
+  { test: /NOAUTH|WRONGPASS|invalid username-password|AUTH failed|ERR AUTH/i, kind: 'BAD_CREDENTIALS', fix: 'REDIS_PASSWORD (ElastiCache AUTH token) is missing or wrong, or REDIS_USERNAME does not match the RBAC user. Fix it in SSM and redeploy.' },
+  { test: /wrong version number|EPROTO|SSL|TLS|certificate/i, kind: 'CONFIG', fix: 'TLS mismatch: in-transit encryption ON needs rediss:// (or REDIS_TLS=true); OFF needs redis://.' },
+  { test: /MOVED|CLUSTERDOWN|CROSSSLOT|cluster support disabled/i, kind: 'CONFIG', fix: 'This is a cluster (ElastiCache Serverless or cluster mode enabled): set REDIS_CLUSTER=true and use the Configuration endpoint.' },
+  { test: /READONLY/i, kind: 'CONFIG', fix: 'REDIS_URL points to a replica (Reader endpoint): use the Primary endpoint.' },
+  { test: /OOM|maxmemory/i, kind: 'CONFIG', fix: 'Redis memory is full and it does not drop old keys: set maxmemory-policy = allkeys-lru in the parameter group (or a bigger node).' },
+  { test: /Command timed out/i, kind: 'TIMEOUT', fix: 'Redis took over 500 ms: check the ElastiCache CPU / memory / network metrics (or the EC2 network). Answers come from memory meanwhile.' },
+  { test: /ECONNREFUSED|ETIMEDOUT|ECONNRESET|EHOSTUNREACH|connect timeout|Connection is closed|Stream isn't writeable/i, kind: 'UNREACHABLE', fix: 'Redis cannot be reached: the ElastiCache security group must allow TCP 6379 from the EC2 security group, both in the same VPC; check the host / port in REDIS_URL; with encryption ON the URL must be rediss:// (a reset right after connecting = TLS needed).' },
+];
 
 /** What is cached (the first part of every key). forgetCache(ns) drops every answer of one kind. */
 export const CACHE_NS = {

@@ -1,3 +1,4 @@
+import { isIP } from 'net';
 import { Cluster, Redis, type RedisOptions } from 'ioredis';
 import { CACHE } from '../../constants/cache';
 
@@ -99,7 +100,8 @@ export class RedisStore implements KvStore {
       username: s.username ?? (u.username ? decodeURIComponent(u.username) : undefined),
       password: s.password ?? (u.password ? decodeURIComponent(u.password) : undefined),
       // ElastiCache in-transit encryption: TLS with the server name of the endpoint
-      tls: s.tls ? { servername: u.hostname } : undefined,
+      // (no server name for an IP address: TLS does not allow it)
+      tls: s.tls ? (isIP(u.hostname) ? {} : { servername: u.hostname }) : undefined,
       connectTimeout: CACHE.CONNECT_TIMEOUT_MS,
       commandTimeout: CACHE.COMMAND_TIMEOUT_MS,
       // no queue while disconnected: a command fails at once and the caller uses memory / the DB

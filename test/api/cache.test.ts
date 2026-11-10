@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import { env } from '../../src/config/env';
 import { CACHE, CACHE_NS } from '../../src/constants/cache';
 import { MemoryStore } from '../../src/modules/cache/cache.store';
-import { cached, cacheMode, forgetCache, resetCacheForTests, useRemoteStore, type RemoteStore } from '../../src/modules/cache/cache.service';
+import { cached, cacheMode, forgetCache, logCacheStatsForTests, resetCacheForTests, useRemoteStore, type RemoteStore } from '../../src/modules/cache/cache.service';
 import { bumpReview } from '../../src/modules/po-review/po-review.live';
 import { api, loginAs, type TestLogin } from '../helpers/auth';
 import { closeDb, insert, resetDb } from '../helpers/db';
@@ -20,7 +20,12 @@ class FakeRedis extends MemoryStore implements RemoteStore {
   ready = true;
   failing = false;
   keys: string[] = [];
-  private check() { if (this.failing) throw Object.assign(new Error('connect ECONNREFUSED 10.0.0.5:6379'), { code: 'ECONNREFUSED' }); }
+  /** What the next command throws (null = it works). */
+  error: Error | null = null;
+  private check() {
+    if (this.failing) throw Object.assign(new Error('connect ECONNREFUSED 10.0.0.5:6379'), { code: 'ECONNREFUSED' });
+    if (this.error) throw this.error;
+  }
   async get(k: string) { this.check(); return super.get(k); }
   async set(k: string, v: string, ttl: number) { this.check(); this.keys.push(k); return super.set(k, v, ttl); }
   async incr(k: string) { this.check(); return super.incr(k); }
@@ -160,6 +165,95 @@ describe('cache layer', () => {
     expect(cacheMode()).toBe('redis_down');
     expect(await cached(CACHE_NS.MASTERS, 'r', load)).toBe('fine');
     expect(redis.keys).toHaveLength(0); // never written while down
+  });
+});
+
+/** Log lines written while `fn` runs (LOG_LEVEL info for the test), as text. */
+const linesOf = async (fn: () => Promise<void>): Promise<string[]> => {
+  const out: string[] = [];
+  const level = env.log.level;
+  env.log.level = 'info';
+  const grab = (chunk: unknown) => { out.push(String(chunk)); return true; };
+  const o = vi.spyOn(process.stdout, 'write').mockImplementation(grab);
+  const e = vi.spyOn(process.stderr, 'write').mockImplementation(grab);
+  try { await fn(); } finally { o.mockRestore(); e.mockRestore(); env.log.level = level; }
+  return out.filter((l) => / cache /.test(l) || /CACHE_/.test(l));
+};
+const codes = (lines: string[]) => lines.map((l) => / (CACHE_[A-Z_]+) /.exec(l)?.[1]).filter(Boolean);
+
+describe('cache logs: few lines, each says what to fix', () => {
+  beforeEach(() => resetCacheForTests());
+
+  it('Redis down: ONE CACHE_DOWN with the fix, no line per request; back = ONE CACHE_UP', async () => {
+    const redis = new FakeRedis();
+    useRemoteStore(redis);
+    const lines = await linesOf(async () => {
+      await cached(CACHE_NS.MASTERS, 'a', loader(1)); // first command works: connected
+      redis.failing = true;
+      for (let i = 0; i < 20; i++) await cached(CACHE_NS.MASTERS, `k${i}`, loader(i));
+      redis.failing = false;
+      await cached(CACHE_NS.MASTERS, 'b', loader(2));
+      await new Promise((r) => setTimeout(r, 10)); // CACHE_UP is written after every kind is dropped
+    });
+    expect(codes(lines)).toEqual(['CACHE_CONNECTED', 'CACHE_DOWN', 'CACHE_UP']);
+    const down = lines.find((l) => l.includes('CACHE_DOWN'))!;
+    expect(down).toContain('ECONNREFUSED');
+    expect(down).toContain('security group');
+  });
+
+  it('still down: CACHE_STILL_DOWN at most every 5 minutes, with the count', async () => {
+    const redis = new FakeRedis();
+    useRemoteStore(redis);
+    redis.failing = true;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const lines = await linesOf(async () => {
+      await cached(CACHE_NS.MASTERS, 'a', loader(1));
+      await cached(CACHE_NS.MASTERS, 'b', loader(1));
+      vi.setSystemTime(Date.now() + CACHE.REPEAT_LOG_EVERY_MS + 1);
+      await cached(CACHE_NS.MASTERS, 'c', loader(1));
+      await cached(CACHE_NS.MASTERS, 'd', loader(1));
+    });
+    expect(codes(lines)).toEqual(['CACHE_DOWN', 'CACHE_STILL_DOWN']);
+    expect(lines[1]).toMatch(/errors=\d+/);
+  });
+
+  it('a command error while connected names the fix (memory full, wrong password, cluster), once per 5 min', async () => {
+    const redis = new FakeRedis();
+    useRemoteStore(redis);
+    await cached(CACHE_NS.MASTERS, 'warm', loader(1));
+    const lines = await linesOf(async () => {
+      redis.error = new Error("OOM command not allowed when used memory > 'maxmemory'.");
+      await cached(CACHE_NS.MASTERS, 'x', loader(1));
+      await cached(CACHE_NS.MASTERS, 'y', loader(1));
+      redis.error = new Error('WRONGPASS invalid username-password pair or user is disabled.');
+      await cached(CACHE_NS.MASTERS, 'z', loader(1));
+      redis.error = new Error('MOVED 3999 10.0.0.9:6379');
+      await cached(CACHE_NS.MASTERS, 'w', loader(1));
+    });
+    expect(codes(lines)).toEqual(['CACHE_CONFIG', 'CACHE_BAD_CREDENTIALS', 'CACHE_CONFIG']);
+    expect(lines[0]).toContain('allkeys-lru');
+    expect(lines[1]).toContain('REDIS_PASSWORD');
+    expect(lines[2]).toContain('REDIS_CLUSTER=true');
+  });
+
+  it('CACHE_STATS: one summary with hit % and per kind; nothing when unused', async () => {
+    expect(codes(await linesOf(async () => logCacheStatsForTests()))).toEqual([]);
+    const load = loader(1);
+    await cached(CACHE_NS.APPROVALS, 'a', load);
+    await cached(CACHE_NS.APPROVALS, 'a', load);
+    await cached(CACHE_NS.APPROVALS, 'a', load);
+    const lines = await linesOf(async () => logCacheStatsForTests());
+    expect(codes(lines)).toEqual(['CACHE_STATS']);
+    expect(lines[0]).toContain('2 of 3 answers from the cache (67%)');
+    expect(lines[0]).toContain('approvals');
+  });
+
+  it('normal requests write no cache lines at all', async () => {
+    const lines = await linesOf(async () => {
+      for (let i = 0; i < 10; i++) await cached(CACHE_NS.MASTERS, 'same', loader(1));
+      await forgetCache(CACHE_NS.MASTERS);
+    });
+    expect(lines).toEqual([]);
   });
 });
 
