@@ -47,7 +47,7 @@ export interface RemoteStore extends KvStore {
   close(): Promise<void>;
 }
 
-const memory = new MemoryStore();
+const memory = new MemoryStore(env.cache.memoryMaxMb * 1024 * 1024);
 let remote: RemoteStore | null = null;
 let statsTimer: NodeJS.Timeout | undefined;
 const inflight = new Map<string, Promise<unknown>>();
@@ -241,8 +241,11 @@ export const cached = async <T>(ns: CacheNs, key: string, load: () => Promise<T>
 };
 
 const dropIn = async (s: KvStore, ns: string, key?: string): Promise<void> => {
-  if (key === undefined) await s.incr(verKey(ns));
-  else await s.del(fullKey(ns, await versionIn(s, ns), key));
+  if (key === undefined) {
+    await s.incr(verKey(ns));
+    // in memory the old answers are freed at once (Redis lets them expire by themselves)
+    if (s === memory) memory.dropPrefix(`${env.cache.keyPrefix}${ns}:`, verKey(ns));
+  } else await s.del(fullKey(ns, await versionIn(s, ns), key));
 };
 
 /**
@@ -278,7 +281,7 @@ const logStats = (): void => {
   }]));
   const took = Date.now() - s.since;
   logEvent('CACHE_STATS', `[cache] last ${took < 60_000 ? `${Math.round(took / 1000)} s` : `${minutes(took)} min`}: ${s.hits} of ${total} answers from the cache (${pct}%), ${cacheMode()}`, {
-    mode: cacheMode(), hits: s.hits, misses: s.misses, hitPct: pct, byKind, memoryKeys: memory.size,
+    mode: cacheMode(), hits: s.hits, misses: s.misses, hitPct: pct, byKind, memoryKeys: memory.size, memoryMb: Math.round((memory.bytes / 1048576) * 10) / 10,
     ...(remote ? { redis: { ops: s.redisOps, avgMs: s.redisOps ? Math.round(s.redisMs / s.redisOps) : 0, maxMs: s.redisMaxMs, errors: s.redisErrors } } : {}),
     ...(s.memoryWhileDown ? { servedFromMemoryWhileRedisDown: s.memoryWhileDown } : {}),
     ...(s.tooBig ? { notCachedTooBig: s.tooBig } : {}),

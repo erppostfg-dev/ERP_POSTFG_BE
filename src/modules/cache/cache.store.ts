@@ -19,20 +19,38 @@ export interface KvStore {
   del(key: string): Promise<void>;
 }
 
+/**
+ * This server's RAM (never the disk; empty after a restart). Bounded so it cannot grow (2026-11-10):
+ *   - at most `maxBytes` in all (CACHE_MEMORY_MAX_MB, default 64 MB) and MEMORY_MAX_KEYS answers: oldest dropped first;
+ *   - expired answers are swept at most once a minute (on the next use), not only when read again;
+ *   - dropPrefix() frees a whole kind at once when a write makes its answers old.
+ * Sizes count 2 bytes per character (how JavaScript keeps text).
+ */
 export class MemoryStore implements KvStore {
   private readonly data = new Map<string, { value: string; until: number }>();
+  private used = 0;
+  private lastSweep = Date.now();
 
-  constructor(private readonly maxKeys: number = CACHE.MEMORY_MAX_KEYS) {}
+  constructor(
+    private readonly maxBytes: number = CACHE.MEMORY_MAX_MB * 1024 * 1024,
+    private readonly maxKeys: number = CACHE.MEMORY_MAX_KEYS,
+  ) {}
 
   get size(): number {
     return this.data.size;
   }
 
+  /** RAM held by the answers, in bytes (about). */
+  get bytes(): number {
+    return this.used;
+  }
+
   async get(key: string): Promise<string | null> {
+    this.sweepSometimes();
     const hit = this.data.get(key);
     if (!hit) return null;
     if (hit.until <= Date.now()) {
-      this.data.delete(key);
+      this.remove(key);
       return null;
     }
     return hit.value;
@@ -53,22 +71,51 @@ export class MemoryStore implements KvStore {
   }
 
   async del(key: string): Promise<void> {
-    this.data.delete(key);
+    this.remove(key);
+  }
+
+  /** Frees every key that starts with `prefix` except `keep` (a kind's old answers after a write). */
+  dropPrefix(prefix: string, keep?: string): number {
+    let n = 0;
+    for (const k of [...this.data.keys()]) if (k.startsWith(prefix) && k !== keep) { this.remove(k); n++; }
+    return n;
+  }
+
+  /** Frees every expired answer now. */
+  sweep(now = Date.now()): void {
+    this.lastSweep = now;
+    for (const [k, v] of this.data) if (v.until <= now) this.remove(k);
   }
 
   clear(): void {
     this.data.clear();
+    this.used = 0;
+  }
+
+  private sweepSometimes(): void {
+    if (Date.now() - this.lastSweep >= 60_000) this.sweep();
+  }
+
+  private remove(key: string): void {
+    const old = this.data.get(key);
+    if (!old) return;
+    this.used -= (key.length + old.value.length) * 2;
+    this.data.delete(key);
   }
 
   private put(key: string, value: string, until: number): void {
-    this.data.delete(key); // re-inserted last: the Map's order is then oldest first
-    if (this.data.size >= this.maxKeys) {
-      const now = Date.now();
-      for (const [k, v] of this.data) if (v.until <= now) this.data.delete(k);
-      // still full: drop the oldest tenth
-      if (this.data.size >= this.maxKeys) [...this.data.keys()].slice(0, Math.ceil(this.maxKeys / 10)).forEach((k) => this.data.delete(k));
+    this.sweepSometimes();
+    this.remove(key); // re-inserted last: the Map's order is then oldest first
+    const bytes = (key.length + value.length) * 2;
+    if (bytes > this.maxBytes) return; // never fits: not kept
+    if (this.data.size >= this.maxKeys || this.used + bytes > this.maxBytes) this.sweep();
+    // still full: drop the oldest until it fits
+    for (const k of this.data.keys()) {
+      if (this.data.size < this.maxKeys && this.used + bytes <= this.maxBytes) break;
+      this.remove(k);
     }
     this.data.set(key, { value, until });
+    this.used += bytes;
   }
 }
 

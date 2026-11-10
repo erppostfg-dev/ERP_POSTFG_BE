@@ -9,6 +9,8 @@ export const CACHE = {
   TTL_SECONDS: 60,
   /** Default start of every key (CACHE_KEY_PREFIX overrides: one ElastiCache can then serve dev and prod apart). */
   KEY_PREFIX: 'postfg:',
+  /** Memory store: at most this much RAM for all answers (CACHE_MEMORY_MAX_MB overrides), oldest dropped first. Never disk. */
+  MEMORY_MAX_MB: 64,
   /** Memory store: at most this many answers (oldest dropped first). */
   MEMORY_MAX_KEYS: 5_000,
   /** A bigger answer is not cached (served from the DB every time; logged once per key per 10 min). */

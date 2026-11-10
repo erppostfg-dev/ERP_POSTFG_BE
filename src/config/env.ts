@@ -351,6 +351,8 @@ export const env = {
     redisCluster: flag('REDIS_CLUSTER'),
     // one CACHE_STATS summary line every this many minutes (0 = never)
     statsMinutes: Math.max(0, num('CACHE_STATS_MINUTES', CACHE.STATS_EVERY_MINUTES)),
+    // RAM the memory store may use for all answers (never disk)
+    memoryMaxMb: Math.max(1, num('CACHE_MEMORY_MAX_MB', CACHE.MEMORY_MAX_MB)),
   },
   storage: {
     emailDir: process.env.EMAIL_STORAGE_DIR ?? 'storage/emails',

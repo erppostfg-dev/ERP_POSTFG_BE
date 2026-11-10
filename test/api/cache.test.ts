@@ -181,6 +181,59 @@ const linesOf = async (fn: () => Promise<void>): Promise<string[]> => {
 };
 const codes = (lines: string[]) => lines.map((l) => / (CACHE_[A-Z_]+) /.exec(l)?.[1]).filter(Boolean);
 
+describe('memory store: RAM only, bounded (never grows without limit)', () => {
+  it('a write frees the old answers of that kind at once (not only when they expire)', async () => {
+    const m = new MemoryStore();
+    await m.set('postfg:masters:1:pep-skus', 'x'.repeat(100_000), 60);
+    await m.set('postfg:masters:1:channel-skus', 'x'.repeat(100_000), 60);
+    await m.set('postfg:approvals:1:list', 'y', 60);
+    await m.incr('postfg:masters:ver');
+    expect(m.bytes).toBeGreaterThan(400_000);
+    m.dropPrefix('postfg:masters:', 'postfg:masters:ver');
+    expect(m.size).toBe(2); // the approvals answer + the masters version
+    expect(m.bytes).toBeLessThan(1_000);
+  });
+
+  it('never holds more than its limit: the oldest answers go first; one too big is not kept', async () => {
+    const m = new MemoryStore(1_000_000); // 1 MB
+    for (let i = 0; i < 10; i++) await m.set(`k${i}`, 'x'.repeat(100_000), 60); // 200 KB each
+    expect(m.bytes).toBeLessThanOrEqual(1_000_000);
+    expect(await m.get('k0')).toBeNull();
+    expect(await m.get('k9')).not.toBeNull();
+    await m.set('huge', 'x'.repeat(600_000), 60); // 1.2 MB
+    expect(await m.get('huge')).toBeNull();
+  });
+
+  it('expired answers are swept within a minute even if nobody reads them again', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const m = new MemoryStore();
+    await m.set('old', 'x'.repeat(10_000), 1);
+    vi.setSystemTime(Date.now() + 61_000);
+    await m.set('new', 'y', 60);
+    expect(m.size).toBe(1);
+    expect(m.bytes).toBeLessThan(100);
+  });
+
+  it('through the cache: forgetting a kind frees its RAM', async () => {
+    resetCacheForTests();
+    for (let i = 0; i < 5; i++) await cached(CACHE_NS.MASTERS, `list${i}`, loader('x'.repeat(50_000)));
+    await cached(CACHE_NS.APPROVALS, 'badge', loader(1));
+    await forgetCache(CACHE_NS.MASTERS);
+    for (let i = 0; i < 5; i++) await cached(CACHE_NS.MASTERS, `list${i}`, loader('x'.repeat(50_000)));
+    // 5 answers, not 10: the old ones were freed by the write
+    const stats = await (async () => {
+      const out: string[] = [];
+      const level = env.log.level;
+      env.log.level = 'info';
+      const spy = vi.spyOn(process.stdout, 'write').mockImplementation((c: unknown) => { out.push(String(c)); return true; });
+      try { logCacheStatsForTests(); } finally { spy.mockRestore(); env.log.level = level; }
+      return out.join('');
+    })();
+    expect(stats).toMatch(/memoryKeys=(\d+)/);
+    expect(Number(/memoryKeys=(\d+)/.exec(stats)![1])).toBeLessThanOrEqual(8); // 5 masters + 1 approvals + 2 versions
+  });
+});
+
 describe('cache logs: few lines, each says what to fix', () => {
   beforeEach(() => resetCacheForTests());
 
