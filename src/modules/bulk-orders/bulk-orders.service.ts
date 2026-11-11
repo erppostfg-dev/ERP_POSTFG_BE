@@ -5,6 +5,8 @@ import {
   AccessLevel,
   BULK_BODY as F,
   BULK_DELIVERY_MODES,
+  BULK_EVENT,
+  BulkEventAction,
   BULK_ORDER_STATUS,
   BULK_ORDER_STATUSES,
   BULK_ORDER_TYPE,
@@ -20,7 +22,7 @@ import {
   IST_OFFSET_MS,
   TABLES,
 } from '../../constants';
-import { BulkLocation, BulkOrder, BulkOrderLine, MasterSku, User } from '../../entities';
+import { BulkLocation, BulkOrder, BulkOrderEvent, BulkOrderLine, MasterSku, User } from '../../entities';
 import { appError } from '../../utils/AppError';
 import { log } from '../../utils/logger';
 import { LOG_SOURCE } from '../../constants/logging';
@@ -258,10 +260,26 @@ const takeBulkPoNumber = async (m: EntityManager, type: BulkOrderType, year = is
   return `${BULK_PO_PREFIX[type]}-${year}-${String(n).padStart(BULK_ORDERS.SERIAL_DIGITS, '0')}`;
 };
 
-/** Creates a bulk order (editor on its type): prices from the PEP SKU master, a new PO number, pending approval. */
-export const createBulkOrder = async (actor: BulkActor, body: Record<string, unknown>) => {
+/** An order's fields as checked from a create / edit request (before the SKUs are priced). */
+interface OrderIn {
+  type: BulkOrderType;
+  orderedBy: string;
+  receiverName: string;
+  phone: string;
+  neededBy: string;
+  priority: string;
+  mode: string | null;
+  note: string | null;
+  locationId: string | null;
+  address: AddressIn | null;
+  saveAs: string;
+  lines: LineIn[];
+}
+
+/** Checks a create / edit body; `fixedType` = an edit (the type never changes). Throws 400 with every wrong field. */
+const parseOrder = (body: Record<string, unknown>, fixedType?: BulkOrderType): OrderIn => {
   const c = new Checker();
-  const type = typeParam(c, body[F.TYPE]);
+  const type = fixedType ?? typeParam(c, body[F.TYPE]);
   const orderedBy = c.text(body[F.ORDERED_BY], F.ORDERED_BY, BULK_ORDERS.NAME_MAX);
   const receiverName = c.text(body[F.RECEIVER_NAME], F.RECEIVER_NAME, BULK_ORDERS.NAME_MAX);
   const phoneText = c.text(body[F.RECEIVER_PHONE], F.RECEIVER_PHONE, 20);
@@ -272,39 +290,55 @@ export const createBulkOrder = async (actor: BulkActor, body: Record<string, unk
   else if (neededBy && neededBy < todayIst()) c.add(F.NEEDED_BY, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.NEEDED_BY, 'today or later'));
   const priority = c.oneOf(body[F.PRIORITY] ?? BULK_PRIORITIES[0], F.PRIORITY, BULK_PRIORITIES);
   // delivery mode: Marketing only (the design shows it only there)
-  let mode: string | null = null;
-  if (type === BULK_ORDER_TYPE.MARKETING) mode = c.oneOf(body[F.MODE], F.MODE, BULK_DELIVERY_MODES);
+  const mode = type === BULK_ORDER_TYPE.MARKETING ? c.oneOf(body[F.MODE], F.MODE, BULK_DELIVERY_MODES) : null;
   const note = c.text(body[F.NOTE], F.NOTE, BULK_ORDERS.NOTE_MAX, false) || null;
   // where: a saved location (its id) or an address typed now (+ optional name to save it under)
-  const locationId = body[F.LOCATION_ID];
+  const rawLocation = body[F.LOCATION_ID];
+  let locationId: string | null = null;
   let address: AddressIn | null = null;
   let saveAs = '';
-  if (locationId !== undefined && locationId !== null && locationId !== '') {
-    if (!isId(locationId)) c.add(F.LOCATION_ID, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.LOCATION_ID, 'a saved location id'));
+  if (rawLocation !== undefined && rawLocation !== null && rawLocation !== '') {
+    if (!isId(rawLocation)) c.add(F.LOCATION_ID, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.LOCATION_ID, 'a saved location id'));
+    else locationId = String(rawLocation);
   } else {
     address = checkAddress(c, body[F.ADDRESS]);
     saveAs = c.text(body[F.SAVE_LOCATION_AS], F.SAVE_LOCATION_AS, BULK_ORDERS.LABEL_MAX, false);
   }
   const lines = checkLines(c, body[F.LINES]);
   c.fail();
-  const t = type!;
-  needType(await bulkRights(actor), t, ACCESS_LEVEL.EDITOR);
+  return { type: type!, orderedBy, receiverName, phone: phone!, neededBy, priority: priority!, mode, note, locationId, address, saveAs, lines };
+};
 
-  // prices from OUR master (never from the request): one read for every line
+/** Today's MRP / name / active of SKUs from OUR master (one read; never the cache, never the request). */
+const skusNow = async (codes: string[]): Promise<Map<string, MasterSku>> => {
+  if (!codes.length) return new Map();
   const skus = await AppDataSource.getRepository(MasterSku).find({
     select: { pepCode: true, productName: true, mrp: true, isActive: true },
-    where: { pepCode: In(lines.map((l) => l.pepCode)) },
+    where: { pepCode: In(codes) },
   });
-  const byCode = new Map(skus.map((s) => [s.pepCode.toUpperCase(), s]));
+  return new Map(skus.map((s) => [s.pepCode.toUpperCase(), s]));
+};
+
+/** Why a SKU cannot be priced today ('' = it can). */
+const notSellable = (code: string, s: MasterSku | undefined): string =>
+  !s || s.isActive === false ? `${code} is not an active SKU in the PEP SKU master`
+    : !s.mrp || Number(s.mrp) <= 0 ? `${code} has no MRP in the PEP SKU master: ask the masters team` : '';
+
+interface PricedLine {
+  lineNo: number; pepCode: string; productName: string | null; mrp: number; requestedQty: number; requestedDiscountPct: number;
+  qty: number; discountPct: number; unitPrice: number; lineTotal: number;
+}
+
+/** The lines priced on today's MRP (requested = what is asked now); 400 naming each SKU that cannot be sold. */
+const priceLines = async (lines: LineIn[]): Promise<PricedLine[]> => {
+  const byCode = await skusNow(lines.map((l) => l.pepCode));
+  const c = new Checker();
   lines.forEach((l, i) => {
-    const s = byCode.get(l.pepCode.toUpperCase());
-    const at = `${F.LINES}[${i}].${F.PEP_CODE}`;
-    if (!s || s.isActive === false) c.add(at, `${l.pepCode} is not an active SKU in the PEP SKU master`);
-    else if (!s.mrp || Number(s.mrp) <= 0) c.add(at, `${l.pepCode} has no MRP in the PEP SKU master: ask the masters team`);
+    const why = notSellable(l.pepCode, byCode.get(l.pepCode.toUpperCase()));
+    if (why) c.add(`${F.LINES}[${i}].${F.PEP_CODE}`, why);
   });
   c.fail();
-
-  const priced = lines.map((l, i) => {
+  return lines.map((l, i) => {
     const s = byCode.get(l.pepCode.toUpperCase())!;
     const mrp = Number(s.mrp);
     const unitPrice = priceAfterDiscount(mrp, l.discountPct);
@@ -314,31 +348,232 @@ export const createBulkOrder = async (actor: BulkActor, body: Record<string, unk
       unitPrice, lineTotal: round2(unitPrice * l.qty),
     };
   });
+};
+
+/** Units / MRP / value of priced lines (kept on the order so lists need no line query). */
+const totalsOf = (lines: { qty: number; mrp: number; lineTotal: number }[]) => ({
+  lineCount: lines.length,
+  totalUnits: lines.reduce((s, l) => s + l.qty, 0),
+  totalMrp: round2(lines.reduce((s, l) => s + l.mrp * l.qty, 0)),
+  totalValue: round2(lines.reduce((s, l) => s + l.lineTotal, 0)),
+});
+
+/** The delivery address of an order: a saved location of the type, or the typed one (saved under a name if asked). */
+const whereTo = async (m: EntityManager, o: OrderIn, userId: number) => {
+  if (o.address) {
+    const saved = o.saveAs ? await insertLocation(m, o.type, o.saveAs, o.address, userId) : null;
+    return { locationId: saved ? String(saved.id) : null, locationLabel: saved?.label ?? null, addressLine: o.address.line, city: o.address.city, state: o.address.state, pincode: o.address.pincode };
+  }
+  const loc = await m.getRepository(BulkLocation).findOneBy({ id: o.locationId!, orderType: o.type });
+  if (!loc) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails([{ field: F.LOCATION_ID, code: ERROR_CODES.VALIDATION_FAILED, message: `No saved ${o.type} location ${o.locationId}` }]);
+  return { locationId: String(loc.id), locationLabel: loc.label, addressLine: loc.addressLine, city: loc.city, state: loc.state, pincode: loc.pincode };
+};
+
+/** One timeline row (bulk_order_events), in the same transaction as the change. */
+const addEvent = (m: EntityManager, orderId: string, action: BulkEventAction, by: number, note: string | null, changes: unknown = null) =>
+  m.getRepository(BulkOrderEvent).insert({ orderId, action, byUserId: by, note, changes: changes as object | null });
+
+/** Creates a bulk order (editor on its type): prices from the PEP SKU master, a new PO number, pending approval. */
+export const createBulkOrder = async (actor: BulkActor, body: Record<string, unknown>) => {
+  const o = parseOrder(body);
+  needType(await bulkRights(actor), o.type, ACCESS_LEVEL.EDITOR);
+  const priced = await priceLines(o.lines);
 
   const id = await withDeadlockRetry(() => AppDataSource.transaction(async (m) => {
-    let where: { id: string | null; label: string | null; a: AddressIn };
-    if (address) {
-      const saved = saveAs ? await insertLocation(m, t, saveAs, address, actor.id) : null;
-      where = { id: saved ? String(saved.id) : null, label: saved?.label ?? null, a: address };
-    } else {
-      const loc = await m.getRepository(BulkLocation).findOneBy({ id: String(locationId), orderType: t });
-      if (!loc) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails([{ field: F.LOCATION_ID, code: ERROR_CODES.VALIDATION_FAILED, message: `No saved ${t} location ${String(locationId)}` }]);
-      where = { id: String(loc.id), label: loc.label, a: { line: loc.addressLine, city: loc.city, state: loc.state, pincode: loc.pincode } };
-    }
-    const poNumber = await takeBulkPoNumber(m, t);
+    const where = await whereTo(m, o, actor.id);
+    const poNumber = await takeBulkPoNumber(m, o.type);
     const res = await m.getRepository(BulkOrder).insert({
-      poNumber, orderType: t, status: BULK_ORDER_STATUS.PENDING_APPROVAL, orderedBy, receiverName, receiverPhone: phone!,
-      locationId: where.id, locationLabel: where.label, addressLine: where.a.line, city: where.a.city, state: where.a.state, pincode: where.a.pincode,
-      neededBy, deliveryMode: mode, priority: priority!, note,
-      lineCount: priced.length, totalUnits: priced.reduce((s, l) => s + l.qty, 0),
-      totalMrp: round2(priced.reduce((s, l) => s + l.mrp * l.qty, 0)), totalValue: round2(priced.reduce((s, l) => s + l.lineTotal, 0)),
-      createdBy: actor.id,
+      poNumber, orderType: o.type, status: BULK_ORDER_STATUS.PENDING_APPROVAL, orderedBy: o.orderedBy, receiverName: o.receiverName,
+      receiverPhone: o.phone, ...where, neededBy: o.neededBy, deliveryMode: o.mode, priority: o.priority, note: o.note,
+      ...totalsOf(priced), createdBy: actor.id,
     });
     const orderId = String(res.identifiers[0].id);
     await m.getRepository(BulkOrderLine).insert(priced.map((l) => ({ ...l, orderId })));
-    log.info(LOG_SOURCE.API, `[bulk-orders] ${poNumber} created (${t}, ${priced.length} SKUs) by user ${actor.id}`);
+    await addEvent(m, orderId, BULK_EVENT.CREATED, actor.id, o.note);
+    log.info(LOG_SOURCE.API, `[bulk-orders] ${poNumber} created (${o.type}, ${priced.length} SKUs) by user ${actor.id}`);
     return orderId;
   }));
+  return getBulkOrder(actor, id);
+};
+
+/**
+ * The order locked for a change (SELECT ... FOR UPDATE: an edit, a cancel and a decision never cross); 404 when it does not
+ * exist, 409 BULK_ORDER_NOT_PENDING when it is no longer waiting for approval.
+ */
+const lockPending = async (m: EntityManager, id: string): Promise<BulkOrder> => {
+  const o = await m.getRepository(BulkOrder).findOne({ where: { id }, lock: { mode: 'pessimistic_write' } });
+  if (!o) throw appError(ERROR_CODES.BULK_ORDER_NOT_FOUND, id);
+  if (o.status !== BULK_ORDER_STATUS.PENDING_APPROVAL) throw appError(ERROR_CODES.BULK_ORDER_NOT_PENDING, o.poNumber, o.status);
+  return o;
+};
+
+/** The order's type for a check before the transaction (404 when missing or not visible to the person). */
+const typeOfOrder = async (r: BulkRights, id: string): Promise<BulkOrderType> => {
+  if (!isId(id)) throw appError(ERROR_CODES.BULK_ORDER_NOT_FOUND, String(id));
+  const o = await AppDataSource.getRepository(BulkOrder).findOne({ select: { id: true, orderType: true }, where: { id } });
+  const t = o?.orderType as BulkOrderType | undefined;
+  if (!t || !allows(r.types[t] ?? ACCESS_LEVEL.NONE, ACCESS_LEVEL.VIEWER)) throw appError(ERROR_CODES.BULK_ORDER_NOT_FOUND, id);
+  return t;
+};
+
+const lineSummary = (ls: { pepCode: string; qty: number; discountPct: number }[]) => ls.map((l) => `${l.pepCode} x${l.qty} @${l.discountPct}%`);
+
+/**
+ * Edits an order still waiting for approval (user 2026-11-11: "it can get cancelled and editable"; editor on its type):
+ * the same body as create (type cannot change), lines priced again on today's MRP, same PO number, still pending.
+ */
+export const updateBulkOrder = async (actor: BulkActor, id: string, body: Record<string, unknown>) => {
+  const r = await needAnyBulk(actor);
+  const t = await typeOfOrder(r, id);
+  needType(r, t, ACCESS_LEVEL.EDITOR);
+  const o = parseOrder(body, t);
+  const priced = await priceLines(o.lines);
+  await AppDataSource.transaction(async (m) => {
+    const cur = await lockPending(m, id);
+    const before = await m.getRepository(BulkOrderLine).find({ where: { orderId: id }, order: { lineNo: 'ASC' } });
+    const where = await whereTo(m, o, actor.id);
+    const next = {
+      orderedBy: o.orderedBy, receiverName: o.receiverName, receiverPhone: o.phone, ...where, neededBy: o.neededBy,
+      deliveryMode: o.mode, priority: o.priority, note: o.note,
+    };
+    const fields = (Object.keys(next) as (keyof typeof next)[]).filter((k) => String(cur[k] ?? '') !== String(next[k] ?? ''));
+    await m.getRepository(BulkOrderLine).delete({ orderId: id });
+    await m.getRepository(BulkOrderLine).insert(priced.map((l) => ({ ...l, orderId: id })));
+    await m.getRepository(BulkOrder).update({ id }, { ...next, ...totalsOf(priced), updatedAt: new Date() });
+    await addEvent(m, id, BULK_EVENT.EDITED, actor.id, null, { fields, linesBefore: lineSummary(before), linesAfter: lineSummary(priced) });
+    log.info(LOG_SOURCE.API, `[bulk-orders] ${cur.poNumber} edited by user ${actor.id}`);
+  });
+  return getBulkOrder(actor, id);
+};
+
+/** Cancels an order still waiting for approval (editor on its type); `reason` optional. */
+export const cancelBulkOrder = async (actor: BulkActor, id: string, body: Record<string, unknown>) => {
+  const r = await needAnyBulk(actor);
+  needType(r, await typeOfOrder(r, id), ACCESS_LEVEL.EDITOR);
+  const c = new Checker();
+  const reason = c.text(body[F.REASON], F.REASON, BULK_ORDERS.NOTE_MAX, false) || null;
+  c.fail();
+  await AppDataSource.transaction(async (m) => {
+    const cur = await lockPending(m, id);
+    await m.getRepository(BulkOrder).update({ id }, { status: BULK_ORDER_STATUS.CANCELLED, updatedAt: new Date() });
+    await addEvent(m, id, BULK_EVENT.CANCELLED, actor.id, reason);
+    log.info(LOG_SOURCE.API, `[bulk-orders] ${cur.poNumber} cancelled by user ${actor.id}`);
+  });
+  return getBulkOrder(actor, id);
+};
+
+/** 403 unless the person approves bulk orders (editor on BULK_PAGE.APPROVE). Admin / developer may approve their own. */
+const needApprover = (r: BulkRights): void => {
+  if (!allows(r.approve, ACCESS_LEVEL.EDITOR)) throw appError(ERROR_CODES.BULK_NOT_APPROVER);
+};
+
+interface LineChangeIn { lineNo: number; qty?: number; discountPct?: number }
+
+/** Checks an approve body: line changes (existing line numbers), lines to remove, note. */
+const parseDecision = (body: Record<string, unknown>, lineNos: Set<number>) => {
+  const c = new Checker();
+  const changes: LineChangeIn[] = [];
+  const raw = body[F.LINES];
+  if (raw !== undefined && raw !== null) {
+    if (!Array.isArray(raw)) c.add(F.LINES, errorMessage(ERROR_CODES.FIELD_NOT_LIST, F.LINES));
+    else raw.forEach((x, i) => {
+      const l = (x && typeof x === 'object' ? x : {}) as Record<string, unknown>;
+      const at = (f: string) => `${F.LINES}[${i}].${f}`;
+      const no = l[F.LINE_NO];
+      if (!(typeof no === 'number' && lineNos.has(no))) c.add(at(F.LINE_NO), errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, at(F.LINE_NO), 'a line number of this order'));
+      const out: LineChangeIn = { lineNo: no as number };
+      if (l[F.QTY] !== undefined) {
+        const q = l[F.QTY];
+        if (!(typeof q === 'number' && Number.isInteger(q) && q >= 1 && q <= BULK_ORDERS.QTY_MAX)) c.add(at(F.QTY), errorMessage(ERROR_CODES.FIELD_NOT_INT_RANGE, at(F.QTY), 1, BULK_ORDERS.QTY_MAX));
+        else out.qty = q;
+      }
+      if (l[F.DISCOUNT] !== undefined) {
+        const d = l[F.DISCOUNT];
+        if (!(typeof d === 'number' && Number.isFinite(d) && d >= 0 && d <= BULK_ORDERS.DISCOUNT_MAX && round2(d) === d)) {
+          c.add(at(F.DISCOUNT), errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, at(F.DISCOUNT), `a % from 0 to ${BULK_ORDERS.DISCOUNT_MAX} with at most 2 decimals`));
+        } else out.discountPct = d;
+      }
+      changes.push(out);
+    });
+  }
+  const rawRemove = body[F.REMOVE_LINES] ?? [];
+  const remove = new Set<number>();
+  if (!Array.isArray(rawRemove) || rawRemove.some((n) => !(typeof n === 'number' && lineNos.has(n)))) {
+    c.add(F.REMOVE_LINES, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.REMOVE_LINES, 'a list of line numbers of this order'));
+  } else rawRemove.forEach((n) => remove.add(n as number));
+  if (lineNos.size && [...lineNos].every((n) => remove.has(n))) c.add(F.REMOVE_LINES, 'At least one line must stay: reject the order instead');
+  const note = c.text(body[F.NOTE], F.NOTE, BULK_ORDERS.NOTE_MAX, false) || null;
+  c.fail();
+  return { changes, remove, note };
+};
+
+/**
+ * Approves an order (editor on Approve bulk orders): the approver may change qty / discount per line or remove lines;
+ * every line is priced again on TODAY's MRP (user 2026-11-11); the requester's values stay in requested_*; each change
+ * (old -> new) is on the timeline. 409 when it is no longer pending (e.g. a second approver at the same moment).
+ */
+export const approveBulkOrder = async (actor: BulkActor, id: string, body: Record<string, unknown>) => {
+  const r = await needAnyBulk(actor);
+  needApprover(r);
+  await typeOfOrder(r, id);
+  await AppDataSource.transaction(async (m) => {
+    const cur = await lockPending(m, id);
+    const lines = await m.getRepository(BulkOrderLine).find({ where: { orderId: id }, order: { lineNo: 'ASC' } });
+    const d = parseDecision(body, new Set(lines.map((l) => l.lineNo)));
+    const byNo = new Map(d.changes.map((x) => [x.lineNo, x]));
+    const kept = lines.filter((l) => !d.remove.has(l.lineNo));
+    const today = await skusNow(kept.map((l) => l.pepCode));
+    const c = new Checker();
+    kept.forEach((l) => {
+      const why = notSellable(l.pepCode, today.get(l.pepCode.toUpperCase()));
+      if (why) c.add(`line ${l.lineNo}`, `${why}: remove the line or reject the order`);
+    });
+    c.fail();
+    const changed: Record<string, unknown>[] = [];
+    const next = kept.map((l) => {
+      const x = byNo.get(l.lineNo);
+      const qty = x?.qty ?? l.qty;
+      const discountPct = x?.discountPct ?? l.discountPct;
+      const mrp = Number(today.get(l.pepCode.toUpperCase())!.mrp);
+      const unitPrice = priceAfterDiscount(mrp, discountPct);
+      const diff: Record<string, unknown> = {};
+      if (qty !== l.qty) diff.qty = [l.qty, qty];
+      if (discountPct !== l.discountPct) diff.discountPct = [l.discountPct, discountPct];
+      if (mrp !== l.mrp) diff.mrp = [l.mrp, mrp];
+      if (Object.keys(diff).length) changed.push({ lineNo: l.lineNo, pepCode: l.pepCode, ...diff });
+      return { line: l, qty, discountPct, mrp, unitPrice, lineTotal: round2(unitPrice * qty) };
+    });
+    for (const l of lines.filter((x) => d.remove.has(x.lineNo))) changed.push({ lineNo: l.lineNo, pepCode: l.pepCode, removed: true });
+    if (d.remove.size) await m.getRepository(BulkOrderLine).delete({ orderId: id, lineNo: In([...d.remove]) });
+    for (const n of next) {
+      await m.getRepository(BulkOrderLine).update({ id: n.line.id }, { qty: n.qty, discountPct: n.discountPct, mrp: n.mrp, unitPrice: n.unitPrice, lineTotal: n.lineTotal });
+    }
+    const now = new Date();
+    await m.getRepository(BulkOrder).update({ id }, {
+      status: BULK_ORDER_STATUS.APPROVED, decidedBy: actor.id, decidedAt: now, decisionNote: d.note, updatedAt: now,
+      ...totalsOf(next.map((n) => ({ qty: n.qty, mrp: n.mrp, lineTotal: n.lineTotal }))),
+    });
+    await addEvent(m, id, BULK_EVENT.APPROVED, actor.id, d.note, changed.length ? { lines: changed } : null);
+    log.info(LOG_SOURCE.API, `[bulk-orders] ${cur.poNumber} approved by user ${actor.id} (${changed.length} line changes)`);
+  });
+  return getBulkOrder(actor, id);
+};
+
+/** Rejects an order (editor on Approve bulk orders); `reason` required. */
+export const rejectBulkOrder = async (actor: BulkActor, id: string, body: Record<string, unknown>) => {
+  const r = await needAnyBulk(actor);
+  needApprover(r);
+  await typeOfOrder(r, id);
+  const c = new Checker();
+  const reason = c.text(body[F.REASON], F.REASON, BULK_ORDERS.NOTE_MAX);
+  c.fail();
+  await AppDataSource.transaction(async (m) => {
+    const cur = await lockPending(m, id);
+    const now = new Date();
+    await m.getRepository(BulkOrder).update({ id }, { status: BULK_ORDER_STATUS.REJECTED, decidedBy: actor.id, decidedAt: now, decisionNote: reason, updatedAt: now });
+    await addEvent(m, id, BULK_EVENT.REJECTED, actor.id, reason);
+    log.info(LOG_SOURCE.API, `[bulk-orders] ${cur.poNumber} rejected by user ${actor.id}`);
+  });
   return getBulkOrder(actor, id);
 };
 
@@ -392,10 +627,14 @@ export const getBulkOrder = async (actor: BulkActor, id: string) => {
   const o = await AppDataSource.getRepository(BulkOrder).findOneBy({ id });
   const r = await needAnyBulk(actor);
   if (!o || !allows(r.types[o.orderType as BulkOrderType] ?? ACCESS_LEVEL.NONE, ACCESS_LEVEL.VIEWER)) throw appError(ERROR_CODES.BULK_ORDER_NOT_FOUND, id);
-  const lines = await AppDataSource.getRepository(BulkOrderLine).find({ where: { orderId: id }, order: { lineNo: 'ASC' } });
-  const names = await userNames([o.createdBy, o.decidedBy ?? 0]);
+  const [lines, events] = await Promise.all([
+    AppDataSource.getRepository(BulkOrderLine).find({ where: { orderId: id }, order: { lineNo: 'ASC' } }),
+    AppDataSource.getRepository(BulkOrderEvent).find({ where: { orderId: id }, order: { id: 'ASC' } }),
+  ]);
+  const names = await userNames([o.createdBy, o.decidedBy ?? 0, ...events.map((e) => e.byUserId)]);
   return {
     ...orderOut(o, names),
+    events: events.map((e) => ({ action: e.action, by: { id: e.byUserId, name: names.get(e.byUserId) ?? null }, at: e.createdAt, note: e.note, changes: e.changes })),
     lines: lines.map((l) => ({
       lineNo: l.lineNo, pepCode: l.pepCode, name: l.productName, mrp: l.mrp, qty: l.qty, discountPct: l.discountPct,
       unitPrice: l.unitPrice, lineTotal: l.lineTotal, requestedQty: l.requestedQty, requestedDiscountPct: l.requestedDiscountPct,

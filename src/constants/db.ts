@@ -99,6 +99,8 @@ export const TABLES = {
   BULK_ORDER_LINES: 'bulk_order_lines',
   BULK_LOCATIONS: 'bulk_locations',
   BULK_ORDER_COUNTERS: 'bulk_order_counters',
+  // Bulk Orders step 2 (2026-11-11): the timeline of an order (created, edited, cancelled, approved with changes, rejected).
+  BULK_ORDER_EVENTS: 'bulk_order_events',
   // Gmail intake (2026-10-29, constants/gmail-intake.ts): each labelled email's channel once read; catch-ups as rows.
   GMAIL_MESSAGES: 'gmail_messages',
   INTAKE_CATCHUPS: 'intake_catchups',

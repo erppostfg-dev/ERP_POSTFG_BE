@@ -45,14 +45,28 @@ export const BULK_TYPE_PAGE: Record<BulkOrderType, string> = {
   [BULK_ORDER_TYPE.INSTITUTIONAL]: BULK_PAGE.INSTITUTIONAL,
 };
 
-/** Order status (step 1 creates pending_approval only; the rest come with the next steps). */
+/**
+ * Order status. pending_approval: may be edited / cancelled by its type's people (user 2026-11-11) and approved /
+ * rejected by an approver; the other three are final (later steps add processing -> dispatch after approved).
+ */
 export const BULK_ORDER_STATUS = {
   PENDING_APPROVAL: 'pending_approval',
   APPROVED: 'approved',
   REJECTED: 'rejected',
+  CANCELLED: 'cancelled',
 } as const;
 export type BulkOrderStatus = (typeof BULK_ORDER_STATUS)[keyof typeof BULK_ORDER_STATUS];
 export const BULK_ORDER_STATUSES = Object.values(BULK_ORDER_STATUS) as BulkOrderStatus[];
+
+/** Timeline rows (bulk_order_events.action), one per change of an order, in the same transaction as the change. */
+export const BULK_EVENT = {
+  CREATED: 'created',
+  EDITED: 'edited',
+  CANCELLED: 'cancelled',
+  APPROVED: 'approved',
+  REJECTED: 'rejected',
+} as const;
+export type BulkEventAction = (typeof BULK_EVENT)[keyof typeof BULK_EVENT];
 
 /** The design's markers (figma-make-bulk-orders types.ts): delivery mode (Marketing only) and priority. */
 export const BULK_DELIVERY_MODES = ['Porter', 'Courier', 'Self pickup'] as const;
@@ -66,6 +80,10 @@ export const BULK_ORDERS = {
     SKUS: '/skus',
     LOCATIONS: '/locations',
     ONE: '/:id',
+    EDIT: '/:id',
+    CANCEL: '/:id/cancel',
+    APPROVE: '/:id/approve',
+    REJECT: '/:id/reject',
   },
   /** Lines per order. */
   LINES_MAX: 200,
@@ -116,4 +134,7 @@ export const BULK_BODY = {
   CITY: 'city',
   STATE: 'state',
   PINCODE: 'pincode',
+  REASON: 'reason',
+  LINE_NO: 'lineNo',
+  REMOVE_LINES: 'removeLines',
 } as const;

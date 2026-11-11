@@ -141,6 +141,9 @@
   "POST /approvals/po-reviews/bulk-reject",
   "POST /auth/logout",
   "POST /bulk-orders",
+  "POST /bulk-orders/:id/approve",
+  "POST /bulk-orders/:id/cancel",
+  "POST /bulk-orders/:id/reject",
   "POST /bulk-orders/locations",
   "POST /channel-pulls/:key/process",
   "POST /channel-pulls/:key/robot",
@@ -209,5 +212,6 @@
   "POST /po-verify/verify",
   "POST /price-differences/sent",
   "PUT /admin/mail-lists/:key",
+  "PUT /bulk-orders/:id",
   "PUT /notices/settings"
 ]

@@ -186,6 +186,36 @@ export class BulkLocation {
   createdAt: Date;
 }
 
+/** One change of an order (Bulk Orders step 2, BULK_EVENT): who, when, a note, and what changed (old -> new). */
+@Entity({ name: TABLES.BULK_ORDER_EVENTS })
+@Index('idx_bulk_order_events_order', ['orderId'])
+export class BulkOrderEvent {
+  @PrimaryGeneratedColumn({ name: 'id', type: 'bigint' })
+  id: string;
+
+  @Column({ name: 'order_id', type: 'bigint' })
+  orderId: string;
+
+  /** BULK_EVENT */
+  @Column({ name: 'action', type: 'varchar', length: 20 })
+  action: string;
+
+  @Column({ name: 'by_user_id', type: 'int' })
+  byUserId: number;
+
+  @Column({ name: 'created_at', type: 'datetime', precision: 6, default: () => 'CURRENT_TIMESTAMP(6)' })
+  createdAt: Date;
+
+  /** The requester's note / cancel reason / approver's note / reject reason. */
+  @Column({ name: 'note', type: 'varchar', length: 1000, nullable: true })
+  note: string | null;
+
+  /** approved: { lines: [{ lineNo, pepCode, qty?: [old, new], discountPct?: [..], mrp?: [..], removed? }] };
+   *  edited: { fields, linesBefore, linesAfter }. */
+  @Column({ name: 'changes', type: 'json', nullable: true })
+  changes: object | null;
+}
+
 /** The last PO serial per type and year (one atomic UPDATE per new order: MKT-2026-0001, -0002, ...). */
 @Entity({ name: TABLES.BULK_ORDER_COUNTERS })
 export class BulkOrderCounter {

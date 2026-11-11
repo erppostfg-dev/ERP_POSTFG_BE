@@ -8,7 +8,8 @@ import { covers } from '../helpers/routes';
  * SKU search with MRP, price = MRP less discount % from OUR master (never the request's), unique PO numbers per type
  * and year (also under parallel creates), saved locations per type, validation, and nothing of the PO chain touched.
  */
-covers(['GET /bulk-orders', 'POST /bulk-orders', 'GET /bulk-orders/skus', 'GET /bulk-orders/locations', 'POST /bulk-orders/locations', 'GET /bulk-orders/:id']);
+covers(['GET /bulk-orders', 'POST /bulk-orders', 'GET /bulk-orders/skus', 'GET /bulk-orders/locations', 'POST /bulk-orders/locations', 'GET /bulk-orders/:id',
+  'PUT /bulk-orders/:id', 'POST /bulk-orders/:id/cancel', 'POST /bulk-orders/:id/approve', 'POST /bulk-orders/:id/reject']);
 
 const V = '/api/v1/bulk-orders';
 const YEAR = new Date(Date.now() + 5.5 * 3600_000).getUTCFullYear();
@@ -213,5 +214,74 @@ describe('bulk orders: list, one order, locations', () => {
     expect((await api().get(`${V}/locations?type=marketing`).set('Cookie', approver.cookie).expect(200)).body.data[0].label).toBe('Pune hub');
     await api().get(`${V}/locations`).set('Cookie', mkt.cookie).expect(400);
     expect(await rows('SELECT created_by FROM bulk_locations')).toEqual([{ created_by: mkt.userId }]);
+  });
+});
+
+describe('bulk orders step 2: edit, cancel, approve, reject (timeline)', () => {
+  const one = async (who: TestLogin, id: string) => (await api().get(`${V}/${id}`).set('Cookie', who.cookie).expect(200)).body.data;
+  const post = (who: TestLogin, id: string, what: string, body: Record<string, unknown> = {}) => api().post(`${V}/${id}/${what}`).set('Cookie', who.cookie).send(body);
+
+  it("the requester's type may edit a pending order: same PO number, lines priced again, still pending; others may not", async () => {
+    const o = (await create(mkt, order()).expect(201)).body.data;
+    const edited = (await api().put(`${V}/${o.id}`).set('Cookie', mkt.cookie)
+      .send(order({ type: 'institutional', receiverName: 'Asha', lines: [{ pepCode: 'SKU_B', qty: 2, discountPct: 10 }] })).expect(200)).body.data;
+    expect(edited).toMatchObject({ poNumber: o.poNumber, type: 'marketing', status: 'pending_approval', receiverName: 'Asha', lineCount: 1, totalValue: 628.2 });
+    expect(edited.lines).toEqual([expect.objectContaining({ lineNo: 1, pepCode: 'SKU_B', qty: 2, discountPct: 10, unitPrice: 314.1, requestedQty: 2, requestedDiscountPct: 10 })]);
+    expect(edited.events.map((e: { action: string }) => e.action)).toEqual(['created', 'edited']);
+    expect(edited.events[1].changes.fields).toEqual(['receiverName']);
+    await api().put(`${V}/${o.id}`).set('Cookie', approver.cookie).send(order()).expect(403);
+    await api().put(`${V}/${o.id}`).set('Cookie', inst.cookie).send(order()).expect(404);
+  });
+
+  it('cancel: by its type, reason optional; a cancelled order cannot be edited, approved or cancelled again', async () => {
+    const o = (await create(mkt, order()).expect(201)).body.data;
+    await post(approver, o.id, 'cancel').expect(403);
+    const c = (await post(mkt, o.id, 'cancel', { reason: 'Event postponed' }).expect(200)).body.data;
+    expect(c.status).toBe('cancelled');
+    expect(c.events[1]).toMatchObject({ action: 'cancelled', note: 'Event postponed', by: { id: mkt.userId } });
+    expect((await post(approver, o.id, 'approve').expect(409)).body.error.code).toBe('BULK_ORDER_NOT_PENDING');
+    await post(mkt, o.id, 'cancel').expect(409);
+    await api().put(`${V}/${o.id}`).set('Cookie', mkt.cookie).send(order()).expect(409);
+    expect((await api().get(`${V}?status=cancelled`).set('Cookie', mkt.cookie).expect(200)).body.meta.total).toBe(1);
+  });
+
+  it("approve: approver changes qty / discount, removes a line; priced on TODAY's MRP; requested values kept; changes on the timeline", async () => {
+    const o = (await create(mkt, order()).expect(201)).body.data; // SKU_A 10 @30% (MRP 100), SKU_B 3 @12.5%
+    await rows('UPDATE master_skus SET mrp = 110 WHERE id = ?', [skuA]); // MRP changed since the order
+    await post(mkt, o.id, 'approve').expect(403);
+    const a = (await post(approver, o.id, 'approve', { lines: [{ lineNo: 1, qty: 8, discountPct: 25 }], removeLines: [2], note: 'Cut to budget' }).expect(200)).body.data;
+    expect(a).toMatchObject({ status: 'approved', decidedBy: { id: approver.userId }, decisionNote: 'Cut to budget', lineCount: 1, totalUnits: 8, totalMrp: 880, totalValue: 660 });
+    expect(a.lines).toEqual([expect.objectContaining({ lineNo: 1, mrp: 110, qty: 8, discountPct: 25, unitPrice: 82.5, lineTotal: 660, requestedQty: 10, requestedDiscountPct: 30 })]);
+    expect(a.events[1]).toMatchObject({ action: 'approved', note: 'Cut to budget', by: { id: approver.userId } });
+    expect(a.events[1].changes.lines).toEqual([
+      { lineNo: 1, pepCode: 'SKU_A', qty: [10, 8], discountPct: [30, 25], mrp: [100, 110] },
+      { lineNo: 2, pepCode: 'SKU_B', removed: true },
+    ]);
+    // the requester sees the same
+    expect((await one(mkt, o.id)).totalValue).toBe(660);
+    expect((await post(approver, o.id, 'reject', { reason: 'x' }).expect(409)).body.error.code).toBe('BULK_ORDER_NOT_PENDING');
+  });
+
+  it('approve checks: known line numbers, at least one line stays, every SKU still sellable today', async () => {
+    const o = (await create(mkt, order()).expect(201)).body.data;
+    expect(fields(await post(approver, o.id, 'approve', { lines: [{ lineNo: 9, qty: 0 }] }).expect(400)).sort()).toEqual(['lines[0].lineNo', 'lines[0].qty']);
+    expect(fields(await post(approver, o.id, 'approve', { removeLines: [1, 2] }).expect(400))).toEqual(['removeLines']);
+    await rows('UPDATE master_skus SET is_active = 0 WHERE id = ?', [skuA]);
+    const res = await post(approver, o.id, 'approve').expect(400);
+    expect(res.body.error.details[0].message).toContain('remove the line or reject');
+    expect((await post(approver, o.id, 'approve', { removeLines: [1] }).expect(200)).body.data.lineCount).toBe(1);
+  });
+
+  it('reject needs a reason; two approvers at the same moment: one decision only; admin may approve their own order', async () => {
+    const o = (await create(mkt, order()).expect(201)).body.data;
+    expect(fields(await post(approver, o.id, 'reject').expect(400))).toEqual(['reason']);
+    const approver2 = await loginAs('bulk-approver');
+    const [r1, r2] = await Promise.all([post(approver, o.id, 'reject', { reason: 'Over budget' }), post(approver2, o.id, 'approve')]);
+    expect([r1.status, r2.status].sort()).toEqual([200, 409]);
+    const final = await one(approver, o.id);
+    expect(final.events.filter((e: { action: string }) => e.action !== 'created')).toHaveLength(1);
+    const admin = await loginAs('admin');
+    const own = (await create(admin, order()).expect(201)).body.data;
+    expect((await post(admin, own.id, 'approve').expect(200)).body.data).toMatchObject({ status: 'approved', decidedBy: { id: admin.userId } });
   });
 });
