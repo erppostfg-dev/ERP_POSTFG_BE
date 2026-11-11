@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { CHANNEL_PULLS, FEEDBACK, INBOUND_ROUTES, MAIL_LISTS_ROUTES, MANUAL_UPLOAD, NOTICES, PO_INTAKE, PO_ISSUES, PO_VERIFY, PRICE_DIFFS } from '../constants';
+import { BULK_ORDERS, CHANNEL_PULLS, FEEDBACK, INBOUND_ROUTES, MAIL_LISTS_ROUTES, MANUAL_UPLOAD, NOTICES, PO_INTAKE, PO_ISSUES, PO_VERIFY, PRICE_DIFFS } from '../constants';
 import poVerifyGate from '../modules/po-verify/po-verify.gate';
 import adminRoutes from './admin.routes';
 import amazonInboundRoutes from './amazon-inbound.routes';
@@ -8,6 +8,7 @@ import { D2C_ROUTES } from '../constants/d2c-transfers';
 import d2cTransfersRoutes from './d2c-transfers.routes';
 import approvalsRoutes from './approvals.routes';
 import authRoutes from './auth.routes';
+import bulkOrdersRoutes from './bulk-orders.routes';
 import feedbackRoutes from './feedback.routes';
 import noticesRoutes from './notices.routes';
 import healthRoutes from './health.routes';
@@ -49,5 +50,7 @@ router.use(PO_VERIFY.BASE, poVerifyRoutes);
 router.use(MANUAL_UPLOAD.BASE, manualUploadRoutes);
 router.use(FEEDBACK.BASE, feedbackRoutes);
 router.use(NOTICES.BASE, noticesRoutes);
+// Bulk Orders portal (2026-11-11): its own frontend; access = the /bulk-orders pages.
+router.use(BULK_ORDERS.BASE, bulkOrdersRoutes);
 
 export default router;

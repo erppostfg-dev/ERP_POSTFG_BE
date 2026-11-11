@@ -38,6 +38,19 @@ describe('Google sign-in', () => {
     expect(await count('sessions')).toBe(0);
   });
 
+  it('a sign-in started from the Bulk Orders portal (?app=bulk) goes back to the portal; a POST_FG one to POST_FG', async () => {
+    const start = await api().get(`${P}/auth/google?app=bulk`).expect(302);
+    const cookies = ([] as string[]).concat(start.headers['set-cookie'] ?? []);
+    expect(cookies.some((c) => c.startsWith(`${AUTH.APP_COOKIE}=${AUTH.APP_BULK}`))).toBe(true);
+    const back = await api().get(`${P}/auth/google/callback?state=forged&code=x`).set('Cookie', `${AUTH.STATE_COOKIE}=real; ${AUTH.APP_COOKIE}=${AUTH.APP_BULK}`).expect(302);
+    expect(back.headers.location).toBe('http://localhost:5174/?error=OAUTH_STATE_INVALID');
+    const plain = await api().get(`${P}/auth/google/callback?state=forged&code=x`).set('Cookie', `${AUTH.STATE_COOKIE}=real`).expect(302);
+    expect(plain.headers.location).toBe('http://localhost:5173/?error=OAUTH_STATE_INVALID');
+    // CORS lets the portal call the API with its cookie
+    const pre = await api().options(`${P}/auth/me`).set('Origin', 'http://localhost:5174').set('Access-Control-Request-Method', 'GET');
+    expect(pre.headers['access-control-allow-origin']).toBe('http://localhost:5174');
+  });
+
   it('callback without a code is refused', async () => {
     const res = await api().get(`${P}/auth/google/callback?state=s`).set('Cookie', `${AUTH.STATE_COOKIE}=s`).expect(302);
     expect(res.headers.location).toContain('error=GOOGLE_TOKEN_INVALID');

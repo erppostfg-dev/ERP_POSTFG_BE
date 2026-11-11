@@ -93,6 +93,12 @@ export const TABLES = {
   // Notices (2026-11-10, constants/notices.ts): one-way notes in the bell, kept 2 days; seen = newest notice id per person.
   NOTICES: 'notices',
   NOTICE_SEEN: 'notice_seen',
+  // Bulk Orders portal (2026-11-11, constants/bulk-orders.ts): Marketing / Institutional orders, their lines, saved
+  // delivery locations and the PO number counter (MKT-2026-0001 / INST-2026-0001).
+  BULK_ORDERS: 'bulk_orders',
+  BULK_ORDER_LINES: 'bulk_order_lines',
+  BULK_LOCATIONS: 'bulk_locations',
+  BULK_ORDER_COUNTERS: 'bulk_order_counters',
   // Gmail intake (2026-10-29, constants/gmail-intake.ts): each labelled email's channel once read; catch-ups as rows.
   GMAIL_MESSAGES: 'gmail_messages',
   INTAKE_CATCHUPS: 'intake_catchups',

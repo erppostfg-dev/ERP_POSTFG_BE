@@ -1,5 +1,7 @@
+import { AppDataSource } from '../../config/data-source';
 import { CACHE_NS } from '../../constants/cache';
-import { forgetCache } from '../cache/cache.service';
+import { MasterSku } from '../../entities';
+import { cached, forgetCache } from '../cache/cache.service';
 
 /*
  * Masters in the shared cache (2026-11-10, modules/cache): the Masters lists and the Add form choices (CACHE_NS.MASTERS)
@@ -11,3 +13,12 @@ export const forgetMasters = async (): Promise<void> => {
   await forgetCache(CACHE_NS.MASTERS);
   await forgetCache(CACHE_NS.PO_OVERVIEW_FILTERS);
 };
+
+/**
+ * Every PEP SKU (master_skus, all columns) from the shared cache (2026-11-11): ONE DB read per CACHE_TTL_SECONDS for the
+ * whole team, dropped at once by forgetMasters(). For SHOWING / SEARCHING only (PO review panels, Bulk Orders SKU search):
+ * decisions (PO validation, submit, approve, re-check, a bulk order's price) read master_skus fresh from the DB.
+ * Comes back as JSON: dates are text.
+ */
+export const cachedPepSkus = (): Promise<MasterSku[]> =>
+  cached(CACHE_NS.MASTERS, 'panel:skus', () => AppDataSource.getRepository(MasterSku).find());

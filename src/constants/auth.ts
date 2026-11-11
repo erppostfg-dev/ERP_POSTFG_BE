@@ -52,6 +52,12 @@ export const PAGES: readonly PageEntry[] = [
   { slug: '/planning/analytics', label: 'Analytics', section: 'Demand Planning' },
   { slug: '/approvals', label: 'Approvals', section: 'General' },
   { slug: '/admin', label: 'Users & Roles', section: 'General' },
+  // Bulk Orders portal (2026-11-11, constants/bulk-orders.ts): its OWN frontend, not the POST_FG sidebar. Editor on a
+  // type = creates that type's orders, viewer = sees them; Approve = approves (step 2).
+  { slug: '/bulk-orders', label: 'Bulk Orders', section: 'Bulk Orders' },
+  { slug: '/bulk-orders/marketing', label: 'Marketing orders', section: 'Bulk Orders' },
+  { slug: '/bulk-orders/institutional', label: 'Institutional orders', section: 'Bulk Orders' },
+  { slug: '/bulk-orders/approve', label: 'Approve bulk orders', section: 'Bulk Orders' },
 ];
 
 /**
@@ -105,12 +111,13 @@ export const PAGE = {
   APPROVALS: '/approvals',
   ADMIN: '/admin',
   FEEDBACK: '/feedback',
+  BULK_ORDERS: '/bulk-orders',
 } as const;
 
 /** Grants the seed writes: both roles editor on every top-level page (children inherit). */
 export const DEFAULT_ROLE_GRANTS: Record<RoleKey, { pageSlug: string; access: AccessLevel }[]> = {
-  [ROLES.DEVELOPER]: [PAGE.MASTERS, PAGE.OPERATIONS, PAGE.PLANNING, PAGE.APPROVALS, PAGE.ADMIN].map((pageSlug) => ({ pageSlug, access: ACCESS_LEVEL.EDITOR })),
-  [ROLES.ADMIN]: [PAGE.MASTERS, PAGE.OPERATIONS, PAGE.PLANNING, PAGE.APPROVALS, PAGE.ADMIN].map((pageSlug) => ({ pageSlug, access: ACCESS_LEVEL.EDITOR })),
+  [ROLES.DEVELOPER]: [PAGE.MASTERS, PAGE.OPERATIONS, PAGE.PLANNING, PAGE.APPROVALS, PAGE.ADMIN, PAGE.BULK_ORDERS].map((pageSlug) => ({ pageSlug, access: ACCESS_LEVEL.EDITOR })),
+  [ROLES.ADMIN]: [PAGE.MASTERS, PAGE.OPERATIONS, PAGE.PLANNING, PAGE.APPROVALS, PAGE.ADMIN, PAGE.BULK_ORDERS].map((pageSlug) => ({ pageSlug, access: ACCESS_LEVEL.EDITOR })),
 };
 
 /** Login settings that are not secrets. */
@@ -119,6 +126,9 @@ export const AUTH = {
   SESSION_COOKIE: 'postfg_session',
   STATE_COOKIE: 'postfg_oauth_state',
   STATE_COOKIE_MINUTES: 10,
+  /** Which frontend started the sign-in (2026-11-11): ?app=bulk -> back to the Bulk Orders portal, else POST_FG. */
+  APP_COOKIE: 'postfg_oauth_app',
+  APP_BULK: 'bulk',
   /** sessions.token: what issued the session (prefg writes the same). */
   SESSION_ISSUER: 'google-oauth-jwt',
   JWT_ISSUER: 'post-fg',

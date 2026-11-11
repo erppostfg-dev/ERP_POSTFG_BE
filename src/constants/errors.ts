@@ -92,6 +92,11 @@ export const ERRORS = {
   UNIWARE_CREATE_OFF: define(409, () => 'Create in Uniware is switched off on this server (UNIWARE_CREATE_ENABLED): download the CSV instead'),
   UNIWARE_CREATE_NO_PHONE: define(409, () => 'Create in Uniware needs UNIWARE_ORDER_PHONE (the phone on the sale order address): ask a developer'),
   UNIWARE_CREATE_TOO_MANY: define(400, (max: number) => `Pick at most ${max} POs to create in Uniware at once`),
+  // Bulk Orders portal (2026-11-11, constants/bulk-orders.ts)
+  BULK_ORDER_NOT_FOUND: define(404, (id: string) => `Bulk order ${id} not found`),
+  BULK_TYPE_NOT_ALLOWED: define(403, (type: string, needed: string) => `You cannot ${needed} ${type} bulk orders: ask an admin for that role`),
+  BULK_NO_ORDER_ACCESS: define(403, () => 'You have no access to bulk orders: ask an admin for a Bulk Orders role'),
+  BULK_LOCATION_LABEL_TAKEN: define(409, (label: string) => `A saved location is already called "${label}": pick it, or use another name`),
   UNIWARE_SYNC_TOO_SOON: define(409, (ago: number, by: string, left: number) => `Sync from Uniware was run ${ago} min ago by ${by}: available again in ${left} min (the server also syncs every 30 min by itself)`),
   // --- Notices (2026-11-10) ---
   NOTICES_OFF: define(409, () => 'Notices are switched off (Users & Roles -> Settings)'),

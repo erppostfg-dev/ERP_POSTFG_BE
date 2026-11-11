@@ -61,6 +61,20 @@ export const ROLE_CATALOG: readonly RoleDef[] = [
     key: 'viewer', label: 'Viewer', description: 'Sees every page except Users & Roles; changes nothing', isSystem: false,
     grants: { ...all(MASTERS, V), ...all(OPERATIONS, V), ...all(PLANNING, V), '/approvals': V },
   },
+  // Bulk Orders portal (2026-11-11, constants/bulk-orders.ts): each opens ONLY the portal (no POST_FG page); independent
+  // of each other (user: "they all are independent"). Migration BulkOrders inserts them.
+  {
+    key: 'bulk-marketing', label: 'Bulk Orders: Marketing', description: 'Creates and sees Marketing bulk orders in the Bulk Orders portal only', isSystem: false,
+    grants: { '/bulk-orders/marketing': E },
+  },
+  {
+    key: 'bulk-institutional', label: 'Bulk Orders: Institutional', description: 'Creates and sees Institutional bulk orders in the Bulk Orders portal only', isSystem: false,
+    grants: { '/bulk-orders/institutional': E },
+  },
+  {
+    key: 'bulk-approver', label: 'Bulk Orders: Approver', description: 'Sees every bulk order and approves or rejects them in the Bulk Orders portal only', isSystem: false,
+    grants: { '/bulk-orders/approve': E, '/bulk-orders/marketing': V, '/bulk-orders/institutional': V },
+  },
 ];
 
 /** users.id / roles.key in a URL. */

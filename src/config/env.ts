@@ -165,6 +165,9 @@ export const env = {
     redirectUrl: process.env.AUTH_REDIRECT_URL ?? `http://localhost:${port}${apiPrefix}/auth/me`,
     // The frontend's origin: CORS with credentials is allowed only for it.
     frontendOrigin: process.env.FRONTEND_ORIGIN ?? 'http://localhost:5173',
+    // Bulk Orders portal (2026-11-11): its own frontend. A sign-in started there (/auth/google?app=bulk) comes back here;
+    // its origin is allowed by CORS too (deployed on the same domain as POST_FG: <domain>/bulk-orders/).
+    bulkPortalUrl: process.env.BULK_PORTAL_URL || 'http://localhost:5174',
     allowedEmailDomain: (process.env.ALLOWED_EMAIL_DOMAIN ?? 'mcaffeine.com').toLowerCase(),
     sessionDays: Number(process.env.SESSION_DAYS ?? 7),
     // Seconds a session check and a person's page access are kept in memory (2026-10-27; 0 = always read the DB).
