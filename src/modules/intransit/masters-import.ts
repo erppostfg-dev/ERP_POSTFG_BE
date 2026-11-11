@@ -1,5 +1,6 @@
 import fs from 'fs';
 import fsp from 'fs/promises';
+import { forgetMasters } from '../masters/masters.cache';
 import path from 'path';
 import { AppDataSource } from '../../config/data-source';
 import { env } from '../../config/env';
@@ -362,5 +363,6 @@ export const importIntransitMasters = async (opts: { apply: boolean; log: Log; o
     await m.query(`DELETE FROM ${TABLES.INTRANSIT_CHANNEL_SKU_MAP}`);
     await insert(TABLES.INTRANSIT_CHANNEL_SKU_MAP, csm.map((r) => ({ sku_code: r.sku, channel: r.channel, channel_sku_code: r.code, final_sku: r.final, source: r.source, review_note: r.note, is_active: 1 })));
   });
+  void forgetMasters(); // the shared cached masters (PEP SKU list etc.) are dropped after the commit (2026-11-11, POST_FG Bulk Orders / PO panels)
   return { logFile, summary, applied: true };
 };

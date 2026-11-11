@@ -1,5 +1,6 @@
 import { EntityManager } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
+import { forgetMasters } from '../masters/masters.cache';
 import { ERROR_CODES, MASTER_CHANGE_SOURCE, SKU_COMPONENT_STAGE, SkuComponentStage, TABLES } from '../../constants';
 import { appError } from '../../utils/AppError';
 import { DB_MASTER_FILES } from './masters-export';
@@ -456,7 +457,10 @@ export const importMasterUpload = async (
         // one step line per import: which master, dry run or not, how long (2026-10-27)
         await step(`import master ${master}${opts.dryRun ? ' (dry run)' : ''}`, () => run(qr.manager));
         if (opts.dryRun) await qr.rollbackTransaction();
-        else await qr.commitTransaction();
+        else {
+          await qr.commitTransaction();
+          void forgetMasters(); // the shared cached masters (PEP SKU list etc.) are dropped after the commit (2026-11-11, POST_FG Bulk Orders / PO panels)
+        }
       } catch (err) {
         await qr.rollbackTransaction();
         throw err;

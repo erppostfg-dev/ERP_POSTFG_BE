@@ -1,5 +1,6 @@
 import { AppDataSource } from '../../config/data-source';
 import { env } from '../../config/env';
+import { forgetMasters } from '../masters/masters.cache';
 import { ERROR_CODES, MASTER_CHANGE_SOURCE, TABLES } from '../../constants';
 import { appError } from '../../utils/AppError';
 import { assertMastersWritable, Change, ensureSkus, logChanges, mastersInDb, Who } from './masters-db';
@@ -36,7 +37,7 @@ export const reviewSettings = async (uniware: UniwareConfig | null, cacheDir: st
 /** Save a build's filled values to the SKUs master_skus has (blanks only); returns how many SKUs changed. */
 export const saveSkuFills = async (fills: SkuFill[], who: Who): Promise<number> => {
   if (!fills.length || !reviewsHere()) return 0;
-  return AppDataSource.transaction(async (m) => {
+  const out = await AppDataSource.transaction(async (m) => {
     let changed = 0;
     for (let i = 0; i < fills.length; i += 500) {
       const part = fills.slice(i, i + 500);
@@ -62,6 +63,8 @@ export const saveSkuFills = async (fills: SkuFill[], who: Who): Promise<number> 
     }
     return changed;
   });
+  void forgetMasters(); // the shared cached masters (PEP SKU list etc.) are dropped after the commit (2026-11-11, POST_FG Bulk Orders / PO panels)
+  return out;
 };
 
 /** What a person chose for one issue of a build (POST /runs/:id/issues). */
@@ -134,7 +137,7 @@ export const applyIssueAnswers = async (items: NewSku[], answers: IssueAnswer[],
 
 /** Consider (true) / Don't consider (false) for SKUs and marketplace codes, by newSkuKey. */
 const saveSkuDecisions = async (items: NewSku[], answered: Map<string, boolean>, who: Who): Promise<void> => {
-  return AppDataSource.transaction(async (m) => {
+  await AppDataSource.transaction(async (m) => {
     const skuItems = items.filter((n) => n.kind === 'sku');
     const { map } = await ensureSkus(m, skuItems.map((n) => n.sku), who, SHEET35, MASTER_CHANGE_SOURCE.SKU_REVIEW, false, true);
     const changes: Change[] = [];
@@ -164,4 +167,5 @@ const saveSkuDecisions = async (items: NewSku[], answered: Map<string, boolean>,
     }
     await logChanges(m, changes, who, MASTER_CHANGE_SOURCE.SKU_REVIEW);
   });
+  void forgetMasters(); // the shared cached masters (PEP SKU list etc.) are dropped after the commit (2026-11-11, POST_FG Bulk Orders / PO panels)
 };
