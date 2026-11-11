@@ -12,7 +12,7 @@ import { env } from './env';
 
 /**
  * Refuses a database that is not in ALLOWED_DATABASES (constants/db.ts). The current DB login can also reach other
- * schemas (prod, inv ...), so this keeps the app on mcaff_postfg_dev until dedicated logins exist.
+ * schemas (inv, prefg ...), so this keeps the app on our own databases (mcaff_postfg_dev / mcaff_postfg_prod).
  */
 export const assertAllowedDatabase = (database: string | undefined, host?: string): void => {
   if (!database || !ALLOWED_DATABASES.includes(database)) {

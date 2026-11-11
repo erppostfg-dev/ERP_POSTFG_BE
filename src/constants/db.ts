@@ -5,15 +5,15 @@
  */
 
 /**
- * Databases the app may connect to. A temporary safety net: the current DB login can also reach other schemas
- * (prod, inv ...), so the connection is refused for any database not listed here.
- * When dedicated logins exist: add 'mcaff_postfg_prod' for production, or remove this check.
+ * Databases the app may connect to: our dev and prod databases (+ the test one). A safety net: the DB login can also reach
+ * other schemas (inv, prefg ...), so the connection is refused for any database not listed here. mcaff_postfg_prod added
+ * 2026-11-11 (first prod deploy, 326f9e6, was refused with DB_NOT_ALLOWED; PROD_CHECKLIST 2).
  * TEST_DATABASE is used only by `npm test` (user, 2026-10-25): the tests refuse any other database.
  */
 export const TEST_DATABASE = 'mcaff_postfg_test';
 /** Hosts the test database may be on (the laptop's local MySQL, the CI job's MySQL service). */
 export const TEST_DB_HOSTS: readonly string[] = ['127.0.0.1', 'localhost'];
-export const ALLOWED_DATABASES: readonly string[] = ['mcaff_postfg_dev', TEST_DATABASE];
+export const ALLOWED_DATABASES: readonly string[] = ['mcaff_postfg_dev', 'mcaff_postfg_prod', TEST_DATABASE];
 
 /**
  * PEPIMS's database: masters:load --pepims READS its master tables (inside START TRANSACTION READ ONLY, separate
