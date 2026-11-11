@@ -104,6 +104,8 @@
   "GET /po-review/:uploadId/file",
   "GET /po-review/:uploadId/rejection",
   "GET /po-review/:uploadId/uniware-csv",
+  "GET /po-review/bulk-orders",
+  "GET /po-review/bulk-orders/:id",
   "GET /po-review/events",
   "GET /po-review/issues",
   "GET /po-review/issues/pos",

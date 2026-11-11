@@ -594,8 +594,10 @@ const userNames = async (ids: number[]): Promise<Map<number, string>> => {
   return new Map(us.map((u) => [u.id, u.name || u.email]));
 };
 
-/** Orders of the types the person may see, newest first; filters type / status / search (PO number, ordered by, receiver, city). */
-export const listBulkOrders = async (actor: BulkActor, q: Record<string, unknown>) => {
+interface ListQuery { type: BulkOrderType | null; status: string | null; page: number; size: number; search: string }
+
+/** Checks a list query (type, status, q, page, pageSize); 400 with every wrong one. */
+const parseListQuery = (q: Record<string, unknown>): ListQuery => {
   const c = new Checker();
   const type = q.type === undefined || q.type === '' ? null : typeParam(c, q.type);
   const status = q.status === undefined || q.status === '' ? null : c.oneOf(q.status, 'status', BULK_ORDER_STATUSES);
@@ -605,28 +607,34 @@ export const listBulkOrders = async (actor: BulkActor, q: Record<string, unknown
   if (!Number.isInteger(size) || size < 1 || size > BULK_ORDERS.PAGE_SIZE_MAX) c.add('pageSize', errorMessage(ERROR_CODES.FIELD_NOT_INT_RANGE, 'pageSize', 1, BULK_ORDERS.PAGE_SIZE_MAX));
   const search = c.text(q.q, 'q', 100, false);
   c.fail();
-  const r = await needAnyBulk(actor);
-  if (type) needType(r, type, ACCESS_LEVEL.VIEWER);
-  const types = type ? [type] : viewable(r);
-  if (!types.length) return { items: [], meta: { total: 0, page, pageSize: size } };
-
-  const qb = AppDataSource.getRepository(BulkOrder).createQueryBuilder('o').where('o.orderType IN (:...types)', { types });
-  if (status) qb.andWhere('o.status = :status', { status });
-  if (search) {
-    const like = `%${search.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
-    qb.andWhere('(o.poNumber LIKE :like OR o.orderedBy LIKE :like OR o.receiverName LIKE :like OR o.city LIKE :like OR o.locationLabel LIKE :like)', { like });
-  }
-  const [found, total] = await qb.orderBy('o.createdAt', 'DESC').addOrderBy('o.id', 'DESC').skip((page - 1) * size).take(size).getManyAndCount();
-  const names = await userNames(found.flatMap((o) => [o.createdBy, o.decidedBy ?? 0]));
-  return { items: found.map((o) => orderOut(o, names)), meta: { total, page, pageSize: size } };
+  return { type, status, page, size, search };
 };
 
-/** One order with its lines; 404 when missing or of a type the person may not see. */
-export const getBulkOrder = async (actor: BulkActor, id: string) => {
-  if (!isId(id)) throw appError(ERROR_CODES.BULK_ORDER_NOT_FOUND, String(id));
-  const o = await AppDataSource.getRepository(BulkOrder).findOneBy({ id });
+/** One page of orders of these types (newest first) + the total: 1 count + 1 page query, no lines. */
+const pageOfOrders = async (types: BulkOrderType[], l: ListQuery) => {
+  if (!types.length) return { items: [], meta: { total: 0, page: l.page, pageSize: l.size } };
+  const qb = AppDataSource.getRepository(BulkOrder).createQueryBuilder('o').where('o.orderType IN (:...types)', { types });
+  if (l.status) qb.andWhere('o.status = :status', { status: l.status });
+  if (l.search) {
+    const like = `%${l.search.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
+    qb.andWhere('(o.poNumber LIKE :like OR o.orderedBy LIKE :like OR o.receiverName LIKE :like OR o.city LIKE :like OR o.locationLabel LIKE :like)', { like });
+  }
+  const [found, total] = await qb.orderBy('o.createdAt', 'DESC').addOrderBy('o.id', 'DESC').skip((l.page - 1) * l.size).take(l.size).getManyAndCount();
+  const names = await userNames(found.flatMap((o) => [o.createdBy, o.decidedBy ?? 0]));
+  return { items: found.map((o) => orderOut(o, names)), meta: { total, page: l.page, pageSize: l.size } };
+};
+
+/** Orders of the types the person may see (portal), newest first; filters type / status / search (PO number, ordered by, receiver, city). */
+export const listBulkOrders = async (actor: BulkActor, q: Record<string, unknown>) => {
+  const l = parseListQuery(q);
   const r = await needAnyBulk(actor);
-  if (!o || !allows(r.types[o.orderType as BulkOrderType] ?? ACCESS_LEVEL.NONE, ACCESS_LEVEL.VIEWER)) throw appError(ERROR_CODES.BULK_ORDER_NOT_FOUND, id);
+  if (l.type) needType(r, l.type, ACCESS_LEVEL.VIEWER);
+  return pageOfOrders(l.type ? [l.type] : viewable(r), l);
+};
+
+/** One order with lines + timeline (no access check: the callers check). */
+const orderFull = async (o: BulkOrder) => {
+  const id = String(o.id);
   const [lines, events] = await Promise.all([
     AppDataSource.getRepository(BulkOrderLine).find({ where: { orderId: id }, order: { lineNo: 'ASC' } }),
     AppDataSource.getRepository(BulkOrderEvent).find({ where: { orderId: id }, order: { id: 'ASC' } }),
@@ -640,4 +648,34 @@ export const getBulkOrder = async (actor: BulkActor, id: string) => {
       unitPrice: l.unitPrice, lineTotal: l.lineTotal, requestedQty: l.requestedQty, requestedDiscountPct: l.requestedDiscountPct,
     })),
   };
+};
+
+/** One order with its lines (portal); 404 when missing or of a type the person may not see. */
+export const getBulkOrder = async (actor: BulkActor, id: string) => {
+  if (!isId(id)) throw appError(ERROR_CODES.BULK_ORDER_NOT_FOUND, String(id));
+  const o = await AppDataSource.getRepository(BulkOrder).findOneBy({ id });
+  const r = await needAnyBulk(actor);
+  if (!o || !allows(r.types[o.orderType as BulkOrderType] ?? ACCESS_LEVEL.NONE, ACCESS_LEVEL.VIEWER)) throw appError(ERROR_CODES.BULK_ORDER_NOT_FOUND, id);
+  return orderFull(o);
+};
+
+// ---- our team: PO Processing & Review > Bulk Orders (step 3a, read only; the route checks PO review access) ----------
+
+/** Every type's orders for our team + per type how many approved ones wait (the tab's count): 1 extra GROUP BY. */
+export const teamBulkOrders = async (q: Record<string, unknown>) => {
+  const l = parseListQuery(q);
+  const [found, counts] = await Promise.all([
+    pageOfOrders(l.type ? [l.type] : BULK_ORDER_TYPES, l),
+    AppDataSource.getRepository(BulkOrder).createQueryBuilder('o').select('o.orderType', 'type').addSelect('COUNT(*)', 'n')
+      .where('o.status = :s', { s: BULK_ORDER_STATUS.APPROVED }).groupBy('o.orderType').getRawMany<{ type: string; n: string }>(),
+  ]);
+  const waiting = Object.fromEntries(BULK_ORDER_TYPES.map((t) => [t, Number(counts.find((c) => c.type === t)?.n ?? 0)])) as Record<BulkOrderType, number>;
+  return { items: found.items, meta: { ...found.meta, waiting } };
+};
+
+/** One order for our team (any type); 404 when missing. */
+export const teamBulkOrder = async (id: string) => {
+  const o = isId(id) ? await AppDataSource.getRepository(BulkOrder).findOneBy({ id }) : null;
+  if (!o) throw appError(ERROR_CODES.BULK_ORDER_NOT_FOUND, String(id));
+  return orderFull(o);
 };

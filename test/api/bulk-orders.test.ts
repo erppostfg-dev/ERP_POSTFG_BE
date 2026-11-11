@@ -9,7 +9,8 @@ import { covers } from '../helpers/routes';
  * and year (also under parallel creates), saved locations per type, validation, and nothing of the PO chain touched.
  */
 covers(['GET /bulk-orders', 'POST /bulk-orders', 'GET /bulk-orders/skus', 'GET /bulk-orders/locations', 'POST /bulk-orders/locations', 'GET /bulk-orders/:id',
-  'PUT /bulk-orders/:id', 'POST /bulk-orders/:id/cancel', 'POST /bulk-orders/:id/approve', 'POST /bulk-orders/:id/reject']);
+  'PUT /bulk-orders/:id', 'POST /bulk-orders/:id/cancel', 'POST /bulk-orders/:id/approve', 'POST /bulk-orders/:id/reject',
+  'GET /po-review/bulk-orders', 'GET /po-review/bulk-orders/:id']);
 
 const V = '/api/v1/bulk-orders';
 const YEAR = new Date(Date.now() + 5.5 * 3600_000).getUTCFullYear();
@@ -283,5 +284,36 @@ describe('bulk orders step 2: edit, cancel, approve, reject (timeline)', () => {
     const admin = await loginAs('admin');
     const own = (await create(admin, order()).expect(201)).body.data;
     expect((await post(admin, own.id, 'approve').expect(200)).body.data).toMatchObject({ status: 'approved', decidedBy: { id: admin.userId } });
+  });
+});
+
+describe('bulk orders step 3a: our team sees them in PO Processing & Review (read only)', () => {
+  const T = '/api/v1/po-review/bulk-orders';
+
+  it('anyone with PO review access sees both types + the approved-and-waiting count per type; portal people are refused', async () => {
+    const m1 = (await create(mkt, order()).expect(201)).body.data;
+    await create(mkt, order()).expect(201);
+    const i1 = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
+    await api().post(`${V}/${m1.id}/approve`).set('Cookie', approver.cookie).send({}).expect(200);
+    await api().post(`${V}/${i1.id}/reject`).set('Cookie', approver.cookie).send({ reason: 'No budget' }).expect(200);
+
+    const all = (await api().get(T).set('Cookie', opsExec.cookie).expect(200)).body;
+    expect(all.meta).toMatchObject({ total: 3, waiting: { marketing: 1, institutional: 0 } });
+    const viewer = await loginAs('viewer'); // PO review viewer: sees it too
+    const approved = (await api().get(`${T}?type=marketing&status=approved`).set('Cookie', viewer.cookie).expect(200)).body;
+    expect(approved.data.map((o: { poNumber: string }) => o.poNumber)).toEqual([m1.poNumber]);
+    expect((await api().get(`${T}?type=institutional`).set('Cookie', viewer.cookie).expect(200)).body.data[0]).toMatchObject({ status: 'rejected', decisionNote: 'No budget' });
+
+    const one = (await api().get(`${T}/${m1.id}`).set('Cookie', opsExec.cookie).expect(200)).body.data;
+    expect(one).toMatchObject({ poNumber: m1.poNumber, status: 'approved', lineCount: 2 });
+    expect(one.events.map((e: { action: string }) => e.action)).toEqual(['created', 'approved']);
+    await api().get(`${T}/999999`).set('Cookie', opsExec.cookie).expect(404);
+    await api().get(`${T}?status=done`).set('Cookie', opsExec.cookie).expect(400);
+
+    for (const portal of [mkt, approver]) {
+      await api().get(T).set('Cookie', portal.cookie).expect(403);
+      await api().get(`${T}/${m1.id}`).set('Cookie', portal.cookie).expect(403);
+    }
+    await api().get(T).expect(401);
   });
 });

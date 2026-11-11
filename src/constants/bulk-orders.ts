@@ -112,6 +112,12 @@ export const BULK_ORDERS = {
   SERIAL_DIGITS: 4,
 } as const;
 
+/** Our team's read-only view in PO Processing & Review > Bulk Orders (step 3a; PO review page access). */
+export const BULK_ORDERS_TEAM = {
+  BASE: '/po-review/bulk-orders',
+  ROUTES: { LIST: '/', ONE: '/:id' },
+} as const;
+
 /** Request body fields (also the `field` of a VALIDATION_FAILED detail). */
 export const BULK_BODY = {
   TYPE: 'type',
