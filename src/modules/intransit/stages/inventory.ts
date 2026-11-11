@@ -1,8 +1,10 @@
+import { STOCK_FORMULAS, type StockFormulaParts } from '../../../constants';
 import { Context, fmtInt } from '../context';
 import {
   canonValues, Col, fillna, Frame, keyOf, mapWith, pyStr, roundHalfEven, stripped, stripText as s, sum, toNumber, toNumeric, unquoted,
 } from '../frame';
 import { cleanCols } from '../io';
+import { SRC_PO } from './combined-intransit';
 
 /* Stock on hand per channel/facility, combined with in-transit units (inventory.py, legacy stageI). */
 
@@ -12,12 +14,18 @@ const CANON_COLS = ['Channel SKU Code', 'SKU Code', 'Fulfilment Centre', 'Final 
 
 /** Amazon removal/liquidation sites - not fulfilment centres. */
 const AMZ_EXCLUDE_LOCATIONS = new Set(['rso6', 'rso7', 'rso8', 'rsoc']);
-/** D2C facilities whose Stock In Transfer counts as stock. */
-const D2C_SIT_FACILITIES = new Set(['mcaff_gurgaon3', 'mcaff_mumbai2']);
 const FACILITY_LOCATION_OVERRIDE = new Map([
   ['mum_warehouse2', 'mumbai'], ['ggn_warehouse', 'gurgaon'], ['hyp_b2b_ggn', 'gurgaon'],
   ['hyp_b2b_mum2', 'mumbai'], ['return_mum2', 'mumbai'], ['return_ggn', 'gurgaon'],
+  // the Kolkata warehouse keeps its code as Final Location (reference report); listed so it is not "no Final Location"
+  ['kol_warehouse', 'KOL_WAREHOUSE'],
 ]);
+/**
+ * D2C hubs and stock in transit to them keep their own code as Final Location (mCaff_Gurgaon3; Gurgaon3 for a transfer
+ * to it): the WH table (wh-summary.ts) sorts D2C stock by that code, so a city from the Location Master ("Website"
+ * rows) must not replace it, and it is never "no Final Location" (user, 2026-11-04).
+ */
+const OWN_CODE_CHANNELS = new Set(['d2c', 'mcaffeineb2c', 'hyp_website']);
 /** Warehouses reported under their own channel (name and type) instead of "MWH". */
 const FC_CHANNEL_OVERRIDE = new Map([
   ['hyp_b2b_mum2', 'MUMMWH'], ['mum_warehouse2', 'MUMMWH'], ['mumbai', 'MUMMWH'],
@@ -77,9 +85,18 @@ const sohFrame = (csku: Col, sku: Col, name: Col | string, fc: Col, channel: str
 
 const none = (n: number): boolean[] => new Array<boolean>(n).fill(false);
 
-const marketplaceSoh = async (ctx: Context, skuMap: Map<string, string>): Promise<Part[]> => {
+/** Rows of `df` whose marketplace code (codeCol) the user said not to count are dropped (logged). */
+const dropNotConsidered = (ctx: Context, df: Frame, codeCol: string, drop: Set<string>, what: string): Frame => {
+  if (!drop.size || !df.length) return df;
+  const keep = lowerAll(unquoted(df.get(codeCol))).map((c) => !drop.has(c));
+  const n = keep.filter((k) => !k).length;
+  if (n) ctx.log(`  ${what}: ${fmtInt(n)} row(s) of codes marked Consider = No in Channel SKU Mapping left out`);
+  return n ? df.filter(keep) : df;
+};
+
+const marketplaceSoh = async (ctx: Context, skuMap: Map<string, string>, drop: Set<string>): Promise<Part[]> => {
   const out: Part[] = [];
-  const fk = await readClean(ctx, 'FK_SOH.csv');
+  const fk = dropNotConsidered(ctx, await readClean(ctx, 'FK_SOH.csv'), 'FSN', drop, 'FK_SOH');
   let csku: Col = s(fk.get('FSN'));
   let [sku, miss] = mapChannelSku(skuMap, csku, s(fk.get('SKU')));
   out.push({ frame: sohFrame(csku, sku, s(fk.get('Title')), s(fk.get('Warehouse Id')), 'Flipkart', numCol(fk, 'Live on Website')), skuMissing: miss, facMissing: none(fk.length) });
@@ -89,12 +106,14 @@ const marketplaceSoh = async (ctx: Context, skuMap: Map<string, string>): Promis
   // shared with real FCs).
   az = az.filter(s(az.get('Disposition')).map((d) => d.toUpperCase() === 'SELLABLE'));
   az = az.filter(s(az.get('Location')).map((l) => !AMZ_EXCLUDE_LOCATIONS.has(l.toLowerCase())));
+  az = dropNotConsidered(ctx, az, 'FNSKU', drop, 'Amazon_SOH');
   csku = s(az.get('FNSKU'));
   [sku, miss] = mapChannelSku(skuMap, csku, s(az.get('MSKU')));
   out.push({ frame: sohFrame(csku, sku, s(az.get('Title')), s(az.get('Location')), 'Amazon', numCol(az, 'Ending Warehouse Balance')), skuMissing: miss, facMissing: none(az.length) });
 
   let my = await readClean(ctx, 'Myntra_SOH.csv');
   my = my.filter(s(my.get('po_type')).map((t) => t.toUpperCase() === 'SJIT'));
+  my = dropNotConsidered(ctx, my, 'sku code', drop, 'Myntra_SOH');
   const whm = await readClean(ctx, 'MyntraWHIDs.csv');
   const whId = s(whm.get('WH Id'));
   const whLoc = s(whm.get('WH location'));
@@ -116,27 +135,35 @@ const facilitySoh = (ctx: Context, ex: Frame): Part[] => {
   const sit = numCol(ex, 'Stock In Transfer');
   const osal = numCol(ex, 'Open Sale');
   const facl = ex.get('_facl') as string[];
-  const units: Record<string, (i: number) => number> = {
-    D2C: (i) => (D2C_SIT_FACILITIES.has(facl[i]) ? inv[i] + putw[i] + opur[i] + sit[i] - osal[i] : inv[i] + putw[i] + opur[i] - osal[i]),
-    DarkStore: (i) => inv[i] + putw[i] + opur[i] + sit[i] - osal[i],
-    GGNMWH: (i) => inv[i] + putw[i] + opur[i] + sit[i],
-    MUMMWH: (i) => inv[i] + putw[i] + opur[i] + sit[i],
-    KOLMWH: (i) => inv[i] + putw[i] + opur[i] + sit[i],
-    Return: (i) => inv[i], // returned stock physically held: bare Inventory only
+  // each facility's own formula (Masters > Warehouses), summed in this order as the fixed formulas did before
+  const unitsOf = (p: StockFormulaParts, i: number): number => {
+    let u = inv[i];
+    if (p.putaway) u += putw[i];
+    if (p.openPurchase) u += opur[i];
+    if (p.stockInTransfer) u += sit[i];
+    if (p.openSale) u -= osal[i];
+    return u;
   };
   const out: Part[] = [];
   for (const [group, ctype, facs] of ctx.facilityGroups) {
-    if (!units[group]) {
+    const parts = new Map<string, StockFormulaParts>();
+    for (const f of facs) {
+      const st = ctx.stockOf(group, f);
+      if (st) parts.set(f.toLowerCase(), STOCK_FORMULAS[st.formula].parts);
+    }
+    if (!parts.size) {
       ctx.warn(`stock bucket ${group} has no units formula: ${facs.join(', ')} not counted`);
       continue;
     }
-    const lowerFacs = new Set(facs.map((f) => f.toLowerCase()));
-    const idx = facl.flatMap((f, i) => (lowerFacs.has(f) ? [i] : []));
+    const idx = facl.flatMap((f, i) => (parts.has(f) ? [i] : []));
+    const seen = new Set(idx.map((i) => facl[i]));
+    for (const f of parts.keys()) if (!seen.has(f)) ctx.log(`  ${group}: no stock rows for ${facs.find((x) => x.toLowerCase() === f)} in the Inventory Snapshot`);
     if (!idx.length) continue;
     const sub = ex.take(idx);
     const g = Frame.from({
       'Channel SKU Code': s(sub.get('Item SkuCode')), 'SKU Code': s(sub.get('Item SkuCode')), 'SKU Name': s(sub.get('Item Type Name')),
-      'Fulfilment Centre': sub.get('_fac'), 'Channel Name': group, 'Channel type': ctype, 'Stock Type': 'SOH', 'Final Units': idx.map(units[group]),
+      'Fulfilment Centre': sub.get('_fac'), 'Channel Name': group, 'Channel type': ctype, 'Stock Type': 'SOH',
+      'Final Units': idx.map((i) => unitsOf(parts.get(facl[i]) as StockFormulaParts, i)),
     }, idx.length);
     out.push({ frame: g, skuMissing: none(g.length), facMissing: none(g.length) });
   }
@@ -161,7 +188,8 @@ const locationResolver = (lm: Frame): Resolver => {
   return (channel, fcCol) => {
     const kCh = lowerAll(stripped(channel));
     const kFc = lowerAll(stripped(fcCol));
-    const res = kFc.map((f, i) => FACILITY_LOCATION_OVERRIDE.get(f) ?? byPair.get(keyOf([kCh[i], f])) ?? byFc.get(f) ?? null);
+    const res = kFc.map((f, i) => (OWN_CODE_CHANNELS.has(kCh[i]) && f !== '' ? fcCol[i] : null)
+      ?? FACILITY_LOCATION_OVERRIDE.get(f) ?? byPair.get(keyOf([kCh[i], f])) ?? byFc.get(f) ?? null);
     return [fillna(res, fcCol), res.map((r) => r === null)];
   };
 };
@@ -195,12 +223,15 @@ export const run = async (ctx: Context): Promise<void> => {
   code.forEach((c, i) => {
     if (c !== '' && !skuMap.has(c.toLowerCase())) skuMap.set(c.toLowerCase(), listing[i]);
   });
+  // codes answered "Don't consider" at a build's new-SKU question (2026-11-02): never counted
+  const consider = csm.has('Consider') ? s(csm.get('Consider')) : [];
+  const drop = new Set(code.filter((c, i) => c !== '' && consider[i]?.toLowerCase() === 'no').map((c) => c.toLowerCase()));
 
   let ex = await readClean(ctx, 'Export-Inventory Snapshot.csv');
   const exFac = s(ex.get('Facility'));
   ex = ex.assign({ _fac: exFac, _facl: lowerAll(exFac) });
 
-  const parts = [...(await marketplaceSoh(ctx, skuMap)), ...facilitySoh(ctx, ex)];
+  const parts = [...(await marketplaceSoh(ctx, skuMap, drop)), ...facilitySoh(ctx, ex)];
   let soh = Frame.concat(parts.map((p) => p.frame));
   const skuMissing = parts.flatMap((p) => p.skuMissing);
   const facMissing = parts.flatMap((p) => p.facMissing);
@@ -227,7 +258,20 @@ export const run = async (ctx: Context): Promise<void> => {
   ctx.log(`current inventory: ${fmtInt(cur.length)} rows, ${fmtInt(sum(cur.get('Final Units')))} units`);
 
   // ---- in-transit side
-  const combIt = ctx.get('df_combined_intransit');
+  let combIt = ctx.get('df_combined_intransit');
+  if (drop.size) {
+    const mkt = s(combIt.get('Channel')).map((c) => MARKETPLACES.has(c.trim().toLowerCase()));
+    const code = lowerAll(unquoted(combIt.get('Channel SKU Code')));
+    const keep = mkt.map((m, i) => !(m && drop.has(code[i])));
+    const n = keep.filter((k) => !k).length;
+    if (n) ctx.log(`  in transit: ${fmtInt(n)} row(s) of codes marked Consider = No in Channel SKU Mapping left out`);
+    combIt = combIt.filter(keep);
+  }
+  // a facility set to "SOH only": its own open purchase orders are not in transit (Masters > Warehouses, 2026-11-02)
+  const sohOnly = new Set(ctx.facilityGroups.flatMap(([group, , facs]) => facs.filter((f) => ctx.stockOf(group, f)?.feed === 'soh').map((f) => f.toLowerCase())));
+  const itSrc = s(combIt.get('Source'));
+  const itFac = lowerAll(stripped(combIt.get('Location')));
+  const ownPo = itSrc.map((src, i) => src === SRC_PO && sohOnly.has(itFac[i]));
   const itChannel = s(combIt.get('Channel'));
   const itCsku = s(combIt.get('Channel SKU Code'));
   const itNative = s(combIt.get('SKU Code'));
@@ -254,7 +298,9 @@ export const run = async (ctx: Context): Promise<void> => {
   // Return stock counts only while physically on hand - never in transit.
   const ct = lowerAll(stripped(it.get('Channel type')));
   const cn = lowerAll(stripped(it.get('Channel Name')));
-  it = it.filter(ct.map((t, i) => !(t === 'return' || cn[i] === 'return')));
+  const nOwn = ownPo.filter(Boolean).length;
+  if (nOwn) ctx.log(`  in transit: ${fmtInt(nOwn)} open PO row(s) of facilities set to SOH only left out`);
+  it = it.filter(ct.map((t, i) => !(t === 'return' || cn[i] === 'return' || ownPo[i])));
 
   // SOH and in-transit were re-cased independently: canonicalise the union again.
   const combined = aggregate(canonicalise(Frame.concat([cur, aggregate(it)])));

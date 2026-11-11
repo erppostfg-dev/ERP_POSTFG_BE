@@ -10,6 +10,7 @@ import { runSellerHubJob } from '../../intransit/runs.service';
 import { ConsignmentData, ConsignmentHeader, parseBulkConsignments } from './consignments.parse';
 import { ConsignmentsRobotResult } from './consignments.robot';
 import { flipkartConnector } from './flipkart.connector';
+import { processNow } from '../scheduler';
 
 /*
  * One run of the Flipkart consignments robot (2026-10-30), started by Run now or the schedule: the robot reads Seller Hub
@@ -43,6 +44,10 @@ const repo = () => AppDataSource.getRepository(ChannelPullItem);
 const stateRepo = () => AppDataSource.getRepository(AppState);
 
 let running: Promise<RobotRun> | null = null;
+
+/** What runs after a robot run stored consignments: the connector's process run (tests replace it). */
+let afterStored = (): void => void processNow(flipkartConnector);
+export const setFlipkartAfterStored = (fn: () => void): void => { afterStored = fn; };
 
 export const lastRobotRun = async (): Promise<RobotRun | null> =>
   ((await stateRepo().findOneBy({ key: APP_STATE_KEY.FLIPKART_ROBOT }))?.value as RobotRun | undefined) ?? null;
@@ -121,6 +126,8 @@ const run = async (trigger: string): Promise<RobotRun> => {
       kind: FLIPKART.ROBOT_JOB, seller: env.intransit.flipkart.sellerHub, cacheDir, known,
     }), FLIPKART.ROBOT_TIMEOUT_MS, line);
     const saved = await storeRobotResult(res);
+    // new consignments become POs right away (load, 2026-11-04: no 15-min connector look needed)
+    if (saved.stored) afterStored();
     Object.assign(out, { ok: true, listed: res.total, stored: saved.stored, completed: saved.completed, failed: saved.failed });
     if (res.bulkError) line(`Bulk Consignment File: ${res.bulkError} (new consignments wait for the next run)`);
     log.info(LOG_SOURCE.APP, `[flipkart-robot] ${trigger}: ${res.total} listed, ${saved.stored} new, ${saved.failed.length} failed, ${saved.completed} completed`);

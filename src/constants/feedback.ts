@@ -27,6 +27,16 @@ export type FeedbackStatus = (typeof FEEDBACK_STATUS)[keyof typeof FEEDBACK_STAT
 export const FEEDBACK_COMMENT_KIND = { COMMENT: 'comment', CHANGE: 'change' } as const;
 export type FeedbackCommentKind = (typeof FEEDBACK_COMMENT_KIND)[keyof typeof FEEDBACK_COMMENT_KIND];
 
+/**
+ * Notifications (2026-11-06, user: "if they are assigned or someone replied in the thread they get a notification at the
+ * top icon with 1, 2"): one row per person told. Never for the person who did it.
+ *   assigned  the item was assigned to you (on create or later)
+ *   added     you were added to the item's people
+ *   comment   someone commented on an item you added, are assigned to, are on, or commented on before
+ */
+export const FEEDBACK_NOTIFY_KIND = { ASSIGNED: 'assigned', ADDED: 'added', COMMENT: 'comment' } as const;
+export type FeedbackNotifyKind = (typeof FEEDBACK_NOTIFY_KIND)[keyof typeof FEEDBACK_NOTIFY_KIND];
+
 /** Image types accepted, detected from the file's first bytes (never the name or the browser's type). No SVG. */
 export const FEEDBACK_IMAGE_TYPES = {
   png: { contentType: 'image/png', ext: '.png' },
@@ -41,6 +51,9 @@ export const FEEDBACK = {
   ROUTES: {
     LIST: '/',
     PEOPLE: '/people',
+    /** The signed-in person's notifications (registered before '/:id'). */
+    NOTIFICATIONS: '/notifications',
+    NOTIFICATIONS_READ: '/notifications/read',
     ONE: '/:id',
     COMMENTS: '/:id/comments',
     MEMBERS: '/:id/members',
@@ -64,6 +77,15 @@ export const FEEDBACK = {
   CONTEXT_MAX_BYTES: 4000,
   /** The list answers at most this many items (newest first). */
   LIST_MAX: 500,
+  /** The bell answers the newest this many notifications (the unread count is always the full count). */
+  NOTIFY_LIST_MAX: 30,
+  /** A comment's text in its notification is cut to this many characters. */
+  NOTIFY_TEXT_MAX: 300,
+  /**
+   * Notifications are not kept (user 2026-11-06: "no timers, just a cleanup: more than 2 days, remove"): older ones are
+   * deleted, read or not, whenever new ones are written, and never shown.
+   */
+  NOTIFY_KEEP_MS: 2 * 24 * 3600_000,
   /** S3: s3://<bucket>/feedback/<yyyy>/<mm>/<uuid>.<ext> */
   S3_FOLDER: 'feedback',
   QUERY: { STATUS: 'status', TYPE: 'type', Q: 'q', MINE: 'mine' },

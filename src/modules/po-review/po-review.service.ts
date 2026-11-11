@@ -2,7 +2,7 @@ import { In } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
 import {
   TABLES,
-  ACCEPTABLE_ISSUE_TYPES,
+  isAcceptableIssue,
   ChannelName,
   ERROR_CODES,
   IST_OFFSET_MS,
@@ -18,9 +18,9 @@ import {
 } from '../../constants';
 import { DetailsChannel, DetailsPurchaseOrder, PoIssue, PoReopen, PoReviewSubmission, PoUpload, User } from '../../entities';
 import { appError } from '../../utils/AppError';
-import { openS3File, readS3Json, s3DownloadLink } from '../email-intake/s3-mirror.service';
+import { openS3File, readS3JsonCached, s3DownloadLink } from '../email-intake/s3-mirror.service';
 import { Num, ProcessedPo } from '../po-processing/common/processed-po';
-import { MasterDataReader, matchKey } from '../po-validation/master-data';
+import { matchKey, panelMasterFor } from '../po-validation/master-data';
 import { validatePo } from '../po-validation/validate-po';
 import { verifyStatesOf, type VerifyStateItem } from '../po-verify/po-verify.service';
 
@@ -129,6 +129,8 @@ export const listPoReview = async (query: PoReviewListQuery): Promise<{ items: P
     .createQueryBuilder('u')
     .leftJoinAndSelect('u.purchaseOrder', 'po')
     .where('u.status = :status', { status: query.status });
+  // Failed: a dismissed PO (Failed tab "Dismiss", 2026-11-04) is kept but not listed
+  if (query.status === UPLOAD_STATUS.FAILED) qb.andWhere("JSON_EXTRACT(u.errorDetails, '$.dismissed') IS NULL");
   if (query.channel) qb.andWhere('u.channel = :channel', { channel: query.channel });
   if (query.q) qb.andWhere('(u.poNumber LIKE :q OR u.fileName LIKE :q)', { q: `%${query.q}%` });
   // Completed POs not yet uploaded into Uniware always show, whatever the date range (user, 2026-10-19).
@@ -265,6 +267,11 @@ export interface PoReviewLine {
   poMrp: Num;
   poUnitPrice: Num;
   poLineValue: Num;
+  /**
+   * The line's values AS READ from the PO (processed.json, 2026-11-05): what the review panel finds on the PO when a
+   * value is clicked (poUnitPrice / poLineValue are worked out with tax, so a PO priced before tax does not print them).
+   */
+  printed: { unitCost: Num; landingRate: Num; lineTotal: Num };
   /** Ours, from the master ("" when the SKU is not mapped). */
   pepCode: string;
   /** The code the sale order is punched with: the _S code of a combo when our master has it, else pepCode. */
@@ -282,7 +289,7 @@ export interface PoReviewIssue {
   details: string | null;
   originalValues: Record<string, unknown> | null;
   status: string;
-  /** Only OTHER and PO_EXPIRED can be accepted as they are; the rest must be corrected or the PO rejected. */
+  /** OTHER, PO_EXPIRED and TOTAL_MISMATCH can be accepted (not a gap in our master: no rate / GST, isAcceptableIssue); the rest must be corrected or the PO rejected. */
   canAccept: boolean;
 }
 
@@ -370,10 +377,11 @@ export const getPoReview = async (uploadId: string): Promise<PoReviewDetail> => 
   if (!upload) throw appError(ERROR_CODES.UPLOAD_NOT_FOUND, uploadId);
 
   const processedUrl = upload.ocrResult?.processed_json;
-  const po = typeof processedUrl === 'string' ? await readS3Json<ProcessedPo>(processedUrl) : undefined;
+  // a panel (what a person looks at): processed.json + the channel's master data from the shared cache (2026-11-10)
+  const po = typeof processedUrl === 'string' ? await readS3JsonCached<ProcessedPo>(processedUrl) : undefined;
   if (!po) throw appError(ERROR_CODES.PROCESSED_JSON_MISSING, uploadId);
 
-  const master = await new MasterDataReader(AppDataSource).forChannel(po.channel_name as ChannelName);
+  const master = await panelMasterFor(AppDataSource, po.channel_name as ChannelName);
   const validation = await validatePo(po, master);
 
   const issueRows = await AppDataSource.getRepository(PoIssue).find({ where: { uploadId }, order: { id: 'ASC' } });
@@ -386,7 +394,7 @@ export const getPoReview = async (uploadId: string): Promise<PoReviewDetail> => 
       details: i.details,
       originalValues: i.originalValues,
       status: i.status,
-      canAccept: ACCEPTABLE_ISSUE_TYPES.includes(i.issueType),
+      canAccept: isAcceptableIssue(i.issueType, i.fieldName),
     }))
     .sort((a, b) => Number(b.status === ISSUE_STATUS.OPEN) - Number(a.status === ISSUE_STATUS.OPEN));
 
@@ -453,6 +461,7 @@ export const getPoReview = async (uploadId: string): Promise<PoReviewDetail> => 
         poMrp: l.channel_mrp,
         poUnitPrice: v?.poUnitPrice ?? l.landing_rate,
         poLineValue: v?.poLineValue ?? l.line_total,
+        printed: { unitCost: l.unit_cost, landingRate: l.landing_rate, lineTotal: l.line_total },
         pepCode: v?.pepCode ?? '',
         punchCode: v?.punchCode || v?.pepCode || '',
         skuName: v?.skuName ?? '',

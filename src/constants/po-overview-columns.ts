@@ -72,6 +72,8 @@ export const PO_SYSTEM_COLUMNS: readonly ColumnDef[] = [
   c('tatDays', 'TAT', K.NUM),
   c('criticalDispatchDate', 'Critical Dispatch Date', K.DATE),
   c('ratePerKg', 'Rate / kg Used', K.MONEY),
+  // what Uniware says about the sale order (2026-11-06, the Uniware sync; read-only here)
+  c('uniwareStatus', 'Uniware Status'),
 ];
 
 /** Each team's own columns (PEPIMS's role field lists; open points marked in the design doc). */

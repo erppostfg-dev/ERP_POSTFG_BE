@@ -1,13 +1,16 @@
 import { randomUUID } from 'crypto';
-import { In, IsNull } from 'typeorm';
+import { EntityManager, In, IsNull, LessThan, MoreThanOrEqual } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
 import {
-  ERROR_CODES, FEEDBACK, FEEDBACK_COMMENT_KIND, FEEDBACK_IMAGE_TYPES, FEEDBACK_SEVERITY, FEEDBACK_STATUS, FEEDBACK_TYPE,
-  FeedbackCommentKind, FeedbackImageKind, FeedbackSeverity, FeedbackStatus, FeedbackType, USER_STATUS,
+  CACHE_NS, ERROR_CODES, FEEDBACK, FEEDBACK_COMMENT_KIND, FEEDBACK_IMAGE_TYPES, FEEDBACK_NOTIFY_KIND, FEEDBACK_SEVERITY, FEEDBACK_STATUS, FEEDBACK_TYPE,
+  FeedbackCommentKind, FeedbackImageKind, FeedbackNotifyKind, FeedbackSeverity, FeedbackStatus, FeedbackType, USER_STATUS,
 } from '../../constants';
 import { USER_ADMIN_ROLES } from '../../constants/users';
-import { FeedbackComment, FeedbackImage, FeedbackItem, FeedbackMember, User } from '../../entities';
+import { FeedbackComment, FeedbackImage, FeedbackItem, FeedbackMember, FeedbackNotification, User } from '../../entities';
+import { LOG_SOURCE } from '../../constants/logging';
 import { appError } from '../../utils/AppError';
+import { log } from '../../utils/logger';
+import { forgetCache } from '../cache/cache.service';
 import { openS3File, s3UrlOfKey, writeS3File } from '../email-intake/s3-mirror.service';
 
 /*
@@ -228,6 +231,27 @@ export const openFeedbackImage = async (id: string, imageId: string) => {
 const changeLine = (itemId: string, userId: number, line: string): { itemId: string; userId: number; kind: FeedbackCommentKind; text: string } =>
   ({ itemId, userId, kind: FEEDBACK_COMMENT_KIND.CHANGE, text: line });
 
+/**
+ * Tells `userIds` (once each, never the actor) about something on an item, in the caller's transaction. Notifications
+ * are not kept: every one older than 2 days (anyone's, read or not) is deleted here first. No timer (user 2026-11-06).
+ */
+const notify = async (m: EntityManager, itemId: string, kind: FeedbackNotifyKind, actor: Actor, userIds: number[], text = ''): Promise<void> => {
+  const to = [...new Set(userIds)].filter((u) => u !== actor.id);
+  if (!to.length) return;
+  await clearOldNotifications(m);
+  await m.getRepository(FeedbackNotification).insert(to.map((userId) => ({ userId, itemId, kind, actorId: actor.id, text: text.slice(0, FEEDBACK.NOTIFY_TEXT_MAX) })));
+};
+
+/**
+ * A change that may notify people or rename an item: the transaction, then every cached bell is dropped (shared cache,
+ * GET /feedback/notifications; 2026-11-10). After the commit, so a bell read meanwhile cannot keep the old answer.
+ */
+const txThenBell = async <T>(work: (m: EntityManager) => Promise<T>): Promise<T> => {
+  const result = await AppDataSource.transaction(work);
+  await forgetCache(CACHE_NS.FEEDBACK_BELL);
+  return result;
+};
+
 /** The captured details (page, browser, last error...): a JSON object of at most FEEDBACK.CONTEXT_MAX_BYTES, else null. */
 const contextOf = (v: unknown): Record<string, unknown> | null => {
   let obj: unknown = v;
@@ -263,13 +287,16 @@ export const createFeedback = async (body: Record<string, unknown>, files: Image
   const assignee = await assigneeOf(body[FEEDBACK.FIELD_ASSIGNEE]);
   const page = typeof body.page === 'string' && body.page.trim() ? body.page.trim().slice(0, FEEDBACK.PAGE_MAX) : null;
   const stored = await storeImages(files, 0);
-  const id = await AppDataSource.transaction(async (m) => {
+  const id = await txThenBell(async (m) => {
     const saved = await m.getRepository(FeedbackItem).save(m.getRepository(FeedbackItem).create({
       type: type as FeedbackType, title, description,
       severity: type === FEEDBACK_TYPE.PROBLEM ? (rawSeverity as FeedbackSeverity) : null,
       status: FEEDBACK_STATUS.NEW, page, context: contextOf(body.context), reporterId: actor.id, assignedTo: assignee?.id ?? null,
     }));
-    if (assignee) await m.getRepository(FeedbackComment).insert(changeLine(saved.id, actor.id, `Assigned to ${assignee.name}`));
+    if (assignee) {
+      await m.getRepository(FeedbackComment).insert(changeLine(saved.id, actor.id, `Assigned to ${assignee.name}`));
+      await notify(m, saved.id, FEEDBACK_NOTIFY_KIND.ASSIGNED, actor, [assignee.id]);
+    }
     if (stored.length) await m.getRepository(FeedbackImage).insert(stored.map((s) => ({ ...s, itemId: saved.id, uploadedBy: actor.id })));
     return saved.id;
   });
@@ -323,9 +350,10 @@ export const updateFeedback = async (id: string, body: Record<string, unknown>, 
     lines.push(`Assigned to: ${was} → ${assignee?.name ?? '—'}`);
   }
   if (lines.length) {
-    await AppDataSource.transaction(async (m) => {
+    await txThenBell(async (m) => {
       await m.getRepository(FeedbackItem).update({ id: item.id }, { ...next, updatedBy: actor.id });
       await m.getRepository(FeedbackComment).insert(lines.map((l) => changeLine(item.id, actor.id, l)));
+      if (next.assignedTo) await notify(m, item.id, FEEDBACK_NOTIFY_KIND.ASSIGNED, actor, [next.assignedTo]);
     });
   }
   return getFeedback(String(item.id), actor);
@@ -337,7 +365,17 @@ export const addComment = async (id: string, body: Record<string, unknown>, acto
   const problems: Problem[] = [];
   const t = text(problems, 'text', body.text, FEEDBACK.COMMENT_MAX);
   fail(problems);
-  await AppDataSource.getRepository(FeedbackComment).insert({ itemId: item.id, userId: actor.id, kind: FEEDBACK_COMMENT_KIND.COMMENT, text: t });
+  // told: the reporter, the assignee, the people on it and everyone who commented before
+  const [members, commenters] = await Promise.all([
+    memberIds(item.id),
+    AppDataSource.getRepository(FeedbackComment).createQueryBuilder('c').select('DISTINCT c.userId', 'userId')
+      .where({ itemId: item.id, kind: FEEDBACK_COMMENT_KIND.COMMENT }).getRawMany<{ userId: number }>(),
+  ]);
+  const followers = [item.reporterId, ...(item.assignedTo ? [item.assignedTo] : []), ...members, ...commenters.map((c) => Number(c.userId))];
+  await txThenBell(async (m) => {
+    await m.getRepository(FeedbackComment).insert({ itemId: item.id, userId: actor.id, kind: FEEDBACK_COMMENT_KIND.COMMENT, text: t });
+    await notify(m, item.id, FEEDBACK_NOTIFY_KIND.COMMENT, actor, followers, t);
+  });
   return getFeedback(String(item.id), actor);
 };
 
@@ -345,9 +383,10 @@ export const addMember = async (id: string, body: Record<string, unknown>, actor
   const item = await itemToChange(id, actor);
   const user = await activeUser(body.userId);
   if (!(await memberIds(item.id)).includes(user.id)) {
-    await AppDataSource.transaction(async (m) => {
+    await txThenBell(async (m) => {
       await m.getRepository(FeedbackMember).insert({ itemId: item.id, userId: user.id, addedBy: actor.id });
       await m.getRepository(FeedbackComment).insert(changeLine(item.id, actor.id, `Added ${user.name}`));
+      await notify(m, item.id, FEEDBACK_NOTIFY_KIND.ADDED, actor, [user.id]);
     });
   }
   return getFeedback(String(item.id), actor);
@@ -389,4 +428,75 @@ export const removeImage = async (id: string, imageId: string, actor: Actor): Pr
     await m.getRepository(FeedbackComment).insert(changeLine(item.id, actor.id, `Removed image ${image.fileName}`));
   });
   return getFeedback(String(item.id), actor);
+};
+
+// ---- notifications (the top-bar bell) --------------------------------------------------------------------------
+
+export interface FeedbackNotificationView {
+  id: string;
+  kind: FeedbackNotifyKind;
+  itemId: string;
+  itemTitle: string;
+  by: FeedbackPerson;
+  /** The comment (kind comment); '' otherwise. */
+  text: string;
+  read: boolean;
+  createdAt: string;
+}
+
+export interface FeedbackNotifications { unread: number; items: FeedbackNotificationView[] }
+
+/** Notifications from before this are gone (deleted when new ones are written; never shown meanwhile). */
+const keepFrom = (now = new Date()): Date => new Date(now.getTime() - FEEDBACK.NOTIFY_KEEP_MS);
+
+/** The person's newest notifications (2 days at most) and how many are unread. */
+export const listNotifications = async (actor: Actor): Promise<FeedbackNotifications> => {
+  const repo = AppDataSource.getRepository(FeedbackNotification);
+  const [rows, unread] = await Promise.all([
+    repo.find({ where: { userId: actor.id, createdAt: MoreThanOrEqual(keepFrom()) }, order: { id: 'DESC' }, take: FEEDBACK.NOTIFY_LIST_MAX }),
+    repo.countBy({ userId: actor.id, readAt: IsNull(), createdAt: MoreThanOrEqual(keepFrom()) }),
+  ]);
+  if (!rows.length) return { unread, items: [] };
+  const [items, people] = await Promise.all([
+    AppDataSource.getRepository(FeedbackItem).find({ select: { id: true, title: true }, where: { id: In([...new Set(rows.map((r) => r.itemId))]) } }),
+    peopleById(rows.map((r) => r.actorId)),
+  ]);
+  const titles = new Map(items.map((i) => [String(i.id), i.title]));
+  return {
+    unread,
+    items: rows.map((r) => ({
+      id: String(r.id), kind: r.kind, itemId: String(r.itemId), itemTitle: titles.get(String(r.itemId)) ?? '',
+      by: people.get(r.actorId) ?? unknownPerson(r.actorId), text: r.text, read: r.readAt !== null, createdAt: r.createdAt.toISOString(),
+    })),
+  };
+};
+
+/**
+ * Marks the person's own notifications read: { itemId } = every one about that item (they opened it), { ids } = those,
+ * {} = all. Someone else's notifications are never touched. Answers the bell again.
+ */
+export const readNotifications = async (body: Record<string, unknown>, actor: Actor): Promise<FeedbackNotifications> => {
+  const where: Record<string, unknown> = { userId: actor.id, readAt: IsNull() };
+  if (body.itemId !== undefined) {
+    const itemId = typeof body.itemId === 'string' || typeof body.itemId === 'number' ? String(body.itemId) : '';
+    if (!/^\d{1,18}$/.test(itemId)) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails([{ field: 'itemId', code: ERROR_CODES.VALIDATION_FAILED, message: 'itemId must be an item id' }]);
+    where.itemId = itemId;
+  } else if (body.ids !== undefined) {
+    const ids = Array.isArray(body.ids) ? body.ids.map((i) => (typeof i === 'string' || typeof i === 'number' ? String(i) : '')) : [];
+    if (!ids.length || ids.length > FEEDBACK.NOTIFY_LIST_MAX || !ids.every((i) => /^\d{1,18}$/.test(i))) {
+      throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails([{ field: 'ids', code: ERROR_CODES.VALIDATION_FAILED, message: `ids must be 1 to ${FEEDBACK.NOTIFY_LIST_MAX} notification ids` }]);
+    }
+    where.id = In(ids);
+  }
+  await AppDataSource.getRepository(FeedbackNotification).update(where, { readAt: new Date() });
+  await forgetCache(CACHE_NS.FEEDBACK_BELL, String(actor.id));
+  return listNotifications(actor);
+};
+
+/** Deletes every notification older than FEEDBACK.NOTIFY_KEEP_MS (2 days), read or not. Answers how many went. */
+export const clearOldNotifications = async (m: EntityManager = AppDataSource.manager, now = new Date()): Promise<number> => {
+  const res = await m.getRepository(FeedbackNotification).delete({ createdAt: LessThan(keepFrom(now)) });
+  const n = res.affected ?? 0;
+  if (n) log.info(LOG_SOURCE.APP, `[feedback] deleted ${n} notification(s) older than 2 days`);
+  return n;
 };

@@ -1,6 +1,7 @@
 import { inject } from 'vitest';
 import { AppDataSource } from '../../src/config/data-source';
 import { forgetAccess } from '../../src/modules/auth/access.service';
+import { resetCacheForTests } from '../../src/modules/cache/cache.service';
 import { forgetSessions } from '../../src/modules/auth/session.service';
 
 /*
@@ -29,6 +30,8 @@ export const resetDb = async (): Promise<void> => {
     await m.query('SET FOREIGN_KEY_CHECKS = 1');
   });
   // the 30 s login / page-access caches must not carry anything over from the previous test
+  // nor the shared cache (modules/cache: memory in tests)
+  resetCacheForTests();
   forgetSessions();
   forgetAccess();
 };

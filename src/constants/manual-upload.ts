@@ -1,3 +1,5 @@
+import { CHANNELS, ChannelName } from './channels';
+
 /*
  * Manual upload of PO files (user, 2026-10-22): Processed & Review -> Manual Upload. A person picks the channel and
  * drops PO files; each PO becomes a folder like an email's (storage/emails/manual-upload/<date>_<id>/ + metadata
@@ -22,6 +24,9 @@ export const MANUAL_UPLOAD_STATUS = {
 } as const;
 export type ManualUploadStatus = (typeof MANUAL_UPLOAD_STATUS)[keyof typeof MANUAL_UPLOAD_STATUS];
 
+/** metadata.json key of the copies a new upload replaces (Process again); here so po-pipeline reads it without a cycle. */
+export const MANUAL_REPLACES_KEY = 'replaces';
+
 export const MANUAL_UPLOAD = {
   BASE: '/manual-uploads',
   ROUTES: { LIST: '/', CHANNELS: '/channels', UPLOAD: '/', PROCESS: '/process', CANCEL: '/:id/cancel', RETRY: '/:id/retry' },
@@ -29,6 +34,8 @@ export const MANUAL_UPLOAD = {
   FOLDER: 'manual-upload',
   FIELD_FILES: 'files',
   FIELD_CHANNEL: 'channel',
+  /** "true" = the person saw the copies already in POST_FG and chose Process again (2026-11-05). */
+  FIELD_REPLACE: 'replace',
   BODY_IDS: 'ids',
   MAX_FILES: 20,
   MAX_FILE_BYTES: 20 * 1024 * 1024,
@@ -52,4 +59,40 @@ export const MANUAL_UPLOAD = {
   LIST_LIMIT: 200,
   /** messageId of a manual upload's folder (links it to its po_uploads rows). */
   MESSAGE_ID: (id: string) => `manual-upload:${id}`,
+  /** The note of an upload that replaces copies already in POST_FG (Process again). */
+  REPLACES_NOTE: (ids: string[]) => `Replaces upload ${ids.map((i) => `#${i}`).join(', ')} (uploaded again: Process again)`,
+  /** The remark on the old copy when the new one is processed: rejected (in review) or dismissed (failed). */
+  REPLACED_REMARK: (manualId: string) => `replaced by manual upload #${manualId} (the same PO uploaded again, "Process again")`,
+} as const;
+
+/**
+ * Copies of a PO already in POST_FG, checked when files are uploaded (user 2026-11-05: ask "it is present, process
+ * again?" instead of making a second copy): the same file (sha1), or the PO number in the file name (per channel
+ * below; exact = the number itself, prefix = the PO number starts with it: First Club "PO-210392.pdf" ->
+ * PO-210392-FRHHYDMDL01). Channels with their own check (Amazon, Flipkart, Myntra) are not in here.
+ */
+export const FILE_NAME_PO: Partial<Record<ChannelName, { re: RegExp; prefix?: (n: string) => string; po?: (m: RegExpExecArray) => string }>> = {
+  [CHANNELS.FIRSTCRY]: { re: /(pin\w{10,})/i },
+  [CHANNELS.FLIPKART_QCOM]: { re: /purchase_order_([A-Z0-9]{8,})/i },
+  [CHANNELS.FIRST_CLUB]: { re: /PO[-_](\d{5,})/i, prefix: (n) => `PO-${n}-` },
+  // the file name writes the slashes as dashes: OG-00381-2026-27.pdf = PO OG/00381/2026-27
+  // "Order No 88699.xls" = order 88699
+  [CHANNELS.NOBLE_CHEMIST]: { re: /Order\s*No\.?\s*(\d{3,})/i },
+  [CHANNELS.OCTAVOS]: { re: /\b(OESPL|OG|OK|RET)-(\d+)-(\d{2,4}-\d{2})\b/i, po: (m) => `${m[1].toUpperCase()}/${m[2]}/${m[3]}` },
+};
+
+/** What can be done with a copy already in POST_FG when the same PO is uploaded again. */
+export const COPY_ACTION = {
+  /** In review / failed: Process again replaces it (rejected / dismissed when the new upload is processed). */
+  REPLACE: 'replace',
+  /** Not possible: a sale order exists, it waits for approval, or it is still being read. */
+  BLOCKED: 'blocked',
+} as const;
+export type CopyAction = (typeof COPY_ACTION)[keyof typeof COPY_ACTION];
+
+export const COPY_WHY = {
+  COMPLETED: (so: string | null) => `it is already a sale order${so ? ` (${so})` : ''}: use Re-punch to change it`,
+  PENDING_APPROVAL: 'it waits for approval: decide it in Approvals first',
+  RUNNING: 'it is being read right now: wait for it to finish',
+  NOT_PROCESSED: 'it is uploaded but not processed yet: process or cancel that upload',
 } as const;

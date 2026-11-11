@@ -90,10 +90,14 @@ describe('upload', () => {
     expect(await count('manual_uploads')).toBe(0);
   });
 
-  it('the same file twice is kept, with a note naming the earlier upload', async () => {
-    const first = (await upload('bigbasket', [['a.xlsx', 'same bytes']])).body.data.ids[0];
-    const second = (await upload('bigbasket', [['b.xlsx', 'same bytes']])).body.data.ids[0];
-    expect((await statusOf(second)).note).toBe(`Same file as manual upload #${first}`);
+  it('the same file again while the first is not processed yet: refused with why (2026-11-05); once cancelled it can come again', async () => {
+    const first = (await upload('bigbasket', [['a.xlsx', 'same bytes']])).body.data.ids[0] as string;
+    const again = await upload('bigbasket', [['b.xlsx', 'same bytes']]);
+    expect(again.status).toBe(409);
+    expect(again.body.error.code).toBe('MANUAL_ALREADY_BLOCKED');
+    expect(again.body.error.details.copies[0]).toMatchObject({ manualUploadId: first, status: 'uploaded', how: 'same file', action: 'blocked' });
+    await api().post(`${V}/${first}/cancel`).set('Cookie', reviewer.cookie).expect(200);
+    expect((await upload('bigbasket', [['b.xlsx', 'same bytes']])).status).toBe(201);
   });
 });
 

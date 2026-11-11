@@ -9,10 +9,12 @@ import { AppDataSource } from '../../config/data-source';
 import { env } from '../../config/env';
 import {
   blockingMissing,
+  CHANNEL_PULLS,
   COMBO_CHECK,
   ERROR_CODES,
   errorMessage,
   type FacilityGroups,
+  type FacilityStock,
   INPUT_BY_NAME,
   INTRANSIT_FOLDERS,
   INTRANSIT_INVENTORY_FILE,
@@ -22,11 +24,16 @@ import {
   INTRANSIT_RUN_KIND,
   INTRANSIT_RUN_STATUS,
   INTRANSIT_SOURCE,
+  INTRANSIT_STEP,
   INTRANSIT_TEMPLATE_NAME,
+  INPUT_CATALOG,
+  INPUTS_BOOK_FILE,
   IntransitRunKind,
-  MAIL_FILE_NAMES,
   IntransitSource,
   PEPIMS_CONNECTOR,
+  RUN_EXTRA_FILES,
+  D2C_TRANSFERS_CONNECTOR,
+  D2C_TRANSFERS_FILE,
 } from '../../constants';
 import { IntransitRun } from '../../entities';
 import { appError } from '../../utils/AppError';
@@ -40,6 +47,7 @@ import { buildFolderName, monthlyKey, weeklyKey } from './s3/layout';
 import { touchPeriods } from './s3/periods';
 import {
   isDeleted, jobDir, markJobKept, prepareConnector, publishBuild, scopeOfRun as storeScopeOfRun, snapshotFromStore, storeConnectorFiles, storePepimsFiles, storeRunJson,
+  storeTransferFeed,
   unpublishRun,
 } from './s3/run-store';
 import { PROD_SCOPE, storageOn, visibleScopes, writeScope } from './s3/scope';
@@ -48,6 +56,9 @@ import { checkDate, dailyDir, diskSource, FetchStep, istToday, moveToDeleted, pl
 import { writeRunRecord } from './run-record';
 import { INVENTORY_COLUMNS, InventorySnapshot } from './inventory-snapshot';
 import { exportMastersFromDb } from './masters-export';
+import type { BookInput } from './inputs-book';
+import type { NewSku } from './sku-fill';
+import { applyIssueAnswers, IssueAnswer, reviewSettings, saveSkuFills } from './sku-review';
 import { PipelineResult } from './pipeline';
 import type { WorkerJob, WorkerMessage } from './run-worker';
 import { AMAZON_KEYS } from './sources/amazon';
@@ -55,8 +66,9 @@ import { FLIPKART_KEYS, usesSellerHub } from './sources/flipkart';
 import { SELLER_HUB_KEYS } from './sources/flipkart-seller-hub';
 import { MYNTRA_KEYS } from './sources/myntra-partner-portal';
 import { fetchPepimsTracker, PEPIMS_FILES } from './sources/pepims';
+import { writeTransferFeed } from '../d2c-transfers/intransit-feed';
 import { UNIWARE_KEYS } from './sources/uniware';
-import { facilityGroups, uniwareConfig } from './uniware-facilities';
+import { facilityGroups, facilityStock, uniwareConfig } from './uniware-facilities';
 import { LOG_SOURCE } from '../../constants/logging';
 import { logError } from '../../utils/classify-error';
 import { logContext } from '../../utils/log-context';
@@ -119,6 +131,8 @@ export interface RunView {
   asOf: string | null;
   options: Record<string, unknown> | null;
   createdBy: { id: number; name: string } | null;
+  /** Who pressed Stop (stopped, or stopping while it finishes its step). */
+  stoppedBy: { id: number; name: string } | null;
   createdAt: Date;
   startedAt: Date | null;
   finishedAt: Date | null;
@@ -152,6 +166,7 @@ const view = (r: IntransitRun, withLog = false): RunView => ({
   asOf: r.asOf,
   options: r.options,
   createdBy: r.creator ? { id: r.creator.id, name: r.creator.name } : null,
+  stoppedBy: r.stopper ? { id: r.stopper.id, name: r.stopper.name } : null,
   createdAt: r.createdAt,
   startedAt: r.startedAt,
   finishedAt: r.finishedAt,
@@ -165,15 +180,17 @@ const view = (r: IntransitRun, withLog = false): RunView => ({
   ...(withLog ? { logTail: (r.log ?? '').split('\n').filter(Boolean).slice(-INTRANSIT_LOG_TAIL_LINES) } : {}),
 });
 
+const RELATIONS = { creator: true, stopper: true } as const;
+
 const findRun = async (id: string): Promise<IntransitRun> => {
-  const run = /^\d+$/.test(id) ? await repo().findOne({ where: { id }, relations: { creator: true } }) : null;
+  const run = /^\d+$/.test(id) ? await repo().findOne({ where: { id }, relations: RELATIONS }) : null;
   if (!run) throw appError(ERROR_CODES.INTRANSIT_RUN_NOT_FOUND, id);
   return run;
 };
 
 export const listRuns = async (kind?: string, limit = 50): Promise<RunView[]> => {
   const where = kind && (Object.values(INTRANSIT_RUN_KIND) as string[]).includes(kind) ? { kind: kind as IntransitRunKind } : {};
-  const rows = await repo().find({ where, relations: { creator: true }, order: { id: 'DESC' }, take: limit * 4 });
+  const rows = await repo().find({ where, relations: RELATIONS, order: { id: 'DESC' }, take: limit * 4 });
   return rows.filter(visibleRun).slice(0, limit).map((r) => view(r));
 };
 
@@ -211,7 +228,7 @@ export const runFilePath = async (id: string, name: string): Promise<string> => 
   const result = (run.result ?? {}) as { saved?: string[]; rejected?: Record<string, string[]> };
   const names = [...(result.saved ?? []), ...Object.keys(result.rejected ?? {})];
   // a report run: only the combo-check files written next to its workbook
-  if (run.kind === INTRANSIT_RUN_KIND.REPORT) names.splice(0, names.length, COMBO_CHECK.ALERT_FILE, COMBO_CHECK.SPLIT1_ROWS_FILE, ...MAIL_FILE_NAMES);
+  if (run.kind === INTRANSIT_RUN_KIND.REPORT) names.splice(0, names.length, COMBO_CHECK.ALERT_FILE, COMBO_CHECK.SPLIT1_ROWS_FILE, ...RUN_EXTRA_FILES);
   if (!names.includes(name)) throw appError(ERROR_CODES.INTRANSIT_RUN_FILE_UNKNOWN, id, name);
   const file = path.join(run.kind === INTRANSIT_RUN_KIND.REPORT ? runDir(id) : exportDir(run.kind, id), name);
   if (!fs.existsSync(file)) throw appError(ERROR_CODES.INTRANSIT_FILE_NOT_FOUND, name);
@@ -228,7 +245,7 @@ export const deleteRun = async (id: string): Promise<void> => {
     // copies are worked out again without it
     if (scopeOfRun(run) !== writeScope()) throw appError(ERROR_CODES.INTRANSIT_SCOPE_READ_ONLY, `run ${id}`, writeScope());
     await repo().update({ id }, { options: { ...(run.options ?? {}), deletedAt: new Date().toISOString() } as QueryDeepPartialEntity<IntransitRun>['options'] });
-    const deleted = (await repo().findOne({ where: { id }, relations: { creator: true } })) as IntransitRun;
+    const deleted = (await repo().findOne({ where: { id }, relations: RELATIONS })) as IntransitRun;
     await unpublishRun(deleted);
     forgetSnapshotDays();
     if (deleted.asOf && deleted.kind === INTRANSIT_RUN_KIND.REPORT) void touchPeriods(deleted.asOf).catch((err) => logError(LOG_SOURCE.APP, `[intransit] run ${id} deleted: weekly/monthly copies not redone`, err));
@@ -250,6 +267,78 @@ export const deleteRun = async (id: string): Promise<void> => {
 // ---- starting jobs ---------------------------------------------------------------------------------------------
 
 const chains = new Map<string, Promise<void>>();
+
+// ---- stopping (user, 2026-11-02) --------------------------------------------------------------------------------
+
+/** A job stopped from the page (or a build nobody answered the new-SKU question for); its message is the reason. */
+export class StoppedError extends Error {}
+
+/**
+ * What stops a job running on this machine: its abort signal (its worker gets SIGTERM, every wait ends), whether it is
+ * past the point of no return (saving its files: a stop then is ignored), and the fetch a build waits for.
+ */
+interface Control {
+  ac: AbortController;
+  committed: boolean;
+  waitingFor: string | null;
+}
+const controls = new Map<string, Control>();
+
+/** `p`, or the stop when the job is stopped first. */
+const raceStop = <T>(p: Promise<T>, signal: AbortSignal): Promise<T> => {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    p.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
+};
+
+const abortableSleep = (ms: number, signal: AbortSignal): Promise<void> =>
+  raceStop(new Promise<void>((resolve) => setTimeout(resolve, ms).unref()), signal);
+
+const stoppedBy = (name: string | null): string => `Stopped by ${name ?? 'someone'}`;
+
+/** Who asked to stop a run, when someone did (the signal from another machine). */
+const stopRequest = async (id: string): Promise<{ by: number; name: string | null } | null> => {
+  const [row] = (await repo().query(
+    `SELECT r.stop_requested_by AS byId, u.name AS name FROM intransit_runs r LEFT JOIN users u ON u.id = r.stop_requested_by WHERE r.id = ? AND r.stop_requested_by IS NOT NULL`, [id])) as { byId: number; name: string | null }[];
+  return row ? { by: row.byId, name: row.name } : null;
+};
+
+/** A local job waiting on fetches of `source` is stopped too (user: stopping a fetch a build waits for stops the build). */
+const stopWaitingBuilds = (source: string, who: Requester): void => {
+  for (const c of controls.values()) {
+    if (c.waitingFor === source && !c.committed) c.ac.abort(new StoppedError(`${stoppedBy(who.name)}: the ${source} fetch it waited for was stopped`));
+  }
+};
+
+/**
+ * Stop a queued or running job (POST /runs/:id/stop). A queued one is stopped at once; a running one is asked to stop
+ * (its machine stops it within seconds, then it is "stopped"), unless it is already saving its files - then it ends as
+ * it would have. A build waiting for this fetch stops with it.
+ */
+export const stopRun = async (id: string, who: Requester, reason?: string): Promise<RunView> => {
+  let run = await findRun(id);
+  if (run.status === INTRANSIT_RUN_STATUS.QUEUED) {
+    const res = await repo().update({ id, status: INTRANSIT_RUN_STATUS.QUEUED }, {
+      status: INTRANSIT_RUN_STATUS.STOPPED, stopRequestedBy: who.id, finishedAt: new Date(), error: (reason ?? stoppedBy(who.name)).slice(0, ERROR_MAX),
+    });
+    if (res.affected) {
+      waitingHere.delete(id);
+      if (run.kind !== INTRANSIT_RUN_KIND.REPORT) stopWaitingBuilds(run.kind, who);
+      await closeRun(id).catch(() => undefined);
+      return getRun(id);
+    }
+    run = await findRun(id); // it started meanwhile
+  }
+  if (run.status !== INTRANSIT_RUN_STATUS.RUNNING) throw appError(ERROR_CODES.INTRANSIT_RUN_NOT_STOPPABLE, id, run.status);
+  await repo().update({ id, status: INTRANSIT_RUN_STATUS.RUNNING }, { stopRequestedBy: who.id });
+  const c = controls.get(id);
+  if (c && !c.committed) c.ac.abort(new StoppedError(reason ?? stoppedBy(who.name)));
+  if (run.kind !== INTRANSIT_RUN_KIND.REPORT) stopWaitingBuilds(run.kind, who);
+  return getRun(id);
+};
 
 /** Runs queued here that have not started yet: they get a heartbeat too, while they wait their turn. */
 const waitingHere = new Set<string>();
@@ -285,13 +374,16 @@ const enqueue = (lane: string, id: string): void => {
   chains.set(lane, next);
 };
 
-const reportSettings = (dir: string, asOf: string, fromDate: string | null, groups: FacilityGroups): IntransitSettings => ({
+const reportSettings = (
+  dir: string, asOf: string, fromDate: string | null, groups: FacilityGroups, stock: Record<string, FacilityStock>,
+): IntransitSettings => ({
   inputDir: path.join(dir, 'input'),
   templateXlsx: path.join(dir, 'input', INTRANSIT_TEMPLATE_NAME),
   outputDir: dir,
   asOf,
   fromDate,
   facilityGroups: groups,
+  facilityStock: stock,
 });
 
 export interface Requester {
@@ -393,12 +485,12 @@ export const startConnector = async (source: string, who: Requester, options: Co
 
 /** Builds and fetches queued or running now. */
 export const activeRuns = async (): Promise<RunView[]> =>
-  (await repo().find({ where: { status: In([INTRANSIT_RUN_STATUS.QUEUED, INTRANSIT_RUN_STATUS.RUNNING]) }, relations: { creator: true }, order: { id: 'ASC' } }))
+  (await repo().find({ where: { status: In([INTRANSIT_RUN_STATUS.QUEUED, INTRANSIT_RUN_STATUS.RUNNING]) }, relations: RELATIONS, order: { id: 'ASC' } }))
     .filter(visibleRun).map((r) => view(r));
 
 /** The newest report run of a day (any status) this machine sees - its own first - or null. */
 export const latestReportOf = async (date: string): Promise<RunView | null> => {
-  const rows = (await repo().find({ where: { kind: INTRANSIT_RUN_KIND.REPORT, asOf: date }, relations: { creator: true }, order: { id: 'DESC' } })).filter(visibleRun);
+  const rows = (await repo().find({ where: { kind: INTRANSIT_RUN_KIND.REPORT, asOf: date }, relations: RELATIONS, order: { id: 'DESC' } })).filter(visibleRun);
   const own = rows.find((r) => scopeOfRun(r) === ownScope());
   const r = own ?? rows[0];
   return r ? view(r) : null;
@@ -419,14 +511,40 @@ export const reportsOfDays = async (dates: string[]): Promise<Map<string, { id: 
  */
 let workersBusy = 0;
 const workerWaiters: (() => void)[] = [];
-const withWorkerSlot = async <T>(onLog: (line: string) => void, work: () => Promise<T>): Promise<T> => {
+/** When the last worker job ended (2026-11-04, load: robots spaced out, ROBOT_GAP). */
+let lastWorkerEnd = 0;
+/** How long a job asking for `gapMs` still has to wait after the last job ended. */
+export const robotGapWaitMs = (gapMs: number, now = Date.now()): number => Math.max(0, lastWorkerEnd + gapMs - now);
+const withWorkerSlot = async <T>(onLog: (line: string) => void, work: () => Promise<T>, signal?: AbortSignal, gapMs = 0): Promise<T> => {
+  signal?.throwIfAborted();
   if (workersBusy >= env.intransit.maxWorkers) {
     onLog('waiting for another in-transit job to finish (one at a time on this server) ...');
-    await new Promise<void>((resolve) => workerWaiters.push(resolve));
+    // stopped while waiting: it leaves the line (it never had a place to give back)
+    await new Promise<void>((resolve, reject) => {
+      const go = (): void => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      };
+      const onAbort = (): void => {
+        const i = workerWaiters.indexOf(go);
+        if (i >= 0) workerWaiters.splice(i, 1);
+        reject(signal?.reason);
+      };
+      workerWaiters.push(go);
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
   } else workersBusy++;
   try {
+    // a browser robot right after another job: a short pause first (the server catches its breath; no two browsers
+    // back to back). The place is kept meanwhile, so nothing else slips in.
+    const wait = robotGapWaitMs(gapMs);
+    if (wait > 0) {
+      onLog(`spacing robots: starting in ${Math.ceil(wait / 1000)} s (another job just ended)`);
+      await new Promise((resolve) => setTimeout(resolve, wait));
+    }
     return await work();
   } finally {
+    lastWorkerEnd = Date.now();
     // hand the place straight to the next waiter, else free it
     const next = workerWaiters.shift();
     if (next) next();
@@ -435,12 +553,16 @@ const withWorkerSlot = async <T>(onLog: (line: string) => void, work: () => Prom
 };
 
 /** Fork run-worker with the job (when a place is free); resolves with its result (or rejects with its error). */
-const runInWorker = (job: WorkerJob, timeoutMs: number, onLog: (line: string) => void): Promise<unknown> =>
-  withWorkerSlot(onLog, () => forkWorker(job, timeoutMs, onLog));
+const runInWorker = (job: WorkerJob, timeoutMs: number, onLog: (line: string) => void, signal?: AbortSignal, gapMs = 0): Promise<unknown> =>
+  withWorkerSlot(onLog, () => forkWorker(job, timeoutMs, onLog, signal), signal, gapMs);
+
+/** A stopped worker gets this long to close what it opened (browsers, Xvfb) before it is killed. */
+const STOP_GRACE_MS = 10_000;
 
 /** Fork run-worker with the job; resolves with its result (or rejects with its error). Logs go to onLog. */
-const forkWorker = (job: WorkerJob, timeoutMs: number, onLog: (line: string) => void): Promise<unknown> =>
+const forkWorker = (job: WorkerJob, timeoutMs: number, onLog: (line: string) => void, signal?: AbortSignal): Promise<unknown> =>
   new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
     const ext = path.extname(__filename); // .ts under ts-node(-dev), .js from dist
     const child = fork(path.join(__dirname, `run-worker${ext}`), [], {
       execArgv: [...(ext === '.ts' ? ['-r', 'ts-node/register/transpile-only'] : []), `--max-old-space-size=${env.intransit.workerMaxMemoryMb}`],
@@ -455,11 +577,21 @@ const forkWorker = (job: WorkerJob, timeoutMs: number, onLog: (line: string) => 
       }
     }
     let settled = false;
+    let stopping = false;
+    const onAbort = (): void => {
+      // Stop: SIGTERM lets it close its browser first; the job ends once the worker has exited
+      stopping = true;
+      child.kill('SIGTERM');
+      setTimeout(() => child.kill('SIGKILL'), STOP_GRACE_MS).unref();
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
     const finish = (err: Error | null, result?: unknown): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (err) reject(err);
+      signal?.removeEventListener('abort', onAbort);
+      if (stopping) reject(signal?.reason);
+      else if (err) reject(err);
       else resolve(result);
     };
     const timer = setTimeout(() => {
@@ -489,7 +621,8 @@ export const runSellerHubJob = async <T>(name: string, makeJob: (cacheDir: strin
   const dir = stored ? path.join(DIR(), INTRANSIT_FOLDERS.CACHE, 'jobs', `${name}-${Date.now()}`) : cacheDir();
   const loaded = stored ? await cachesIn(dir) : null;
   try {
-    return (await runInWorker(makeJob(dir), timeoutMs, onLog)) as T;
+    // our browser robots (Flipkart consignments, Myntra STRs) keep ROBOT_GAP after the last worker job (2026-11-04)
+    return (await runInWorker(makeJob(dir), timeoutMs, onLog, undefined, robotGapMs())) as T;
   } finally {
     if (loaded) {
       await cachesOut(dir, loaded).catch((err: unknown) => onLog(`(the saved login was not stored back: ${err instanceof Error ? err.message : String(err)})`));
@@ -497,6 +630,12 @@ export const runSellerHubJob = async <T>(name: string, makeJob: (cacheDir: strin
     }
   }
 };
+/** The gap between browser robots: ROBOT_GAP_SECONDS, else CHANNEL_PULLS.ROBOT_GAP_MS (2 min). */
+const robotGapMs = (): number => {
+  const s = Number(process.env.ROBOT_GAP_SECONDS);
+  return Number.isFinite(s) && process.env.ROBOT_GAP_SECONDS !== undefined && process.env.ROBOT_GAP_SECONDS !== '' ? Math.max(0, s) * 1000 : CHANNEL_PULLS.ROBOT_GAP_MS;
+};
+
 /** A connector run's log lines, forwarded to the report run that started it. */
 const forwards = new Map<string, (line: string) => void>();
 
@@ -517,7 +656,7 @@ const snapshotInputs = async (dir: string, asOf: string) => {
   };
 };
 
-type Fetched = { source: IntransitSource | typeof PEPIMS_CONNECTOR; runId: string | null; status: string; files: string[]; error: string | null };
+type Fetched = { source: IntransitSource | typeof PEPIMS_CONNECTOR | typeof D2C_TRANSFERS_CONNECTOR; runId: string | null; status: string; files: string[]; error: string | null };
 
 /**
  * Step 0 of a build for today when INTRANSIT_PO_SOURCE=pepims (user, 2026-10-23): Shipment_Status / PO_Format read
@@ -525,14 +664,15 @@ type Fetched = { source: IntransitSource | typeof PEPIMS_CONNECTOR; runId: strin
  * A past day keeps its own (or the latest earlier) copy: PEPIMS only holds today's statuses. On failure the build goes
  * on with the latest earlier copies (logged; none at all -> the snapshot step stops the build with the reason).
  */
-const readPepims = async (run: IntransitRun, log: (line: string) => void, setStep: (step: string) => Promise<void>): Promise<Fetched | null> => {
+const readPepims = async (run: IntransitRun, log: (line: string) => void, setStep: (step: string) => Promise<void>, signal: AbortSignal): Promise<Fetched | null> => {
   const asOf = run.asOf as string;
   if (env.intransit.poSource !== 'pepims' || asOf !== istToday()) return null;
   await setStep(`fetching ${PEPIMS_CONNECTOR}`);
   const tmp = storageOn() ? path.join(jobDir(run.id), 'pepims') : exportDir(PEPIMS_CONNECTOR, run.id);
   const files: string[] = [];
   try {
-    const r = await fetchPepimsTracker(env.db, tmp, asOf, log);
+    // read in this process: a stop ends the wait, and nothing read is saved after it
+    const r = await raceStop(fetchPepimsTracker(env.db, tmp, asOf, log), signal);
     const byName = ((run.options ?? {}) as { byName?: string | null }).byName ?? null;
     for (const name of r.files) {
       const raw = new Uint8Array(await fsp.readFile(path.join(tmp, name)));
@@ -542,10 +682,12 @@ const readPepims = async (run: IntransitRun, log: (line: string) => void, setSte
       files.push(name);
     }
     // S3: PEPIMS' files become the day's inputs
+    signal.throwIfAborted();
     if (storageOn()) await storePepimsFiles(run, tmp, files, asOf);
     log(`pepims: ${r.pos} POs, ${r.lines} lines (Entry Date ${r.from} .. ${r.to}) are the day's ${r.files.join(' / ')}`);
     return { source: PEPIMS_CONNECTOR, runId: null, status: INTRANSIT_RUN_STATUS.SUCCEEDED, files, error: null };
   } catch (err) {
+    if (err instanceof StoppedError) throw err;
     const msg = err instanceof Error ? err.message : String(err);
     log(`pepims: NOT read - ${msg} - the latest earlier copies are used`);
     return { source: PEPIMS_CONNECTOR, runId: null, status: INTRANSIT_RUN_STATUS.FAILED, files, error: msg.slice(0, ERROR_MAX) };
@@ -555,18 +697,61 @@ const readPepims = async (run: IntransitRun, log: (line: string) => void, setSte
 };
 
 /**
- * Step 1 of a fetch-first build: each source still not of the day is fetched for it (a fetch of that source already
- * queued or running is waited for first, and counts if it brought the files). A failure is logged and the build goes
- * on with the earlier copies.
+ * Step 0b of a build for today, whatever INTRANSIT_PO_SOURCE is (phase 8, plan d2c-internal-transfers 7.2): our own D2C
+ * transfers written as D2C_Transfers.csv (modules/d2c-transfers/intransit-feed.ts) and saved as the day's file, so a
+ * past build replays the stored copy (a past day never re-reads our tables; no copy = no transfer rows). On failure the
+ * build goes on with the latest earlier copy, if any (logged).
  */
-const fetchFirst = async (run: IntransitRun, steps: FetchStep[], log: (line: string) => void, setStep: (step: string) => Promise<void>): Promise<Fetched[]> => {
+const readTransfers = async (run: IntransitRun, log: (line: string) => void, setStep: (step: string) => Promise<void>, signal: AbortSignal): Promise<Fetched | null> => {
+  const asOf = run.asOf as string;
+  if (asOf !== istToday() || !AppDataSource.isInitialized) return null;
+  await setStep(`fetching ${D2C_TRANSFERS_CONNECTOR}`);
+  const tmp = storageOn() ? path.join(jobDir(run.id), D2C_TRANSFERS_CONNECTOR) : exportDir(D2C_TRANSFERS_CONNECTOR, run.id);
+  const files: string[] = [];
+  try {
+    const r = await raceStop(writeTransferFeed(tmp, asOf), signal);
+    const raw = new Uint8Array(await fsp.readFile(r.file));
+    const problems = validateInput(D2C_TRANSFERS_FILE, raw);
+    if (problems.length) throw new Error(`${D2C_TRANSFERS_FILE} failed the column check: ${problems.join('; ')}`);
+    signal.throwIfAborted();
+    const byName = ((run.options ?? {}) as { byName?: string | null }).byName ?? null;
+    if (storageOn()) await storeTransferFeed(run, tmp, D2C_TRANSFERS_FILE, asOf);
+    else await writeWithMeta(path.join(dailyDir(asOf), D2C_TRANSFERS_FILE), raw, { by: run.createdBy, byName, source: D2C_TRANSFERS_CONNECTOR });
+    files.push(D2C_TRANSFERS_FILE);
+    log(`d2c transfers: ${r.transfers} transfer(s), ${r.rows} in-transit row(s), ${r.units} unit(s) are the day's ${D2C_TRANSFERS_FILE}`);
+    return { source: D2C_TRANSFERS_CONNECTOR, runId: null, status: INTRANSIT_RUN_STATUS.SUCCEEDED, files, error: null };
+  } catch (err) {
+    if (err instanceof StoppedError) throw err;
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`d2c transfers: NOT written - ${msg} - the latest earlier copy (if any) is used`);
+    return { source: D2C_TRANSFERS_CONNECTOR, runId: null, status: INTRANSIT_RUN_STATUS.FAILED, files, error: msg.slice(0, ERROR_MAX) };
+  } finally {
+    await fsp.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
+  }
+};
+
+/** A paused build waits for this (see execute): files uploaded by hand / answers given (done), or Continue (resumed). */
+type PauseFor = (pause: Record<string, unknown>, step: string, done?: () => Promise<boolean>) => Promise<'done' | 'resumed'>;
+
+/**
+ * Step 1 of a fetch-first build: each source still not of the day is fetched for it (a fetch of that source already
+ * queued or running is waited for first, and counts if it brought the files). When a fetch fails or leaves files out,
+ * the build waits for them uploaded by hand, or Continue (then it goes on with the earlier copies; user, 2026-11-02).
+ */
+const fetchFirst = async (
+  run: IntransitRun, steps: FetchStep[], log: (line: string) => void, setStep: (step: string) => Promise<void>, control: Control, pauseFor: PauseFor,
+): Promise<Fetched[]> => {
+  const signal = control.ac.signal;
   const asOf = run.asOf as string;
   const out: Fetched[] = [];
   const byName = ((run.options ?? {}) as { byName?: string | null }).byName ?? null;
   for (const planned of steps) {
     const src = planned.source;
     await setStep(`fetching ${src}`);
-    if (chains.has(src)) await chains.get(src); // a fetch of this source started by hand: wait for it
+    // a fetch of this source started by hand: wait for it (stopping it stops this build too)
+    control.waitingFor = src;
+    if (chains.has(src)) await raceStop(chains.get(src) as Promise<void>, signal);
+    control.waitingFor = null;
     const still = (await dayPlan(asOf)).build.toFetch.find((s) => s.source === src);
     if (!still) {
       log(`${src}: already fetched for ${asOf}`);
@@ -584,12 +769,37 @@ const fetchFirst = async (run: IntransitRun, steps: FetchStep[], log: (line: str
       continue;
     }
     forwards.set(crun.id, (line) => log(`  [${src}] ${line}`));
-    await chains.get(src);
-    forwards.delete(crun.id);
-    const done = await repo().findOneBy({ id: crun.id });
-    const ok = done?.status === INTRANSIT_RUN_STATUS.SUCCEEDED;
-    log(ok ? `${src}: fetched (run ${crun.id})` : `${src}: fetch failed (run ${crun.id}): ${done?.error ?? 'unknown'} - the earlier copies are used`);
-    out.push({ source: src, runId: crun.id, status: done?.status ?? INTRANSIT_RUN_STATUS.FAILED, files: still.files, error: ok ? null : (done?.error ?? null) });
+    control.waitingFor = src;
+    try {
+      await raceStop(chains.get(src) as Promise<void>, signal);
+    } catch (err) {
+      // the build was stopped: the fetch it started stops with it
+      if (err instanceof StoppedError) await stopRun(crun.id, { id: null, name: null }, `${err.message} (with build ${run.id})`).catch(() => undefined);
+      throw err;
+    } finally {
+      control.waitingFor = null;
+      forwards.delete(crun.id);
+    }
+    const done = await repo().findOne({ where: { id: crun.id }, relations: RELATIONS });
+    if (done?.status === INTRANSIT_RUN_STATUS.STOPPED) {
+      throw new StoppedError(`${stoppedBy(done.stopper?.name ?? null)}: the ${src} fetch was stopped - upload its file by hand, then build again`);
+    }
+    let ok = done?.status === INTRANSIT_RUN_STATUS.SUCCEEDED;
+    let error = ok ? null : (done?.error ?? null);
+    // the files it did not bring (failed, not fetched, refused by the column check): upload them by hand, or go on
+    const notOfDay = async (): Promise<string[]> => ((await dayPlan(asOf)).build.toFetch.find((s) => s.source === src)?.files ?? []).filter((f) => still.files.includes(f));
+    const left = await notOfDay();
+    if (left.length) {
+      log(`${src}: ${ok ? 'fetched without' : `fetch failed (run ${crun.id}): ${done?.error ?? 'unknown'} - no`} ${left.join(', ')} for ${asOf}: waiting for them uploaded by hand, or Continue`);
+      const how = await pauseFor({ kind: 'upload', source: src, files: left, error: done?.error ?? null, fetchRun: crun.id }, INTRANSIT_STEP.AWAITING_UPLOAD, async () => !(await notOfDay()).length);
+      if (how === 'done') {
+        log(`${src}: ${left.join(', ')} uploaded by hand`);
+        ok = true;
+        error = null;
+      } else log(`${src}: continuing with the earlier copies of ${left.join(', ')}`);
+      await setStep(`fetching ${src}`);
+    } else log(ok ? `${src}: fetched (run ${crun.id})` : `${src}: fetch failed (run ${crun.id}) but the day's files are in`);
+    out.push({ source: src, runId: crun.id, status: ok ? INTRANSIT_RUN_STATUS.SUCCEEDED : (done?.status ?? INTRANSIT_RUN_STATUS.FAILED), files: still.files, error });
   }
   return out;
 };
@@ -604,49 +814,98 @@ const execute = async (id: string): Promise<void> => {
     dirty = false;
     await repo().update({ id }, { log: lines.join('\n') });
   };
-  // a report's step and last line, saved with the log (options.step / options.progress)
+  // a report's step and last line, saved with the log (options.step / options.progress). Only the keys this job
+  // changed are written (JSON_SET), so it never overwrites what another request set meanwhile (review, 2026-11-02).
   const options = { ...(run.options ?? {}) } as Record<string, unknown>;
-  let optionsDirty = false;
+  const changed = new Set<string>();
+  const setOption = (key: string, value: unknown): void => {
+    options[key] = value;
+    changed.add(key);
+  };
   const flushAll = async (): Promise<void> => {
-    if (optionsDirty) {
-      optionsDirty = false;
-      await repo().update({ id }, { options: { ...options } as QueryDeepPartialEntity<IntransitRun>['options'] });
+    if (changed.size) {
+      const keys = [...changed];
+      changed.clear();
+      await repo().query(
+        `UPDATE intransit_runs SET options = JSON_SET(COALESCE(options, JSON_OBJECT()), ${keys.map(() => '?, CAST(? AS JSON)').join(', ')}) WHERE id = ?`,
+        [...keys.flatMap((k) => [`$.${k}`, JSON.stringify(options[k] ?? null)]), id],
+      );
     }
     await flush();
   };
+  // Stop (user, 2026-11-02): pressed here, the job is aborted at once; pressed on another machine, the request is
+  // read here on the next tick
+  const control: Control = { ac: new AbortController(), committed: false, waitingFor: null };
+  const signal = control.ac.signal;
   let beat = 0;
   const timer = setInterval(() => {
     // the heartbeat: another machine fails this run only once it has gone quiet (see expireStaleRuns)
     if (Date.now() - beat > HEARTBEAT_MS) {
       beat = Date.now();
-      options.heartbeatAt = new Date().toISOString();
-      optionsDirty = true;
+      setOption('heartbeatAt', new Date().toISOString());
     }
     void flushAll().catch(() => undefined);
+    if (!signal.aborted && !control.committed) {
+      void stopRequest(id).then((s) => {
+        if (s && !signal.aborted && !control.committed) control.ac.abort(new StoppedError(stoppedBy(s.name)));
+      }).catch(() => undefined);
+    }
   }, LOG_FLUSH_MS);
   const onLog = (line: string): void => {
     lines.push(line);
     dirty = true;
     forwards.get(id)?.(line);
-    if (run.kind === INTRANSIT_RUN_KIND.REPORT) {
-      options.progress = line.trim().slice(0, 300);
-      optionsDirty = true;
-    }
+    if (run.kind === INTRANSIT_RUN_KIND.REPORT) setOption('progress', line.trim().slice(0, 300));
   };
   const setStep = async (step: string): Promise<void> => {
-    options.step = step;
+    setOption('step', step);
     const lc = logContext();
     if (lc) lc.step = step; // the log lines and "server blocked" lines name the run's step (2026-10-27)
-    optionsDirty = true;
     await flushAll();
+  };
+  /**
+   * Pause a build (user, 2026-11-02): options.pause tells the page what it waits for; it goes on when `done` says so
+   * (files uploaded / answered), or when someone presses Continue / sends the answers (options.resume, written by
+   * resumeRun on any machine), and stops after INTRANSIT_SKU_WAIT_MS. No worker is held meanwhile.
+   */
+  const pauseFor: PauseFor = async (pause, step, done) => {
+    const until = Date.now() + env.intransit.skuWaitMs;
+    setOption('resume', null);
+    setOption('pause', { ...pause, answerBy: new Date(until).toISOString() });
+    await setStep(step);
+    try {
+      for (;;) {
+        if (done && (await done())) return 'done';
+        const [row] = (await repo().query(`SELECT JSON_EXTRACT(options, '$.resume') AS r FROM intransit_runs WHERE id = ?`, [id])) as { r: unknown }[];
+        if (row?.r && row.r !== 'null') return 'resumed';
+        if (Date.now() > until) throw new StoppedError(`Stopped: nobody answered within ${Math.round(env.intransit.skuWaitMs / 60000)} min - build again when ready`);
+        await abortableSleep(PAUSE_POLL_MS, signal);
+      }
+    } finally {
+      setOption('pause', null);
+      setOption('resume', null);
+      await flushAll().catch(() => undefined);
+    }
+  };
+  /** Past this point a stop is ignored: the job's files are being saved (a built workbook is never half-saved). */
+  const commit = (): void => {
+    signal.throwIfAborted();
+    control.committed = true;
   };
   const stored = storageOn();
   const startedAt = new Date();
   // S3: a build's folder is named by its start (user, 2026-10-26: every build of a day kept, timestamped)
   if (stored && run.kind === INTRANSIT_RUN_KIND.REPORT) options.folder = buildFolderName(startedAt, id);
-  await repo().update({ id }, { status: INTRANSIT_RUN_STATUS.RUNNING, startedAt, options: { ...options } as QueryDeepPartialEntity<IntransitRun>['options'] });
+  // only a run still queued starts (one stopped meanwhile stays stopped)
+  const started = await repo().update({ id, status: INTRANSIT_RUN_STATUS.QUEUED }, { status: INTRANSIT_RUN_STATUS.RUNNING, startedAt, options: { ...options } as QueryDeepPartialEntity<IntransitRun>['options'] });
+  if (!started.affected) {
+    clearInterval(timer);
+    return;
+  }
+  controls.set(id, control);
   run.options = { ...options };
   run.startedAt = startedAt;
+  const who = { id: run.createdBy, name: ((run.options ?? {}) as { byName?: string | null }).byName ?? null };
 
   /** Set when a job's work is done but saving its files failed (not just S3 down: that queues them): folder kept. */
   let keepJob = false;
@@ -660,28 +919,68 @@ const execute = async (id: string): Promise<void> => {
       throw new Error(`${what} done, but not saved to S3 (${err instanceof Error ? err.message : err}); its files are kept in ${jobDir(id)} on ${env.intransit.hostId}`);
     }
   };
+  /** The final status, written only while the run is still running (review, 2026-11-02). */
+  const finish = (set: QueryDeepPartialEntity<IntransitRun>) => repo().update({ id, status: INTRANSIT_RUN_STATUS.RUNNING }, set);
   try {
     if (run.kind === INTRANSIT_RUN_KIND.REPORT) {
       // S3: the build works in a temporary folder (emptied at the end), its files then kept in S3
       const dir = stored ? jobDir(id) : runDir(id);
       const steps = (options.toFetch ?? []) as FetchStep[];
-      const pepims = await readPepims(run, onLog, setStep);
-      const fetched = [...(pepims ? [pepims] : []), ...(options.fetchFirst && steps.length ? await fetchFirst(run, steps, onLog, setStep) : [])];
-      await setStep('building');
+      const pepims = await readPepims(run, onLog, setStep, signal);
+      const transfers = await readTransfers(run, onLog, setStep, signal);
+      const fetched = [...(pepims ? [pepims] : []), ...(transfers ? [transfers] : []), ...(options.fetchFirst && steps.length ? await fetchFirst(run, steps, onLog, setStep, control, pauseFor) : [])];
+      await setStep(INTRANSIT_STEP.BUILDING);
       const snap = stored ? await snapshotFromStore(run.asOf as string, path.join(dir, 'input')) : null;
       const inputsUsed = snap ? snap.used : await snapshotInputs(dir, run.asOf as string);
       if (inputsUsed.earlier.length) onLog(`earlier copies used: ${inputsUsed.earlier.map((e) => `${e.name} (${e.date})`).join(', ')}`);
       const caches = stored ? path.join(dir, 'cache') : cacheDir();
       const loaded = stored ? await cachesIn(caches) : null;
-      const combo = { uniware: missingConnectorKeys(INTRANSIT_SOURCE.UNIWARE).length ? null : env.intransit.uniware, cacheDir: caches };
+      const uniware = missingConnectorKeys(INTRANSIT_SOURCE.UNIWARE).length ? null : env.intransit.uniware;
+      const combo = { uniware, cacheDir: caches };
+      const groups = await facilityGroups();
+      const settings = reportSettings(dir, run.asOf as string, (run.options?.fromDate as string | null | undefined) ?? null, groups, await facilityStock(groups));
       // every sheet as its own gzipped CSV too (previews read one sheet; the Daily Snapshot takes three of them)
-      const result = (await runInWorker({
-        kind: 'report', settings: reportSettings(dir, run.asOf as string, (run.options?.fromDate as string | null | undefined) ?? null, await facilityGroups()), combo, sheets: true,
-      }, env.intransit.runTimeoutMs, onLog)) as PipelineResult & { comboCheck?: ComboCheckResult };
+      // ask = stop after final_sku when there are issues (the first pass); the pass after the answers never asks
+      const build = async (ask = true): Promise<PipelineResult & { comboCheck?: ComboCheckResult }> => {
+        const review = await reviewSettings(uniware, caches);
+        const r = (await runInWorker({ kind: 'report', settings: { ...settings, skuReview: { ...review, pause: review.pause && ask } }, combo, sheets: true }, env.intransit.runTimeoutMs, onLog, signal)) as PipelineResult & { comboCheck?: ComboCheckResult };
+        // filled Sheet35 values go to the master (live server; never fails the build)
+        const saved = await saveSkuFills(r.skuFills ?? [], who).catch((err: unknown) => {
+          onLog(`fill: not saved to the master (${err instanceof Error ? err.message : String(err)})`);
+          return 0;
+        });
+        if (saved) onLog(`fill: ${saved} SKU(s) of the master got their missing MRP / COGS / name (marked auto-filled)`);
+        return r;
+      };
+      let result = await build();
+      if (result.paused) {
+        // new SKUs / mapping issues: ask (fix or ignore each), then build again with the answers - ignored ones are
+        // counted as before and asked again at the next build
+        const items = result.newSkus;
+        const locations = ((await repo().query(`SELECT DISTINCT intransit_location AS l FROM details_channels WHERE intransit_location IS NOT NULL ORDER BY l`)) as { l: string }[]).map((r) => r.l);
+        onLog(`waiting for the answers on ${items.length} SKU / mapping issue(s) (up to ${Math.round(env.intransit.skuWaitMs / 60000)} min)`);
+        await pauseFor({ kind: 'issues', items, locations }, INTRANSIT_STEP.AWAITING_ANSWERS);
+        onLog('answered: building with the answers');
+        await setStep(INTRANSIT_STEP.BUILDING);
+        await exportMastersFromDb(path.join(dir, 'input'));
+        result = await build(false);
+      }
+      // every daily input in one workbook, a dated tab per file (the mail links to it); never fails the build
+      await setStep(INTRANSIT_STEP.INPUTS_BOOK);
+      const warnings = [...(result.warnings ?? [])];
+      try {
+        const book = (await runInWorker({ kind: 'inputs-book', inputDir: settings.inputDir, files: bookInputs(run.asOf as string, inputsUsed, snap?.inputsUsed), outFile: path.join(dir, INPUTS_BOOK_FILE) }, env.intransit.runTimeoutMs, onLog, signal)) as { tabs: unknown[]; bytes: number };
+        onLog(`inputs workbook: ${book.tabs.length} tab(s), ${Math.round(book.bytes / 1048576)} MB`);
+      } catch (err) {
+        if (err instanceof StoppedError) throw err;
+        warnings.push(`The input files workbook was not made: ${err instanceof Error ? err.message : String(err)}`);
+        onLog(`inputs workbook: NOT made - ${err instanceof Error ? err.message : String(err)}`);
+      }
       let reportPath = relReportPath(result.reportPath);
       let files: Record<string, string> | null = null;
+      commit();
       if (stored) {
-        await setStep('saving to S3');
+        await setStep(INTRANSIT_STEP.SAVING);
         const published = await storeOrKeep('the build', async () => {
           if (loaded) await cachesOut(caches, loaded);
           return publishBuild(run, dir);
@@ -691,10 +990,9 @@ const execute = async (id: string): Promise<void> => {
         onLog(`saved to S3${published.queued ? ` (${published.queued} file(s) queued: S3 unreachable, sent when it is back)` : ''}${published.final ? '; the final build of the day' : ''}`);
         forgetSnapshotDays();
       }
-      options.step = 'done';
-      optionsDirty = true;
+      setOption('step', INTRANSIT_STEP.DONE);
       await flushAll();
-      await repo().update({ id }, {
+      await finish({
         status: INTRANSIT_RUN_STATUS.SUCCEEDED,
         finishedAt: new Date(),
         timings: result.timings,
@@ -702,7 +1000,8 @@ const execute = async (id: string): Promise<void> => {
         sheetRows: result.sheetRows,
         reportPath,
         result: {
-          comboCheck: result.comboCheck ?? null, inputsUsed, fetched, warnings: result.warnings ?? [], whSummary: result.whSummary ?? [], ...(snap ? { inputs: snap.inputsUsed, template: snap.template, files } : {}),
+          comboCheck: result.comboCheck ?? null, inputsUsed, fetched, warnings, whSummary: result.whSummary ?? [], skuFills: result.skuFills?.length ?? 0,
+          ...(snap ? { inputs: snap.inputsUsed, template: snap.template, files } : {}),
         } as unknown as QueryDeepPartialEntity<IntransitRun>['result'],
       });
       // the week's and month's copies follow the newest build (live server)
@@ -712,23 +1011,24 @@ const execute = async (id: string): Promise<void> => {
       const day = checkDate(opts.date ?? run.asOf ?? undefined);
       // the day's Shipment_Status.csv (Amazon GRN reads it) in the job's own folder: from S3, or from the disk copy
       const inputDir = stored ? await prepareConnector(run, day) : await diskShipmentStatus(run.id, day);
-      await shipmentStatusForAmazon(run, opts, inputDir, day, onLog);
+      await raceStop(shipmentStatusForAmazon(run, opts, inputDir, day, onLog), signal);
       const exportTo = stored ? path.join(jobDir(id), 'export') : exportDir(run.kind, id);
       const caches = stored ? path.join(jobDir(id), 'cache') : cacheDir();
       const loaded = stored ? await cachesIn(caches) : null;
       const job: WorkerJob = {
         kind: run.kind,
         config: await connectorConfig(),
-        dirs: { targetDir: stored ? null : dailyDir(day), mastersDir: inputDir, exportDir: exportTo, cacheDir: caches },
+        dirs: { targetDir: stored ? null : dailyDir(day), mastersDir: inputDir, exportDir: exportTo, cacheDir: caches, startedAt: startedAt.toISOString() },
         options: opts,
       };
       const pause = (fetchEnded.get(run.kind) ?? 0) + SOURCE_COOLDOWN_MS - Date.now();
       if (pause > 0) {
         onLog(`waiting ${Math.ceil(pause / 1000)} s: the last ${run.kind} fetch ended just now, and asked again at once it fails`);
-        await new Promise((resolve) => setTimeout(resolve, pause));
+        await abortableSleep(pause, signal);
       }
-      const started = Date.now();
-      const result = (await runInWorker(job, env.intransit.connectorTimeoutMs, onLog).finally(() => fetchEnded.set(run.kind, Date.now()))) as ConnectorResult;
+      const t0 = Date.now();
+      const result = (await runInWorker(job, env.intransit.connectorTimeoutMs, onLog, signal).finally(() => fetchEnded.set(run.kind, Date.now()))) as ConnectorResult;
+      commit();
       if (stored) {
         const keys = await storeOrKeep('the fetch', async () => {
           if (loaded) await cachesOut(caches, loaded);
@@ -736,6 +1036,7 @@ const execute = async (id: string): Promise<void> => {
         });
         (result as ConnectorResult & { files?: Record<string, string> }).files = keys;
       }
+      if (result.keptUploads?.length) onLog(`kept the file(s) uploaded by hand while this fetch ran: ${result.keptUploads.join(', ')}`);
       await flushAll();
       const rejected = Object.keys(result.rejected);
       const missing = result.missing ?? [];
@@ -744,27 +1045,74 @@ const execute = async (id: string): Promise<void> => {
         ...(missing.length ? [`not fetched: ${missing.join(', ')}`] : []),
         ...(rejected.length ? [`not used (failed the column check): ${rejected.join(', ')}`] : []),
       ];
-      await repo().update({ id }, {
-        status: problems.length && !result.saved.length ? INTRANSIT_RUN_STATUS.FAILED : INTRANSIT_RUN_STATUS.SUCCEEDED,
+      await finish({
+        status: problems.length && !result.saved.length && !result.keptUploads?.length ? INTRANSIT_RUN_STATUS.FAILED : INTRANSIT_RUN_STATUS.SUCCEEDED,
         error: problems.length ? problems.join('; ').slice(0, ERROR_MAX) : null,
         finishedAt: new Date(),
-        timings: { total: Math.round((Date.now() - started) / 10) / 100 },
+        timings: { total: Math.round((Date.now() - t0) / 10) / 100 },
         result: result as unknown as QueryDeepPartialEntity<IntransitRun>['result'],
       });
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    lines.push(`ERROR ${message}`);
+    const stopped = err instanceof StoppedError || (signal.aborted && !control.committed);
+    const message = stopped && signal.reason instanceof Error ? signal.reason.message : err instanceof Error ? err.message : String(err);
+    lines.push(stopped ? `STOPPED ${message}` : `ERROR ${message}`);
     dirty = true;
     await flushAll().catch(() => undefined);
-    await repo().update({ id }, { status: INTRANSIT_RUN_STATUS.FAILED, finishedAt: new Date(), error: message.slice(0, ERROR_MAX) });
+    await finish({ status: stopped ? INTRANSIT_RUN_STATUS.STOPPED : INTRANSIT_RUN_STATUS.FAILED, finishedAt: new Date(), error: message.slice(0, ERROR_MAX) });
   } finally {
     clearInterval(timer);
+    controls.delete(id);
     if (run.kind === INTRANSIT_RUN_KIND.REPORT) await fsp.rm(path.join(runDir(id), 'input'), { recursive: true, force: true }).catch(() => undefined);
     await closeRun(id).catch((err) => logError(LOG_SOURCE.APP, `[intransit] run ${id}: run.json not written`, err));
     // nothing of a job stays on the server (S3 store), unless its files could not be saved (nor queued)
     if (!keepJob) await fsp.rm(jobDir(id), { recursive: true, force: true }).catch(() => undefined);
   }
+};
+
+/** How often a paused build looks for its files / answers / Continue. */
+const PAUSE_POLL_MS = 5000;
+
+/** The daily inputs of a build with the day of each copy used: the inputs workbook's tabs. */
+const bookInputs = (asOf: string, used: { ofDate: string[]; earlier: { name: string; date: string }[] }, stored?: { name: string; day: string | null }[]): BookInput[] => {
+  const dayOf = new Map<string, string>([...used.ofDate.map((n) => [n, asOf] as [string, string]), ...used.earlier.map((e) => [e.name, e.date] as [string, string])]);
+  for (const s of stored ?? []) if (s.day) dayOf.set(s.name, s.day);
+  return INPUT_CATALOG.filter((f) => f.group === 'daily-fetch' || f.group === 'daily-upload').filter((f) => dayOf.has(f.name)).map((f) => ({ name: f.name, day: dayOf.get(f.name) as string }));
+};
+
+/** The run, when it is paused at `step`, with what it waits for (409 otherwise). */
+const pausedRun = async (id: string, step: string, what: string): Promise<{ run: IntransitRun; pause: Record<string, unknown> }> => {
+  const run = await findRun(id);
+  const o = (run.options ?? {}) as { step?: string; pause?: Record<string, unknown> | null };
+  if (run.status !== INTRANSIT_RUN_STATUS.RUNNING || o.step !== step || !o.pause) throw appError(ERROR_CODES.INTRANSIT_NOT_PAUSED, id, what);
+  return { run, pause: o.pause };
+};
+
+/** Tell a paused build to go on (options.resume; the machine running it reads it within seconds). */
+const resumeRun = async (id: string, who: Requester): Promise<void> => {
+  await repo().query(
+    `UPDATE intransit_runs SET options = JSON_SET(COALESCE(options, JSON_OBJECT()), '$.resume', CAST(? AS JSON)) WHERE id = ? AND status = ?`,
+    [JSON.stringify({ at: new Date().toISOString(), by: who.name }), id, INTRANSIT_RUN_STATUS.RUNNING],
+  );
+};
+
+/**
+ * The answers for the SKU / mapping issues a build waits on (POST /runs/:id/issues): fixes saved to the masters,
+ * ignored ones left for the next build; then the build carries on (any machine may take the answers).
+ */
+export const answerRunIssues = async (id: string, answers: IssueAnswer[], who: Requester): Promise<{ fixed: number; ignored: number }> => {
+  const { pause } = await pausedRun(id, INTRANSIT_STEP.AWAITING_ANSWERS, 'answers');
+  if (!Array.isArray(answers)) throw appError(ERROR_CODES.INTRANSIT_SKU_ANSWERS_INVALID, 'answers must be a list');
+  const r = await applyIssueAnswers((pause.items ?? []) as NewSku[], answers, who);
+  await resumeRun(id, who);
+  return r;
+};
+
+/** A build waiting for files uploaded by hand goes on with the earlier copies (POST /runs/:id/continue). */
+export const continueRun = async (id: string, who: Requester): Promise<RunView> => {
+  await pausedRun(id, INTRANSIT_STEP.AWAITING_UPLOAD, 'files uploaded by hand');
+  await resumeRun(id, who);
+  return getRun(id);
 };
 
 /** Disk store: the day's Shipment_Status.csv copied into the job's folder (it is a daily file, not a master). */
@@ -801,7 +1149,7 @@ const shipmentStatusForAmazon = async (run: IntransitRun, opts: ConnectorOptions
 
 /** A run has ended: its run.json, beside its files (disk) or in its Full Report folder (S3; builds only). */
 const closeRun = async (id: string): Promise<void> => {
-  const run = await repo().findOne({ where: { id }, relations: { creator: true } });
+  const run = await repo().findOne({ where: { id }, relations: RELATIONS });
   if (!run) return;
   if (storageOn()) await storeRunJson(run);
   else await writeRunRecord(run, filesDirOf(run));

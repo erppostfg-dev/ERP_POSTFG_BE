@@ -139,7 +139,8 @@ export const saveShipment = async (
   await AppDataSource.transaction(async (m) => {
     const repo = m.getRepository(MasterPurchaseOrder);
     const po = await repo.findOne({ where: { uid }, lock: { mode: 'pessimistic_write' } });
-    if (!po) throw appError(ERROR_CODES.SHIPMENT_NOT_FOUND, uid);
+    // a D2C internal transfer is not a PO Overview shipment (2026-11-03): changed only by its own screen
+    if (!po || po.transferCode) throw appError(ERROR_CODES.SHIPMENT_NOT_FOUND, uid);
     // 2. this shipment
     if (!canEditShipment(a, po.facilityId)) throw appError(ERROR_CODES.SHIPMENT_NOT_EDITABLE, uid);
 
@@ -218,6 +219,12 @@ export interface HistoryItem {
  * field) but without their old / new values, so hidden columns stay hidden.
  */
 export const shipmentHistory = async (uid: string, hidden: Set<string>): Promise<HistoryItem[]> => {
+  // a D2C internal transfer is not a PO Overview shipment (2026-11-03): its history is on its own screen
+  const [transfer] = await AppDataSource.query<unknown[]>(
+    `SELECT 1 x FROM ${TABLES.MASTER_PURCHASE_ORDERS} WHERE uid = ? AND transferCode IS NOT NULL`,
+    [uid],
+  );
+  if (transfer) throw appError(ERROR_CODES.SHIPMENT_NOT_FOUND, uid);
   const rows = (await AppDataSource.query(
     `SELECT l.id, l.created_at at, u.name, u.email, u.po_team, l.action, l.source, l.field_name field, l.old_value, l.new_value, l.remark, l.batch_id
        FROM ${TABLES.SHIPMENT_LOGS} l LEFT JOIN ${TABLES.USERS} u ON u.id = l.user_id

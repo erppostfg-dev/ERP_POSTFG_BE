@@ -2,6 +2,7 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { CACHE } from '../constants/cache';
 import { ERROR_CODES } from '../constants/errors';
 import { GMAIL_PACE } from '../constants/gmail-intake';
 import { LOG_DEFAULTS, LOG_FORMAT, LOG_LEVEL_RANK, type LogFormat, type LogLevel } from '../constants/logging';
@@ -20,7 +21,9 @@ dotenv.config();
 const laptopMode = process.env.LAPTOP_MODE === 'true';
 export const LAPTOP_MODE_OFF = {
   PUBSUB_ENABLED: 'false', OCR_ENABLED: 'false', OCR_BACKLOG: 'false', PIPELINE_RESUME: 'false', CHANNEL_API_ENABLED: 'false',
-  LOCAL_CLEANUP_ENABLED: 'false', WORKER_IN_SERVER: 'false', QUEUE_MODE: 'local', RECHECK_MINUTES: '0',
+  LOCAL_CLEANUP_ENABLED: 'false', WORKER_IN_SERVER: 'false', QUEUE_MODE: 'local', RECHECK_MINUTES: '0', D2C_SYNC_ENABLED: 'false', PO_UNIWARE_SYNC_ENABLED: 'false', UNIWARE_CREATE_ENABLED: 'false',
+  // not an off switch: laptop mode is ALWAYS D2C local test mode (env.d2c.testOnly), whatever .env says
+  D2C_TEST_ONLY: 'true',
 } as const;
 if (laptopMode) Object.assign(process.env, LAPTOP_MODE_OFF);
 
@@ -125,6 +128,15 @@ export const env = {
     webhookSecret: process.env.WEBHOOK_SECRET,
   },
   // Python OCR (ocr-service/, a git submodule), run as a child process by extractPo().
+  // Admin > Monitor (2026-11-05): what the server reads from CloudWatch with its OWN role. Dev values by default;
+  // prod sets MONITOR_LOG_GROUP=/mcaffeine-erp-post-fg/prod/api (PROD_CHECKLIST). The instance id comes from the
+  // instance metadata; MONITOR_INSTANCE_ID only overrides it.
+  monitor: {
+    logGroup: process.env.MONITOR_LOG_GROUP || '/mcaffeine-erp-post-fg/dev/api',
+    instanceId: process.env.MONITOR_INSTANCE_ID || '',
+    rdsInstance: process.env.MONITOR_RDS_INSTANCE || 'mcaff-dwh',
+    region: process.env.AWS_REGION || 'ap-south-1',
+  },
   ocr: {
     // true: every newly stored email goes to extractPo() straight away (testing; later a BullMQ worker does this).
     enabled: flag('OCR_ENABLED'),
@@ -137,7 +149,8 @@ export const env = {
     runLimit: Number(process.env.OCR_RUN_LIMIT ?? 0),
     pythonBin: process.env.PYTHON_BIN ?? 'python',
     script: process.env.OCR_SCRIPT ?? 'ocr-service/dev/scripts/run_po.py',
-    timeoutMs: Number(process.env.OCR_TIMEOUT_MS ?? 10 * 60 * 1000),
+    // an empty OCR_TIMEOUT_MS is the default too (Number('') = 0 killed every OCR run at once; 2026-11-05)
+    timeoutMs: num('OCR_TIMEOUT_MS', 10 * 60 * 1000),
     concurrency: Number(process.env.OCR_CONCURRENCY ?? 2),
   },
   // Login: Google sign-in for the website (a Web application OAuth client; not the Gmail client above).
@@ -205,6 +218,9 @@ export const env = {
     poSource: (process.env.INTRANSIT_PO_SOURCE ?? 'upload').trim().toLowerCase() === 'pepims' ? 'pepims' : 'upload',
     // The 7 masters + Channel SKU Mapping: 'db' = written from the database into each build's snapshot; else the files
     mastersSource: (process.env.INTRANSIT_MASTERS_SOURCE ?? 'files').trim().toLowerCase() === 'db' ? 'db' : 'files',
+    // A paused build (new SKUs / mapping issues to answer, a failed fetch to upload by hand) waits this long, then stops
+    // (user, 2026-11-02).
+    skuWaitMs: Number(process.env.INTRANSIT_SKU_WAIT_MS ?? 30 * 60 * 1000),
     // The upload page warns when the daily inputs were saved more than this many hours apart.
     inputSpreadWarnHours: Number(process.env.INTRANSIT_INPUT_SPREAD_WARN_HOURS ?? 6),
     amazon: {
@@ -259,6 +275,28 @@ export const env = {
   poVerify: {
     required: flag('PO_VERIFY_REQUIRED', 'true'),
   },
+  // D2C internal transfers (plan 2.11): Uniware writes (create SO, cancel, close short) only when this AND
+  // d2c:settings.live are true; otherwise only for d2c:settings.testFacilities. Default off.
+  // The Uniware SO status sync timer (phase 6): on by default on a server, off in laptop mode (LAPTOP_MODE_OFF).
+  // testOnly = local TEST ONLY mode (user, 2026-11-03: "while on local host everything is made in test facility"): only
+  // transfers whose sender AND receiving facility are test facilities (TEST_FACILITY + d2c:settings.testFacilities) may be
+  // created / imported / edited / sent to Uniware, the sync timer never starts, Sync now reads test transfers only and
+  // the in-transit feed is written empty. D2C_TEST_ONLY=true|false wins; unset = on unless NODE_ENV=production (the
+  // Docker image sets NODE_ENV=production, so the dev / prod EC2 are not in test mode unless their .env says so).
+  // Laptop mode (npm run dev) always forces it on (LAPTOP_MODE_OFF).
+  // Uniware sale order status of channel POs (2026-11-06, modules/po-uniware-sync): the timer (read-only on Uniware);
+  // off on a laptop; Sync now on PO Overview works either way.
+  poUniwareSync: { enabled: flag('PO_UNIWARE_SYNC_ENABLED', 'true') },
+  // Create in Uniware (2026-11-09, constants/uniware-create.ts): the ONE write to Uniware (sale order create). OFF unless
+  // UNIWARE_CREATE_ENABLED=true; always off on a laptop. orderPhone = the phone on the sale order address (required by the API).
+  uniwareCreate: { enabled: flag('UNIWARE_CREATE_ENABLED'), orderPhone: (process.env.UNIWARE_ORDER_PHONE ?? '').trim() },
+  d2c: {
+    uniwareWrites: flag('D2C_UNIWARE_WRITES'),
+    syncEnabled: flag('D2C_SYNC_ENABLED', 'true'),
+    testOnly: (process.env.D2C_TEST_ONLY ?? '').trim()
+      ? (process.env.D2C_TEST_ONLY ?? '').trim().toLowerCase() !== 'false'
+      : laptopMode || (process.env.NODE_ENV ?? 'development') !== 'production',
+  },
   // Re-check of POs in review after a master fix (2026-10-22, constants/po-review REVIEW_RECHECK): minutes between
   // automatic runs; 0 = only after masters:load and on the button.
   recheck: {
@@ -296,6 +334,25 @@ export const env = {
     memoryWarnMb: num('MEMORY_WARN_MB', LOG_DEFAULTS.MEMORY_WARN_MB),
     monitorSeconds: num('MONITOR_SECONDS', LOG_DEFAULTS.MONITOR_SECONDS),
     heartbeatMinutes: num('MONITOR_HEARTBEAT_MINUTES', LOG_DEFAULTS.HEARTBEAT_MINUTES),
+  },
+  // Shared cache (2026-11-10; constants/cache.ts, modules/cache). REDIS_URL empty = this server's memory (laptop, tests).
+  // AWS ElastiCache (Redis OSS / Valkey): REDIS_URL=rediss://<primary or configuration endpoint>:6379 (rediss = in-transit
+  // encryption ON), the AUTH token in REDIS_PASSWORD (SSM SecureString, never in the URL), REDIS_CLUSTER=true for
+  // ElastiCache Serverless or cluster mode enabled. Only the host part of the URL is ever logged.
+  cache: {
+    enabled: flag('CACHE_ENABLED', 'true'),
+    ttlSeconds: Math.max(1, num('CACHE_TTL_SECONDS', CACHE.TTL_SECONDS)),
+    keyPrefix: (process.env.CACHE_KEY_PREFIX ?? '').trim() || CACHE.KEY_PREFIX,
+    redisUrl: (process.env.REDIS_URL ?? '').trim(),
+    redisUsername: process.env.REDIS_USERNAME || undefined,
+    redisPassword: process.env.REDIS_PASSWORD || undefined,
+    // TLS: from the URL (rediss://) unless REDIS_TLS says otherwise
+    redisTls: process.env.REDIS_TLS ? flag('REDIS_TLS') : (process.env.REDIS_URL ?? '').trim().startsWith('rediss://'),
+    redisCluster: flag('REDIS_CLUSTER'),
+    // one CACHE_STATS summary line every this many minutes (0 = never)
+    statsMinutes: Math.max(0, num('CACHE_STATS_MINUTES', CACHE.STATS_EVERY_MINUTES)),
+    // RAM the memory store may use for all answers (never disk)
+    memoryMaxMb: Math.max(1, num('CACHE_MEMORY_MAX_MB', CACHE.MEMORY_MAX_MB)),
   },
   storage: {
     emailDir: process.env.EMAIL_STORAGE_DIR ?? 'storage/emails',

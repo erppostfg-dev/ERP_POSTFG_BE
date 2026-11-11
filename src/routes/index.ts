@@ -1,12 +1,15 @@
 import { Router } from 'express';
-import { CHANNEL_PULLS, FEEDBACK, INBOUND_ROUTES, MAIL_LISTS_ROUTES, MANUAL_UPLOAD, PO_INTAKE, PO_ISSUES, PO_VERIFY, PRICE_DIFFS } from '../constants';
+import { CHANNEL_PULLS, FEEDBACK, INBOUND_ROUTES, MAIL_LISTS_ROUTES, MANUAL_UPLOAD, NOTICES, PO_INTAKE, PO_ISSUES, PO_VERIFY, PRICE_DIFFS } from '../constants';
 import poVerifyGate from '../modules/po-verify/po-verify.gate';
 import adminRoutes from './admin.routes';
 import amazonInboundRoutes from './amazon-inbound.routes';
 import channelPullsRoutes from './channel-pulls.routes';
+import { D2C_ROUTES } from '../constants/d2c-transfers';
+import d2cTransfersRoutes from './d2c-transfers.routes';
 import approvalsRoutes from './approvals.routes';
 import authRoutes from './auth.routes';
 import feedbackRoutes from './feedback.routes';
+import noticesRoutes from './notices.routes';
 import healthRoutes from './health.routes';
 import intransitRoutes from './intransit.routes';
 import mailListsRoutes from './mail-lists.routes';
@@ -34,6 +37,8 @@ router.use('/intransit', intransitRoutes);
 router.use('/masters', mastersRoutes);
 router.use('/po-intake', poIntakeRoutes);
 router.use('/po-overview', poOverviewRoutes);
+// D2C internal transfers (2026-11-03): their own page; never on PO Overview.
+router.use(D2C_ROUTES.BASE, d2cTransfersRoutes);
 // PO issues (a PO review tab, 2026-10-29): before the review routes, so /po-review/issues is not an upload id.
 router.use(PO_ISSUES.BASE, poIssuesRoutes);
 router.use(PRICE_DIFFS.BASE, priceDifferencesRoutes);
@@ -43,5 +48,6 @@ router.use('/po-review', poReviewRoutes);
 router.use(PO_VERIFY.BASE, poVerifyRoutes);
 router.use(MANUAL_UPLOAD.BASE, manualUploadRoutes);
 router.use(FEEDBACK.BASE, feedbackRoutes);
+router.use(NOTICES.BASE, noticesRoutes);
 
 export default router;

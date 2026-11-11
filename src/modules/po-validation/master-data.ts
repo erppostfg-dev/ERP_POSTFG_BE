@@ -1,6 +1,8 @@
 import { DataSource } from 'typeorm';
 import { CHANNEL_MASTER_IDS, ChannelName, PO_VERIFY_ACTION, TABLES } from '../../constants';
 import { DetailsChannel, MasterChannel, MasterChannelSku, MasterFacility, MasterPurchaseOrder, MasterSku } from '../../entities';
+import { CACHE_NS } from '../../constants/cache';
+import { cached } from '../cache/cache.service';
 import { CodeIndex, codeIndex, EXACT_MATCH, matchKey } from '../masters/master-match';
 
 export { matchKey };
@@ -56,19 +58,51 @@ export class MasterDataReader {
     const channelSkus = await this.db.getRepository(MasterChannelSku).findBy({ channelId: id, isActive: true });
     const locations = await this.db.getRepository(DetailsChannel).findBy({ channelId: id, isActive: true });
     this.facilities ??= codeIndex(await this.db.getRepository(MasterFacility).find(), EXACT_MATCH);
-    return {
-      channel,
-      skusByCode: groupBy(channelSkus, (s) => matchKey(s.channelCode)),
-      skusByPep: groupBy(channelSkus, (s) => matchKey(s.pepCode)),
-      skusByEan: groupBy(channelSkus.filter((s) => s.eanCode), (s) => matchKey(s.eanCode)),
-      locations,
-      facilities: this.facilities,
-      skus: this.skus,
-      // A PO sent back from verification (po-verify) is cancelled: it no longer counts as a duplicate of itself.
-      poExists: async (poNumber) => (await countLivePos(this.db, channel.displayName, poNumber)) > 0,
-    };
+    return build(this.db, channel, channelSkus, locations, this.facilities, this.skus);
   }
 }
+
+const build = (
+  db: DataSource, channel: MasterChannel, channelSkus: MasterChannelSku[], locations: DetailsChannel[],
+  facilities: CodeIndex<MasterFacility>, skus: Map<string, MasterSku>,
+): ChannelMasterData => ({
+  channel,
+  skusByCode: groupBy(channelSkus, (s) => matchKey(s.channelCode)),
+  skusByPep: groupBy(channelSkus, (s) => matchKey(s.pepCode)),
+  skusByEan: groupBy(channelSkus.filter((s) => s.eanCode), (s) => matchKey(s.eanCode)),
+  locations,
+  facilities,
+  skus,
+  // A PO sent back from verification (po-verify) is cancelled: it no longer counts as a duplicate of itself.
+  poExists: async (poNumber) => (await countLivePos(db, channel.displayName, poNumber)) > 0,
+});
+
+/**
+ * The same master data for the PO PANELS only (review, approval, verify: what a person LOOKS at), from the shared cache
+ * (part 2, 2026-11-10): every panel open read all ~2,500 PEP SKUs + the channel's SKUs, locations and facilities. Kept
+ * CACHE_TTL_SECONDS and dropped by every master add / edit / switch / approval (CACHE_NS.MASTERS), so the panel shows a
+ * master change at once. Anything that DECIDES (pipeline, submit, approve, re-check, send back) keeps MasterDataReader:
+ * always read fresh from the DB. The rows come back as JSON (dates as text); no check reads a master's dates.
+ */
+export const panelMasterFor = async (db: DataSource, name: ChannelName): Promise<ChannelMasterData | null> => {
+  const id = CHANNEL_MASTER_IDS[name];
+  if (id === undefined) return null;
+  const rows = await cached(CACHE_NS.MASTERS, `panel:channel:${id}`, async () => {
+    const channel = await db.getRepository(MasterChannel).findOneBy({ id });
+    if (!channel) return { channel: null, channelSkus: [], locations: [] };
+    const [channelSkus, locations] = await Promise.all([
+      db.getRepository(MasterChannelSku).findBy({ channelId: id, isActive: true }),
+      db.getRepository(DetailsChannel).findBy({ channelId: id, isActive: true }),
+    ]);
+    return { channel, channelSkus, locations };
+  });
+  if (!rows.channel) return null;
+  const [skus, facilities] = await Promise.all([
+    cached(CACHE_NS.MASTERS, 'panel:skus', () => db.getRepository(MasterSku).find()),
+    cached(CACHE_NS.MASTERS, 'panel:facilities', () => db.getRepository(MasterFacility).find()),
+  ]);
+  return build(db, rows.channel, rows.channelSkus, rows.locations, codeIndex(facilities, EXACT_MATCH), new Map(skus.map((s) => [matchKey(s.pepCode), s])));
+};
 
 /**
  * Saved POs with this channel + PO number, leaving out those cancelled by a verification send-back

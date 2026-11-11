@@ -1,10 +1,11 @@
 import { NextFunction, Request, Response, Router } from 'express';
 import multer from 'multer';
-import { FEEDBACK } from '../constants';
+import { CACHE_NS, FEEDBACK } from '../constants';
 import { requireAuth } from '../modules/auth/auth.middleware';
+import { cached } from '../modules/cache/cache.service';
 import {
-  Actor, addComment, addImages, addMember, createFeedback, feedbackPeople, getFeedback, ImageFile, listFeedback, listQueryOf,
-  openFeedbackImage, removeImage, removeMember, updateFeedback,
+  Actor, addComment, addImages, addMember, createFeedback, feedbackPeople, getFeedback, ImageFile, listFeedback, listNotifications, listQueryOf,
+  openFeedbackImage, readNotifications, removeImage, removeMember, updateFeedback,
 } from '../modules/feedback/feedback.service';
 
 /*
@@ -14,6 +15,8 @@ import {
  *   GET   /feedback/:id                      one item: text, captured details, images, people, timeline, canEdit
  *   POST  /feedback                          new item (JSON, or multipart with up to 4 images in "images"), assignedToId?
  *   POST  /feedback/:id/comments             { text } (anyone)
+ *   GET   /feedback/notifications            my bell: { unread, items } (assigned to me, added me, comments)
+ *   POST  /feedback/notifications/read       { itemId } | { ids } | {} (all): mine only, answers the bell
  *   GET   /feedback/:id/images/:imageId      the image (streamed from S3)
  * Reporter, the assignee, people added to the item, developer / admin (else 403 FEEDBACK_NOT_ALLOWED):
  *   PATCH /feedback/:id                      { title?, description?, type?, severity?, status?, duplicateOfId?, assignedToId? }
@@ -38,6 +41,10 @@ const send = (fn: (req: Request) => Promise<unknown>, status = 200) => async (re
 
 router.get(FEEDBACK.ROUTES.LIST, requireAuth, send((req) => listFeedback(listQueryOf(req.query as Record<string, unknown>), actor(req))));
 router.get(FEEDBACK.ROUTES.PEOPLE, requireAuth, send(() => feedbackPeople()));
+// before '/:id', which would take "notifications" as an id
+// every signed-in person asks every 30 s: their answer is cached (dropped when they are notified or read, 2026-11-10)
+router.get(FEEDBACK.ROUTES.NOTIFICATIONS, requireAuth, send((req) => cached(CACHE_NS.FEEDBACK_BELL, String(req.auth!.user.id), () => listNotifications(actor(req)))));
+router.post(FEEDBACK.ROUTES.NOTIFICATIONS_READ, requireAuth, send((req) => readNotifications(body(req), actor(req))));
 // Auth first, so images are only read for a signed-in person.
 router.post(FEEDBACK.ROUTES.LIST, requireAuth, images, send((req) => createFeedback(body(req), filesOf(req), actor(req)), 201));
 router.get(FEEDBACK.ROUTES.ONE, requireAuth, send((req) => getFeedback(req.params.id, actor(req))));

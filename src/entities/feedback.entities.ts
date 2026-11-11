@@ -1,8 +1,8 @@
 import { Column, Entity, Index, JoinColumn, ManyToOne, PrimaryColumn, PrimaryGeneratedColumn } from 'typeorm';
 import { TABLES } from '../constants/db';
 import {
-  FEEDBACK_COMMENT_KIND, FEEDBACK_SEVERITY, FEEDBACK_STATUS, FEEDBACK_TYPE,
-  FeedbackCommentKind, FeedbackSeverity, FeedbackStatus, FeedbackType,
+  FEEDBACK_COMMENT_KIND, FEEDBACK_NOTIFY_KIND, FEEDBACK_SEVERITY, FEEDBACK_STATUS, FEEDBACK_TYPE,
+  FeedbackCommentKind, FeedbackNotifyKind, FeedbackSeverity, FeedbackStatus, FeedbackType,
 } from '../constants/feedback';
 import { User } from './auth.entities';
 
@@ -200,4 +200,55 @@ export class FeedbackComment {
   @ManyToOne(() => User, { onDelete: 'RESTRICT', onUpdate: 'CASCADE' })
   @JoinColumn({ name: 'user_id', referencedColumnName: 'id', foreignKeyConstraintName: 'fk_feedback_comments_user' })
   user: User;
+}
+
+/**
+ * feedback_notifications (2026-11-06): the top-bar bell. One row per person told (assigned to an item, added to it, a
+ * comment on an item they follow); read_at set when they open it. Never for the person who did it.
+ */
+@Entity({ name: TABLES.FEEDBACK_NOTIFICATIONS })
+@Index('idx_feedback_notifications_user', ['userId', 'readAt', 'id'])
+@Index('idx_feedback_notifications_item', ['itemId', 'userId'])
+export class FeedbackNotification {
+  @PrimaryGeneratedColumn({ name: 'id', type: 'bigint' })
+  id: string;
+
+  /** Who is told. */
+  @Column({ name: 'user_id', type: 'int' })
+  userId: number;
+
+  @Column({ name: 'item_id', type: 'bigint' })
+  itemId: string;
+
+  @Column({ name: 'kind', type: 'enum', enum: Object.values(FEEDBACK_NOTIFY_KIND) })
+  kind: FeedbackNotifyKind;
+
+  /** Who did it. */
+  @Column({ name: 'actor_id', type: 'int' })
+  actorId: number;
+
+  /** The comment (cut to FEEDBACK.NOTIFY_TEXT_MAX); '' for assigned / added. */
+  @Column({ name: 'text', type: 'varchar', length: 300, default: '' })
+  text: string;
+
+  @Column({ name: 'read_at', type: 'datetime', precision: 6, nullable: true })
+  readAt: Date | null;
+
+  @Column({ name: 'created_at', type: 'datetime', precision: 6, default: () => 'CURRENT_TIMESTAMP(6)' })
+  createdAt: Date;
+
+  /** fk_feedback_notifications_user */
+  @ManyToOne(() => User, { onDelete: 'RESTRICT', onUpdate: 'CASCADE' })
+  @JoinColumn({ name: 'user_id', referencedColumnName: 'id', foreignKeyConstraintName: 'fk_feedback_notifications_user' })
+  user: User;
+
+  /** fk_feedback_notifications_item */
+  @ManyToOne(() => FeedbackItem, { onDelete: 'RESTRICT', onUpdate: 'CASCADE' })
+  @JoinColumn({ name: 'item_id', referencedColumnName: 'id', foreignKeyConstraintName: 'fk_feedback_notifications_item' })
+  item: FeedbackItem;
+
+  /** fk_feedback_notifications_actor */
+  @ManyToOne(() => User, { onDelete: 'RESTRICT', onUpdate: 'CASCADE' })
+  @JoinColumn({ name: 'actor_id', referencedColumnName: 'id', foreignKeyConstraintName: 'fk_feedback_notifications_actor' })
+  actor: User;
 }

@@ -4,6 +4,7 @@ import type { Browser, BrowserContext, Download, Page } from 'playwright';
 import { waitForOtp } from '../../email-intake/otp-mail';
 import { Log, sleep } from './http';
 import { downloadEach, RobotFile } from './robot-files';
+import { onWorkerStop } from '../worker-stop';
 
 /*
  * Flipkart Seller Hub robot (port of intransit-service/intransit/sources/flipkart_rpa.py; user, 2026-10-28): a
@@ -74,6 +75,8 @@ const openBrowser = async (cfg: SellerHubConfig, sessionFile: string): Promise<{
     // not LIGHT_ARGS (30-Oct): Current Inventory stopped being prepared with them (see withSellerHub)
     args: ['--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage', '--disable-gpu'],
   });
+  // Stop on the page: the browser closes before the worker exits
+  browser.on('disconnected', onWorkerStop(() => browser.close()));
   const platform = process.platform === 'win32' ? 'Windows NT 10.0; Win64; x64' : process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10_15_7' : 'X11; Linux x86_64';
   const major = browser.version().split('.')[0];
   const saved = await fs.access(sessionFile).then(() => true, () => false);

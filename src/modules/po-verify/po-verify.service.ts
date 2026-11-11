@@ -22,11 +22,11 @@ import {
 } from '../../constants';
 import { ActivityLog, DetailsPurchaseOrder, MasterChannel, MasterPurchaseOrder, PoIssue, PoIssueAction, PoUpload, PoVerification, PoVerifyChannelSetting, User } from '../../entities';
 import { appError } from '../../utils/AppError';
-import { openS3File, readS3Json } from '../email-intake/s3-mirror.service';
+import { openS3File, readS3Json, readS3JsonCached } from '../email-intake/s3-mirror.service';
 import { issueKey, originalValues } from '../po-pipeline/po-uploads.service';
 import { ProcessedPo } from '../po-processing/common/processed-po';
 import { bumpReview } from '../po-review/po-review.live';
-import { MasterDataReader } from '../po-validation/master-data';
+import { MasterDataReader, panelMasterFor } from '../po-validation/master-data';
 import { validatePo } from '../po-validation/validate-po';
 
 /*
@@ -294,14 +294,15 @@ export const verifyDetail = async (uploadId: string): Promise<VerifyDetail> => {
   if (u.status !== UPLOAD_STATUS.COMPLETED || !u.poUid || !u.uniwareCsvUrl) throw appError(ERROR_CODES.VERIFY_NOT_READY, uploadId, u.status);
 
   const processedUrl = u.ocrResult?.processed_json;
-  const po = typeof processedUrl === 'string' ? await readS3Json<ProcessedPo>(processedUrl) : undefined;
+  // the Verify panel (looks only): processed.json + master data from the shared cache (2026-11-10)
+  const po = typeof processedUrl === 'string' ? await readS3JsonCached<ProcessedPo>(processedUrl) : undefined;
   if (!po) throw appError(ERROR_CODES.PROCESSED_JSON_MISSING, uploadId);
   const csv = parseCsv(await readText(u.uniwareCsvUrl));
   const saved = await AppDataSource.getRepository(DetailsPurchaseOrder).findBy({ shipmentOrderId: u.poUid });
   const master = await AppDataSource.getRepository(MasterPurchaseOrder).findOneBy({ uid: u.poUid });
   const verified = (await verifiedRows([u])).get(String(u.id));
   // The PO with GST as the checks see it (a PO priced before GST gets the GST added here, line by line)
-  const checked = await validatePo(po, await new MasterDataReader(AppDataSource).forChannel(po.channel_name as ChannelName));
+  const checked = await validatePo(po, await panelMasterFor(AppDataSource, po.channel_name as ChannelName));
   const withGst = new Map(checked.lines.map((l) => [String(l.lineNo), l.poUnitPrice]));
   const beforeGst = /before GST/i.test(String(po.field_sources?.po_value ?? '')) || (po.line_items.length > 0 && po.line_items.every((l) => l.landing_rate === '' && l.unit_cost !== ''));
 

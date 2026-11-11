@@ -143,45 +143,51 @@ export interface TextSheet {
   widths?: number[];
 }
 
-const xmlEsc = (s: string): string =>
+export const xmlEsc = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
-const colName = (i: number): string => {
+export const colName = (i: number): string => {
   let s = '';
   for (let n = i + 1; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + ((n - 1) % 26)) + s;
   return s;
 };
-const XML_HEAD = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
-const NS_MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+export const XML_HEAD = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+export const NS_MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 const NS_REL = 'http://schemas.openxmlformats.org/package/2006/relationships';
 const NS_DOC_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+
+/**
+ * The parts of a text workbook (textXlsx) besides its sheets: content types, relations, workbook (sheet names as given,
+ * cut to 31) and styles - style 0 = text, 1 = the bold grey header. Its sheets are xl/worksheets/sheet<n>.xml.
+ */
+export const textXlsxShell = (names: string[]): Record<string, Uint8Array> => ({
+  '[Content_Types].xml': strToU8(
+    `${XML_HEAD}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+    '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>' +
+    '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+    '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' +
+    names.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('') +
+    '</Types>'),
+  '_rels/.rels': strToU8(`${XML_HEAD}<Relationships xmlns="${NS_REL}"><Relationship Id="rId1" Type="${NS_DOC_REL}/officeDocument" Target="xl/workbook.xml"/></Relationships>`),
+  'xl/workbook.xml': strToU8(
+    `${XML_HEAD}<workbook xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}"><sheets>` +
+    names.map((n, i) => `<sheet name="${xmlEsc(n.slice(0, 31))}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('') + '</sheets></workbook>'),
+  'xl/_rels/workbook.xml.rels': strToU8(
+    `${XML_HEAD}<Relationships xmlns="${NS_REL}">` +
+    names.map((_, i) => `<Relationship Id="rId${i + 1}" Type="${NS_DOC_REL}/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('') +
+    `<Relationship Id="rId${names.length + 1}" Type="${NS_DOC_REL}/styles" Target="styles.xml"/></Relationships>`),
+  'xl/styles.xml': strToU8(
+    `${XML_HEAD}<styleSheet xmlns="${NS_MAIN}"><fonts count="2"><font><sz val="10"/><name val="Arial"/></font><font><b/><sz val="10"/><name val="Arial"/></font></fonts>` +
+    '<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE5E7EB"/></patternFill></fill></fills>' +
+    '<borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs>' +
+    '<cellXfs count="2"><xf fontId="0" numFmtId="49" applyNumberFormat="1"/><xf fontId="1" fillId="2" numFmtId="49" applyNumberFormat="1" applyFont="1" applyFill="1"/></cellXfs></styleSheet>'),
+});
 
 /**
  * A small xlsx whose every cell is text (inline strings, number format "@") with a bold, filtered, frozen header row:
  * long numeric codes (EANs, Myntra / Tira ids) open in Excel exactly as written, never rounded to 8.91E+12.
  */
 export const textXlsx = (sheets: TextSheet[]): Uint8Array => {
-  const files: Record<string, Uint8Array> = {
-    '[Content_Types].xml': strToU8(
-      `${XML_HEAD}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
-      '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>' +
-      '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
-      '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' +
-      sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('') +
-      '</Types>'),
-    '_rels/.rels': strToU8(`${XML_HEAD}<Relationships xmlns="${NS_REL}"><Relationship Id="rId1" Type="${NS_DOC_REL}/officeDocument" Target="xl/workbook.xml"/></Relationships>`),
-    'xl/workbook.xml': strToU8(
-      `${XML_HEAD}<workbook xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}"><sheets>` +
-      sheets.map((s, i) => `<sheet name="${xmlEsc(s.name.slice(0, 31))}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('') + '</sheets></workbook>'),
-    'xl/_rels/workbook.xml.rels': strToU8(
-      `${XML_HEAD}<Relationships xmlns="${NS_REL}">` +
-      sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="${NS_DOC_REL}/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('') +
-      `<Relationship Id="rId${sheets.length + 1}" Type="${NS_DOC_REL}/styles" Target="styles.xml"/></Relationships>`),
-    'xl/styles.xml': strToU8(
-      `${XML_HEAD}<styleSheet xmlns="${NS_MAIN}"><fonts count="2"><font><sz val="10"/><name val="Arial"/></font><font><b/><sz val="10"/><name val="Arial"/></font></fonts>` +
-      '<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE5E7EB"/></patternFill></fill></fills>' +
-      '<borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs>' +
-      '<cellXfs count="2"><xf fontId="0" numFmtId="49" applyNumberFormat="1"/><xf fontId="1" fillId="2" numFmtId="49" applyNumberFormat="1" applyFont="1" applyFill="1"/></cellXfs></styleSheet>'),
-  };
+  const files = textXlsxShell(sheets.map((s) => s.name));
   sheets.forEach((s, si) => {
     const width = Math.max(1, s.rows[0]?.length ?? 1);
     const body = s.rows.map((r, ri) => `<row r="${ri + 1}">${r.map((v, ci) =>

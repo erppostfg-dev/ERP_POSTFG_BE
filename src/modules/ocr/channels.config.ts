@@ -50,6 +50,22 @@ export interface ChannelConfig {
   optional?: ('pdf' | 'sheet')[];
   /** One file holds many POs (Nykaa's export, 2026-10-27): told on the Manual Upload screen. */
   manyPosPerFile?: boolean;
+  /**
+   * reader 'sheet' (2026-11-05): the row that holds the column names, when it is not the first one (Noble Chemist's
+   * form: 5 title rows first). Rows above it go to the raw header as "Line 1", "Line 2" ... (their text joined).
+   */
+  sheetHeader?: RegExp;
+  /**
+   * The PDF OR the sheet, each a whole PO file on its own (Purplle, 2026-11-06): its daily summary sheet (many POs) or
+   * its PO PDF (one PO). One file is read per email / upload folder (the sheet when both are there); Manual Upload makes
+   * one folder per file. Not set together with `optional`.
+   */
+  either?: boolean;
+  /**
+   * A PO already in POST_FG from another email / upload is left out of a several-PO file quietly: no row, no
+   * DUPLICATE_PO review (user 2026-11-06: Purplle's summary arriving after its PDFs were uploaded by hand).
+   */
+  skipKnownPos?: boolean;
 }
 
 export const channelConfigs: ChannelConfig[] = [
@@ -149,13 +165,19 @@ export const channelConfigs: ChannelConfig[] = [
     // (one row per PO line, 14 columns, trailing NUL bytes) -> sheet pipeline (the OCR's "purplle" entry takes a sheet or a PDF).
     // The same sender also sends "Purplle OPN PO … Dt …" (a list of OPEN POs, same EXECL_ATTACHED.XLS), "Purplle GRN … Dt …"
     // and "Purplle RTV DN for RTV PO …": none of them is a new PO.
+    // Purplle's PO PDF (2026-11-06, Manual Upload only, user): "PO_<number>.PDF", one PO each, mailed one per PO by its
+    // buyer ("MANASH PO <number> Dt dd/mm/yyyy") 4-8 h BEFORE the summary (~22:10 IST). Those mails stay out of the
+    // intake (the Gmail filter takes only the summary): a person uploads the PDFs when the summary is late. The OCR's
+    // "purplle" entry reads a PDF with its header_notes / line_notes; a summary PO already in POST_FG is left out.
     channel: CHANNELS.PURPLLE,
     ocrChannel: OCR_CHANNELS[CHANNELS.PURPLLE],
     senders: ['it0002@purplle.com'],
     subject: /^Purplle (?!OPN PO\b|GRN\b|RTV\b).+ Dt \d{2}\/\d{2}\/\d{2}$/i,
     // No PO number in the subject (one email = all POs of the day): the folder is <date>_<id>.
     domains: ['purplle.com'],
-    files: { sheet: /\.(xlsx?|csv|tsv|txt)$/i },
+    files: { pdf: /\.pdf$/i, sheet: /\.(xlsx?|csv|tsv|txt)$/i },
+    either: true,
+    skipKnownPos: true,
   },
 
   {
@@ -241,5 +263,51 @@ export const channelConfigs: ChannelConfig[] = [
     senders: [],
     domains: [],
     files: { pdf: /\.pdf$/i },
+  },
+  {
+    // First Club (Firstclub Technology, 2026-11-05): one PO PDF per PO ("PO-199751.pdf"; header, every line and the totals;
+    // PO No. "PO-199751-FRHHYDMDL01" = number + First Club's warehouse code). Manual Upload only (user: no other source).
+    // OCR "first_club": PDF pipeline with header_notes + line_notes (fixed names) + split_value_rate_cells.
+    channel: CHANNELS.FIRST_CLUB,
+    ocrChannel: OCR_CHANNELS[CHANNELS.FIRST_CLUB],
+    senders: [],
+    domains: [],
+    files: { pdf: /\.pdf$/i },
+  },
+  {
+    // Octavos (Octavos Enterprise Solutions = Smytten, 2026-11-05): one PO PDF per PO ("OG-00381-2026-27.pdf", PO No.
+    // "OG/00381/2026-27"; OESPL / OG / OK / RET = Octavos' warehouses, RET are normal POs, user). Manual Upload only.
+    // OCR "octavos": PDF pipeline with header_notes + line_notes (fixed names) + header_pages (page 1 + Grand Total page).
+    channel: CHANNELS.OCTAVOS,
+    ocrChannel: OCR_CHANNELS[CHANNELS.OCTAVOS],
+    senders: [],
+    domains: [],
+    files: { pdf: /\.pdf$/i },
+  },
+  {
+    // Noble Chemist (New Welcome Agencies Pvt Ltd, Goregaon West, 2026-11-05): its order form "Order No 88699.xls"
+    // (old-style .xls: 5 title rows with DATE / Order No, then COMPANY | COMP UPC | ITEM NAME | PACK | QTY. | FREE | MRP |
+    // REMARKS; no price). Manual Upload only. No OCR: our sheet reader (Excel through ocr-service sheet_rows.py).
+    channel: CHANNELS.NOBLE_CHEMIST,
+    ocrChannel: OCR_CHANNELS[CHANNELS.NOBLE_CHEMIST],
+    senders: [],
+    domains: [],
+    files: { sheet: /\.(xls|xlsx|csv)$/i },
+    reader: 'sheet',
+    sheetHeader: /\bCOMP\s*UPC\b/i,
+  },
+  {
+    // Amazon RK World (Amazon Vendor Central, 2026-11-06): the "PO Item Export" (POItemExport_<date>.xls, old-style .xls;
+    // first sheet "Line Items": one row per PO line, several POs per file). Manual Upload only. No OCR: our sheet reader
+    // (Excel through ocr-service sheet_rows.py); the handler splits the rows by PO (as Nykaa).
+    channel: CHANNELS.AMAZON_RK_WORLD,
+    ocrChannel: OCR_CHANNELS[CHANNELS.AMAZON_RK_WORLD],
+    senders: [],
+    domains: [],
+    files: { sheet: /\.(xls|xlsx|csv)$/i },
+    reader: 'sheet',
+    // the column names (also refuses another export or sheet, with why)
+    sheetHeader: /\bASIN\b.*\bRequested quantity\b/i,
+    manyPosPerFile: true,
   },
 ];

@@ -2,6 +2,8 @@ import crypto from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
 import { Readable } from 'stream';
+import { CACHE_NS } from '../../constants/cache';
+import { cached, forgetCache } from '../cache/cache.service';
 import { DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { env } from '../../config/env';
@@ -87,8 +89,33 @@ export const readS3Json = async <T>(s3Url: string): Promise<T | undefined> => {
   return text === undefined ? undefined : (JSON.parse(text) as T);
 };
 
+/**
+ * readS3Json for the PO PANELS (review, approval, verify; part 2 of the cache, 2026-11-10): from the shared cache, kept
+ * CACHE_TTL_SECONDS and dropped the moment that S3 file is written again (putBody below: re-read, corrected.json ...).
+ * Anything that decides (pipeline, submit, approve, re-check) keeps readS3Json: always read from S3.
+ */
+export const readS3JsonCached = async <T>(s3Url: string): Promise<T | undefined> =>
+  cached(CACHE_NS.PO_FILES, s3Url, () => readS3Json<T>(s3Url));
+
 /** A text file from S3 by its s3:// URL, or undefined when it isn't there (Myntra STR CSVs, 2026-11-03). */
 export const readS3Text = async (s3Url: string): Promise<string | undefined> => getText(keyOfS3Url(s3Url));
+
+/** An S3 file's bytes by its s3:// URL; undefined when it doesn't exist (2026-11-05: the sheet of an earlier PO copy). */
+export const readS3Bytes = async (s3Url: string): Promise<Uint8Array | undefined> => {
+  try {
+    return await (await s3().send(new GetObjectCommand({ Bucket: env.s3.bucket, Key: keyOfS3Url(s3Url) }))).Body?.transformToByteArray();
+  } catch (err) {
+    if ((err as { name?: string }).name === 'NoSuchKey') return undefined;
+    throw err;
+  }
+};
+
+/** The s3:// URLs of the files directly in the folder of this file's URL (not its sub-folders). */
+export const s3FolderFileUrls = async (s3Url: string): Promise<string[]> => {
+  const key = keyOfS3Url(s3Url);
+  const prefix = key.slice(0, key.lastIndexOf('/') + 1);
+  return [...(await listPrefix(prefix)).keys()].filter((k) => !k.slice(prefix.length).includes('/')).map((k) => s3UrlOfKey(k));
+};
 
 /** The key of an s3://<our bucket>/<key> URL (S3 must be on, and the bucket ours). */
 const keyOfS3Url = (s3Url: string): string => {
@@ -176,6 +203,8 @@ const putBody = async (key: string, body: Buffer | string, fileName: string): Pr
       ContentType: CONTENT_TYPES[path.extname(fileName).toLowerCase()] ?? 'application/octet-stream',
     }),
   );
+  // a cached copy of this file (PO panels) is old now: dropped on every server
+  await forgetCache(CACHE_NS.PO_FILES, s3UrlOfKey(key));
 };
 
 const md5 = (body: Buffer): string => crypto.createHash('md5').update(body).digest('hex');

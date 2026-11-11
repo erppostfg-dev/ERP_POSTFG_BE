@@ -5,6 +5,7 @@ import { closeDb, count, resetDb, rows } from '../helpers/db';
 import { s3Objects } from '../helpers/fake-s3';
 import { bigBasketPo, seedMasters, type Masters } from '../helpers/fixtures';
 import { runPo, type Upload } from '../helpers/po-flow';
+import { approveMargin } from '../helpers/margins';
 import { covers } from '../helpers/routes';
 
 /*
@@ -84,10 +85,28 @@ describe('deciding a price mismatch', () => {
     const detail = await api().get(`${V}/approvals/po-reviews/${(await rows<{ id: string }>('SELECT id FROM po_review_submissions WHERE upload_id = ?', [u.id]))[0].id}`).set('Cookie', admin.cookie).expect(200);
     expect(JSON.stringify(detail.body.data)).toContain('"updateMaster":true');
     expect((await approve(u)).status).toBe(200);
+    // MRP at once; the rate waits for the two margin approvals (2026-11-06), asked from this PO
+    expect(await master()).toEqual({ mrp: '520.00', rate_after_margin: '349.30' });
+    const [req] = await rows<{ id: string; source: string; new_rate: string; remark: string }>("SELECT id, source, new_rate, remark FROM margin_change_requests WHERE status = 'pending_l1'");
+    expect(req).toMatchObject({ source: 'price_check', new_rate: '360.00' });
+    expect(req.remark).toContain('From PO review: BigBasket PO IRA91000001 line 1, 2');
+    await approveMargin(String(req.id));
     expect(await master()).toEqual({ mrp: '520.00', rate_after_margin: '360.00' });
     const logs = await rows<{ field_name: string; remark: string }>('SELECT field_name, remark FROM master_change_logs ORDER BY id');
     expect(logs.map((l) => l.field_name).sort()).toEqual(['mrp', 'rateAfterMargin']);
     expect(logs[0].remark).toContain('From PO review: BigBasket PO IRA91000001 line 1, 2');
+    expect(logs[1].remark).toContain(`Margin change #${req.id}`);
+  });
+
+  it('a second PO updating the same SKU while its rate request waits is still approved (the waiting request is kept)', async () => {
+    const choice = { lines: [{ lineNo: '1', priceFrom: 'channel', updateMaster: true }] };
+    const a = await pricedPo(undefined, 'IRA91000011');
+    const b = await pricedPo(undefined, 'IRA91000012');
+    await submit(a, choice).expect(200);
+    await submit(b, choice).expect(200);
+    expect((await approve(a)).status).toBe(200);
+    expect((await approve(b)).status).toBe(200);
+    expect(await rows("SELECT new_rate FROM margin_change_requests WHERE status = 'pending_l1'")).toEqual([{ new_rate: '360.00' }]);
   });
 
   it('MRP kept at ours: its own row on the list; a price within Rs 1 needs no choice', async () => {

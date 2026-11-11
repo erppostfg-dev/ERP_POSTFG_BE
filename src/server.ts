@@ -14,6 +14,9 @@ import { expireStaleRuns, recoverRuns } from './modules/intransit/runs.service';
 import { applyResume, planResume } from './modules/po-pipeline/resume.service';
 import { startChannelApis } from './modules/channel-api/scheduler';
 import { startRobotSchedule } from './modules/channel-api/flipkart/consignments.service';
+import { startD2cSync } from './modules/d2c-transfers/sync.service';
+import { startPoUniwareSync } from './modules/po-uniware-sync/sync.service';
+import { startUniwareCreate } from './modules/uniware-create/create.service';
 import { resumeManualQueue } from './modules/manual-upload/manual-upload.service';
 import { recheckInReview } from './modules/po-review/recheck.service';
 import { holdForIntake, kickRelease } from './modules/po-intake-control/intake-release.service';
@@ -25,8 +28,10 @@ import { LOG_SOURCE } from './constants/logging';
 import { logError } from './utils/classify-error';
 import { runJob } from './utils/log-call';
 import { log, logEvent } from './utils/logger';
+import { startCache, stopCache } from './modules/cache/cache.service';
 import { logCrashes, startProcessMonitor } from './utils/process-monitor';
 import { startStrRetry } from './modules/channel-api/myntra/str.service';
+import { startDiskCheck } from './modules/admin/server-health.service';
 
 const start = async (): Promise<void> => {
   logCrashes();
@@ -84,6 +89,8 @@ const start = async (): Promise<void> => {
     log: { level: env.log.level, format: env.log.format, dbSlowMs: env.log.dbSlowMs, apiSlowMs: env.log.apiSlowMs, extSlowMs: env.log.extSlowMs },
   });
   const monitor = startProcessMonitor();
+  // shared cache: AWS ElastiCache when REDIS_URL is set, else server memory (modules/cache, 2026-11-10)
+  startCache();
 
   // Gmail watch + Pub/Sub pull: labelled emails are sent to their route's endpoint.
   let listener: { stop: () => Promise<void> } | undefined;
@@ -105,8 +112,18 @@ const start = async (): Promise<void> => {
   // The Flipkart consignments robot's schedule (Channel Pulls, 2026-10-30): a due run starts by itself. Not on a laptop
   // (laptop = code only; the dev EC2 owns the robots), not without a DB.
   const robotSchedule = AppDataSource.isInitialized && !env.laptopMode ? startRobotSchedule() : undefined;
+  // How full the disk is, every hour (2026-11-04; warning / error in the log for CloudWatch). Not on a laptop.
+  const diskCheck = !env.laptopMode ? startDiskCheck() : undefined;
   // Myntra STRs waiting (a failed run, a restart) are tried again by themselves (2026-11-03); same rule.
   const strRetry = AppDataSource.isInitialized && !env.laptopMode ? startStrRetry() : undefined;
+
+  // D2C internal transfers (2026-11-03, phase 6): the Uniware SO status sync every d2c:settings.syncMinutes (read-only on
+  // Uniware; one server at a time through a MySQL lock). Not on a laptop, not without a DB, not with D2C_SYNC_ENABLED=false.
+  const d2cSync = AppDataSource.isInitialized && !env.laptopMode ? startD2cSync() : undefined;
+  // Channel POs (2026-11-06): their Uniware sale order status, the same way (read-only); same rules.
+  const poUniwareSync = AppDataSource.isInitialized && !env.laptopMode ? startPoUniwareSync() : undefined;
+  // Create in Uniware (2026-11-09): the queued requests, only with UNIWARE_CREATE_ENABLED=true (never on a laptop).
+  const uniwareCreate = AppDataSource.isInitialized && !env.laptopMode ? startUniwareCreate() : undefined;
 
   // PO jobs worker (2026-10-26): with QUEUE_MODE=sqs + WORKER_IN_SERVER=true this process also takes the queued jobs;
   // otherwise the separate `npm run worker` does (EC2: its own pm2 process).
@@ -172,7 +189,11 @@ const start = async (): Promise<void> => {
     await listener?.stop();
     channelApis?.stop();
     robotSchedule?.stop();
+    poUniwareSync?.stop();
+    uniwareCreate?.stop();
+    d2cSync?.stop();
     strRetry?.stop();
+    diskCheck?.stop();
     await worker?.stop();
     if (recheckTimer) clearInterval(recheckTimer);
     if (releaseTimer) clearInterval(releaseTimer);
@@ -180,6 +201,7 @@ const start = async (): Promise<void> => {
     stopPeriodKeeper();
     stopFacilityCheck();
     await stopQueue().catch(() => undefined); // in-transit files still waiting for S3 are sent at the next start
+    await stopCache().catch(() => undefined);
     server.close(async () => {
       if (AppDataSource.isInitialized) await AppDataSource.destroy();
       process.exit(0);

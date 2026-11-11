@@ -53,9 +53,33 @@ describe('Myntra STR by Manual Upload', () => {
     expect(processed).toMatchObject({ po_date: '2026-10-27', delivery_facility_code: 'Gurgaon', input_type: 'myntra_str_manual' });
     // Channel Pulls shows it (stored, taken); an STR email / a second upload never takes it again
     const [pull] = await rows<{ status: string; taken_at: Date | null; label: string }>("SELECT status, taken_at, label FROM channel_pull_items WHERE source_system = 'myntra_str'");
-    expect(pull).toMatchObject({ status: 'stored', label: `STNCPWEBP271026-01 · manual upload #${id} · BP` });
+    expect(pull).toMatchObject({ status: 'stored', label: `STNCPWEBP271026-01 · manual upload · BP · manual upload #${id}` });
     expect(pull.taken_at).not.toBeNull();
     expect((await upload([['STNCPWEBP271026-01-summary.csv', strCsv()]])).body.error.code).toBe('MANUAL_DUPLICATE');
+  });
+
+  it('an STR the robot gave up on (failed) may be uploaded by hand: processed, keeps its email + group, Channel Pulls shows it stored', async () => {
+    await insert('channel_pull_items', {
+      source_system: 'myntra_str', external_id: 'STNCPWEBP271026-04', status: 'failed', warehouse: 'BP', created_on: '2026-10-27', label: 'STNCPWEBP271026-04 · NON TC P3 · BP',
+      data: JSON.stringify({ email: { folder: 'f', subject: 'Re: Request to Raise STRs', receivedAt: '2026-10-27T05:09:20.000Z' }, order: 21, group: 'NON TC', priority: 'P3', destination: 'BP', runs: 3, lastError: 'not found on the Myntra portal' }),
+      fetched_at: new Date(),
+    });
+    // the team's list: GET /channel-pulls/myntra_str/items?status=failed
+    const failed = (await api().get('/api/v1/channel-pulls/myntra_str/items?status=failed').set('Cookie', reviewer.cookie).expect(200)).body.data;
+    expect(failed).toEqual([expect.objectContaining({ externalId: 'STNCPWEBP271026-04', status: 'failed', runs: 3, error: 'not found on the Myntra portal', email: { subject: 'Re: Request to Raise STRs', receivedAt: '2026-10-27T05:09:20.000Z' } })]);
+    expect((await api().get('/api/v1/channel-pulls/myntra_str/items?status=nope').set('Cookie', reviewer.cookie)).status).toBe(400);
+
+    const [id] = (await upload([['STNCPWEBP271026-04-summary.csv', strCsv()]]).expect(201)).body.data.ids as string[];
+    await runIt([id]);
+    expect((await statusOf(id)).status).toBe('done');
+    const [u] = await rows<{ status: string }>("SELECT status FROM po_uploads WHERE external_id = 'STNCPWEBP271026-04'");
+    expect(u.status).toBe('completed');
+    const [pull] = await rows<{ status: string; label: string; data: string | Record<string, unknown> }>("SELECT status, label, data FROM channel_pull_items WHERE external_id = 'STNCPWEBP271026-04'");
+    const d = typeof pull.data === 'string' ? JSON.parse(pull.data) as Record<string, unknown> : pull.data;
+    expect(pull.status).toBe('stored');
+    expect(pull.label).toBe(`STNCPWEBP271026-04 · NON TC P3 · BP · manual upload #${id}`);
+    expect(d).toMatchObject({ group: 'NON TC', priority: 'P3', email: { subject: 'Re: Request to Raise STRs' }, manualUploadId: id, lastError: null });
+    expect((await api().get('/api/v1/channel-pulls/myntra_str/items?status=failed').set('Cookie', reviewer.cookie)).body.data).toEqual([]);
   });
 
   it('refused: a wrong name or columns, the same STR twice in one upload, an STR already taken from an email', async () => {

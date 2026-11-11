@@ -2,6 +2,7 @@ import { Request, Response, Router } from 'express';
 import {
   ACCESS_LEVEL,
   CAPABILITY,
+  FAILED_ACTIONS,
   DAY_PATTERN,
   ERROR_CODES,
   errorMessage,
@@ -15,6 +16,7 @@ import {
   PriceChoice,
   REVIEW_LIVE,
   REVIEW_RECHECK,
+  UNIWARE_CREATE,
   UNIWARE_HANDOFF,
   UPLOAD_ID_PATTERN,
   UPLOAD_STATUS,
@@ -22,14 +24,18 @@ import {
 } from '../constants';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
 import { hasCapability } from '../modules/auth/access.service';
+import { cached } from '../modules/cache/cache.service';
+import { CACHE_NS } from '../constants/cache';
 import { getPoFile, getPoReview, listPoReview, PoReviewListQuery } from '../modules/po-review/po-review.service';
 import { reviewEvents, reviewVersion } from '../modules/po-review/po-review.live';
 import { recheckInReview } from '../modules/po-review/recheck.service';
 import { downloadCombined, downloadOne, markUploaded } from '../modules/po-review/uniware-handoff.service';
+import { createStates, previewCreates, queueCreates } from '../modules/uniware-create/create.service';
 import { lineItems, reviewLineItems } from '../modules/po-review/line-items.service';
 import { getRejection, reopenRejected } from '../modules/po-review/po-review-reopen.service';
 import { LineCorrection, rejectPo, ResubmitBody, submitForApproval } from '../modules/po-review/po-review-actions.service';
 import { appError } from '../utils/AppError';
+import { dismissFailed, reopenMany, rereadUploads, retryFailed } from '../modules/po-review/po-review-failed.service';
 
 /*
  * PO review routes (API contract "PO review", 2026-10-09):
@@ -120,7 +126,11 @@ const parseListQuery = (req: Request): PoReviewListQuery => {
 router.get('/', requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.VIEWER), async (req, res, next) => {
   try {
     const query = parseListQuery(req);
-    const { items, total } = await listPoReview(query);
+    // the same page for every viewer (each live change made every open screen reload it): shared cache (part 2,
+    // 2026-11-10). The key holds the review version (1 indexed read), so a change by ANY process / server = a new key;
+    // our own actions also drop them at once (bumpReview).
+    const version = await reviewVersion();
+    const { items, total } = await cached(CACHE_NS.PO_REVIEW_LISTS, `${version}:${JSON.stringify(query)}`, () => listPoReview(query));
     res.json({ data: items, meta: { page: query.page, pageSize: query.pageSize, total } });
   } catch (err) {
     next(err);
@@ -134,6 +144,64 @@ router.get(REVIEW_LIVE.EVENTS, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_L
 router.get(REVIEW_LIVE.STATE, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.VIEWER), async (_req, res, next) => {
   try {
     res.json({ data: { version: await reviewVersion() } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---- Failed + Rejected, many at once (2026-11-04) -------------------------------------------------------------------
+
+/** { uploadIds: [1..50], remark? (required for dismiss / reopen) }: every bad field reported at once. */
+const bulkBody = (body: unknown, remarkRequired: boolean): { ids: string[]; remark: string } => {
+  const problems: Problem[] = [];
+  const r = bodyReader(problems);
+  const b = r.object(body, 'body') ?? {};
+  const raw = b[FAILED_ACTIONS.BODY_IDS];
+  const ids = Array.isArray(raw) ? [...new Set(raw.map((v) => r.id(v, FAILED_ACTIONS.BODY_IDS)).filter((v): v is string => !!v))] : [];
+  if (!ids.length || ids.length > FAILED_ACTIONS.MAX_IDS || !Array.isArray(raw)) {
+    problems.push({ field: FAILED_ACTIONS.BODY_IDS, code: ERROR_CODES.FIELD_NOT_ID_LIST, message: errorMessage(ERROR_CODES.FIELD_NOT_ID_LIST, FAILED_ACTIONS.BODY_IDS, FAILED_ACTIONS.MAX_IDS) });
+  }
+  const remark = r.remark(b[FAILED_ACTIONS.BODY_REMARK], FAILED_ACTIONS.BODY_REMARK, remarkRequired) ?? '';
+  if (problems.length) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails(problems);
+  return { ids, remark };
+};
+const who = (req: Request) => ({ id: req.auth!.user.id, email: req.auth!.user.email });
+
+/** POST /po-review/bulk-retry { uploadIds }: failed POs from the step they failed at, one at a time after the answer. Editor. */
+router.post(FAILED_ACTIONS.ROUTES.RETRY, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
+  try {
+    const { ids } = bulkBody(req.body, false);
+    res.json({ data: await retryFailed(ids, who(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /po-review/bulk-reread { uploadIds }: POs in review / failed rebuilt from their stored OCR output (no OCR cost). Editor. */
+router.post(FAILED_ACTIONS.ROUTES.REREAD, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
+  try {
+    const { ids } = bulkBody(req.body, false);
+    res.json({ data: await rereadUploads(ids, who(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /po-review/bulk-dismiss { uploadIds, remark }: failed POs off the Failed list (kept, with who / why). Editor. */
+router.post(FAILED_ACTIONS.ROUTES.DISMISS, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
+  try {
+    const { ids, remark } = bulkBody(req.body, true);
+    res.json({ data: await dismissFailed(ids, remark, who(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /po-review/bulk-reopen { uploadIds, remark }: rejected POs back to In Review, each like Reopen. Editor. */
+router.post(FAILED_ACTIONS.ROUTES.REOPEN, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
+  try {
+    const { ids, remark } = bulkBody(req.body, true);
+    res.json({ data: await reopenMany(ids, remark, who(req)) });
   } catch (err) {
     next(err);
   }
@@ -393,6 +461,41 @@ router.post(UNIWARE_HANDOFF.MARK_UPLOADED, requireAuth, requirePage(PAGE.PO_REVI
   try {
     const undo = (req.body as Record<string, unknown> | undefined)?.[UNIWARE_HANDOFF.BODY_UNDO] === true;
     res.json({ data: await markUploaded(idsOf(req.body), actorOf(req), undo) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---- Create in Uniware (2026-11-09, constants/uniware-create.ts): the one write to Uniware, OFF unless switched on ----
+
+/** uploadIds from the body for Create in Uniware: digits only, each once (the service checks the count). */
+const createIdsOf = (body: unknown): string[] => {
+  const v = (body as Record<string, unknown> | undefined)?.[UNIWARE_CREATE.BODY_IDS];
+  return Array.isArray(v) ? [...new Set(v.map(String).filter((x) => UPLOAD_ID_PATTERN.test(x)))] : [];
+};
+
+/** POST /po-review/uniware-create { uploadIds }: queue the ticked, verified POs (editor, like the CSV download). */
+router.post(UNIWARE_CREATE.ROUTE, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
+  try {
+    res.status(202).json({ data: await queueCreates(createIdsOf(req.body), actorOf(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /po-review/uniware-create/preview { uploadIds }: what Create would send, per PO; nothing sent or written (editor). */
+router.post(UNIWARE_CREATE.PREVIEW_ROUTE, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
+  try {
+    res.json({ data: await previewCreates(createIdsOf(req.body)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /po-review/uniware-create/states { uploadIds }: the latest create request of each + whether it is switched on. */
+router.post(`${UNIWARE_CREATE.ROUTE}/states`, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.VIEWER), async (req, res, next) => {
+  try {
+    res.json({ data: await createStates(createIdsOf(req.body).slice(0, UNIWARE_HANDOFF.MAX_IDS)) });
   } catch (err) {
     next(err);
   }

@@ -1,7 +1,11 @@
 import { EntityManager } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
-import { ERROR_CODES, MASTER_ADD, MASTER_LOG_ACTION, MASTER_LOG_SOURCE, MASTER_LOG_TYPE, MasterLogSource, MasterLogType, REVIEW_RECHECK, TABLES } from '../../constants';
+import {
+  ERROR_CODES, MARGIN_APPROVAL, MARGIN_REQUEST_SOURCE, MarginRequestSource, MASTER_ADD, MASTER_LOG_ACTION, MASTER_LOG_SOURCE, MASTER_LOG_TYPE, MasterLogSource,
+  MasterLogType, REVIEW_RECHECK, STOCK_BUCKETS, STOCK_EDIT_KEYS, STOCK_FEEDS, STOCK_FORMULAS, STOCK_NOT_COUNTED, TABLES,
+} from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
+import { D2C_ALLOW, D2C_EDIT_KEYS, D2C_PO_PREFIX_MAX, D2C_UNIWARE_CODE_MAX } from '../../constants/d2c-transfers';
 import { appError } from '../../utils/AppError';
 import { runJob } from '../../utils/log-call';
 import { log } from '../../utils/logger';
@@ -9,7 +13,10 @@ import { recheckInReview } from '../po-review/recheck.service';
 import { Actor, checker } from './master-add.service';
 import { isMasterLogType } from './master-history.service';
 import { logMasterChanges } from './master-log';
+import { requestMarginEdit } from './margin-requests';
 import { forgetPoIssues } from '../po-issues/po-issues.cache';
+import { forgetMasters } from './masters.cache';
+import { assertTestMasterEdit } from '../d2c-transfers/test-mode';
 
 /*
  * Edit and switch on / off on the Masters pages (user, 2026-10-28; step 3 of the masters change log):
@@ -24,6 +31,9 @@ import { forgetPoIssues } from '../po-issues/po-issues.cache';
  *     deleted (switch off instead);
  *   - afterwards the POs in review are re-checked in the background (that channel, or all for a PEP SKU / warehouse).
  * Switched-off rows are skipped by the PO checks (master-data.ts / validate-po.ts).
+ * A channel SKU's margin % / rate after margin (2026-11-06, two-layer approval): NOT changed here; saved as a margin
+ * change request (margin-requests.ts) that layer 1 and layer 2 approve (margin-approval.service.ts applies it with
+ * direct: true). The other fields of the same edit are saved at once as before.
  */
 
 type Value = string | number | null;
@@ -51,12 +61,23 @@ interface MasterSpec {
   hasUpdatedAt: boolean;
   /** What the row is to people (master_change_logs.row_key). */
   rowKey: (r: Row) => string;
+  /** When the row alone cannot say it (a transfer route = two ids): read from other tables instead of rowKey. */
+  keyOf?: (m: EntityManager, r: Row) => Promise<string>;
+  /** Changes are read only by D2C internal transfers: no PO check re-run, no PO issues reset. */
+  noPoChecks?: boolean;
 }
 
 const text = (max?: number): FieldSpec['check'] => (c, k) => c.text(k, max);
 const num: FieldSpec['check'] = (c, k) => c.number(k);
 const round = (n: number, d: number) => Math.round(n * 10 ** d) / 10 ** d;
+/* In-transit stock settings of a warehouse (2026-11-02): bucket / feed / formula, "Not counted" = empty. */
+const orNone = (vals: readonly string[]): readonly string[] => [...vals, STOCK_NOT_COUNTED];
+const noneToNull = (v: unknown): unknown => (v === STOCK_NOT_COUNTED ? null : v);
+const nullToNone = (v: unknown): Value => (typeof v === 'string' && v !== '' ? v : STOCK_NOT_COUNTED);
 const aliasesOf = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : typeof v === 'string' && v ? (JSON.parse(v) as string[]) : []);
+
+/** A DB text / number cell as text ('' for anything else). */
+const str = (v: unknown): string => (typeof v === 'string' || typeof v === 'number' ? String(v) : '');
 
 const col = (c: string, check: FieldSpec['check'], more: Partial<FieldSpec> = {}): FieldSpec => ({ col: c, check, ...more });
 
@@ -104,6 +125,10 @@ const SPECS: Record<MasterLogType, MasterSpec> = {
       buyerState: col('buyer_state', (c, k) => c.oneOf(k, MASTER_ADD.STATES)), buyerPinCode: col('buyer_pin_code', (c, k) => c.format(k, MASTER_ADD.PIN)),
       tallyLedgerName: col('tally_ledger_name', text()), appointmentChannel: col('appointment_channel', (c, k) => c.oneOf(k, MASTER_ADD.APPOINTMENT)),
       city: col('city', text()),
+      // D2C internal transfers (2026-11-03): the receiving facility of a transfer location (master_facilities.id)
+      transferFacilityId: col('transfer_facility_id', (c, k) => c.number(k, { min: 1, max: 2_147_483_647, int: true })),
+      // and its PO number prefix (PEPIMS's, e.g. HYP_Nagpur)
+      transferPoPrefix: col('transfer_po_prefix', text(D2C_PO_PREFIX_MAX)),
     },
   },
   [MASTER_LOG_TYPE.FACILITY]: {
@@ -112,9 +137,33 @@ const SPECS: Record<MasterLogType, MasterSpec> = {
       name: col('name', text()), entity: col('entity', text()), pickupLocation: col('pickup_location', text()), state: col('state', text()),
       facilityType: col('facility_type', text()), billToGstin: col('bill_to_gstin', (c, k) => c.format(k, MASTER_ADD.GSTIN, true)),
       shipToGstin: col('ship_to_gstin', (c, k) => c.format(k, MASTER_ADD.GSTIN, true)), remarks: col('remarks', text(MASTER_ADD.REMARK_MAX)),
+      // in-transit stock (user's facility sheet, 2026-11-02): which bucket counts it, its feed and units formula
+      stockBucket: col('intransit_group', (c, k) => c.oneOf(k, orNone(STOCK_BUCKETS.map((b) => b.group))), { read: nullToNone, write: noneToNull }),
+      stockFeed: col('intransit_feed', (c, k) => c.oneOf(k, orNone(STOCK_FEEDS.map((f) => f.value))), { read: nullToNone, write: noneToNull }),
+      stockFormula: col('stock_formula', (c, k) => c.oneOf(k, orNone(Object.keys(STOCK_FORMULAS))), { read: nullToNone, write: noneToNull }),
+      // D2C internal transfers (2026-11-03): may send / receive transfers (Yes / No); its Uniware codes are per route
+      allowInternalTransfer: col('allow_internal_transfer', (c, k) => c.oneOf(k, [D2C_ALLOW.YES, D2C_ALLOW.NO]), {
+        read: (v) => (Number(v) ? D2C_ALLOW.YES : D2C_ALLOW.NO), write: (v) => (v === D2C_ALLOW.YES ? 1 : 0),
+      }),
+    },
+  },
+  // D2C internal transfers (2026-11-03): a route (sending facility + transfer location) and its Uniware codes
+  [MASTER_LOG_TYPE.TRANSFER_ROUTE]: {
+    table: TABLES.D2C_TRANSFER_ROUTES, keyCols: ['dispatch_facility_id', 'location_id'], locked: ['dispatchFacilityId', 'locationId'],
+    hasUpdatedAt: true, noPoChecks: true, rowKey: (r) => `${String(r.dispatch_facility_id)} -> ${String(r.location_id)}`,
+    keyOf: async (m, r) => {
+      const [k] = await m.query<{ f: string | null; ch: string | null; loc: string | null }[]>(
+        `SELECT f.code f, d.channel_name ch, d.channel_location_code loc FROM ${TABLES.MASTER_FACILITIES} f, ${TABLES.DETAILS_CHANNELS} d
+          WHERE f.id = ? AND d.id = ?`, [r.dispatch_facility_id, r.location_id]);
+      return k ? `${k.f ?? ''} -> ${k.ch ?? ''} | ${k.loc ?? ''}` : `${String(r.dispatch_facility_id)} -> ${String(r.location_id)}`;
+    },
+    fields: {
+      uniwareChannelCode: col('uniware_channel_code', text(D2C_UNIWARE_CODE_MAX)), customerCode: col('customer_code', text(D2C_UNIWARE_CODE_MAX)),
+      vendorCode: col('vendor_code', text(D2C_UNIWARE_CODE_MAX)),
     },
   },
 };
+const rowKeyOf = (m: EntityManager, spec: MasterSpec, row: Row): Promise<string> => (spec.keyOf ? spec.keyOf(m, row) : Promise.resolve(spec.rowKey(row)));
 
 const typeOf = (t: unknown): MasterLogType => {
   if (!isMasterLogType(t)) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails([{ field: 'type', code: ERROR_CODES.FIELD_NOT_ONE_OF, message: `type must be one of ${Object.values(MASTER_LOG_TYPE).join(', ')}` }]);
@@ -147,6 +196,7 @@ const lockRow = async (m: EntityManager, spec: MasterSpec, type: MasterLogType, 
 const channelsToRecheck = async (m: EntityManager, type: MasterLogType, row: Row): Promise<string[] | null> => {
   if (type === MASTER_LOG_TYPE.PEP_SKU || type === MASTER_LOG_TYPE.FACILITY) return null;
   if (type === MASTER_LOG_TYPE.CHANNEL) return [String(row.display_name)];
+  if (type === MASTER_LOG_TYPE.TRANSFER_ROUTE) return [];
   const [c] = (await m.query(`SELECT display_name FROM ${TABLES.MASTER_CHANNELS} WHERE id = ?`, [row.channel_id])) as { display_name: string }[];
   return [c?.display_name ?? String(row.channel_name ?? '')].filter(Boolean);
 };
@@ -178,6 +228,34 @@ const crossChecks = async (m: EntityManager, type: MasterLogType, row: Row, next
       if (clash) c.bad('aliases', 'FIELD_ALREADY_EXISTS', 'aliases', `${clash} (used by ${taken.get(clash.trim().toLowerCase())})`);
     }
   }
+  if (type === MASTER_LOG_TYPE.FACILITY && STOCK_EDIT_KEYS.some((k) => k in next)) {
+    // the three go together: a bucket needs a feed and a formula, "Not counted" empties all three
+    const missing = STOCK_EDIT_KEYS.filter((k) => !(k in next));
+    for (const k of missing) c.bad(k, 'FIELD_REQUIRED', k);
+    if (!missing.length && next.stockBucket !== null) {
+      const off = next.stockBucket === STOCK_NOT_COUNTED;
+      for (const k of ['stockFeed', 'stockFormula'] as const) {
+        if (next[k] === null) continue; // already a problem
+        if (off && next[k] !== STOCK_NOT_COUNTED) c.bad(k, 'FIELD_NOT_ONE_OF', k, STOCK_NOT_COUNTED);
+        if (!off && next[k] === STOCK_NOT_COUNTED) c.bad(k, 'FIELD_REQUIRED', k);
+      }
+      // the report's Channel type follows the bucket
+      set.intransit_type = off ? null : (STOCK_BUCKETS.find((b) => b.group === next.stockBucket)?.type ?? null);
+    }
+  }
+  if (type === MASTER_LOG_TYPE.TRANSFER_ROUTE && 'uniwareChannelCode' in next && next.uniwareChannelCode) {
+    // 2026-11-03: one row per (sender, location, Uniware channel): the same channel twice on a route is refused
+    const [dup] = await m.query<{ id: number }[]>(
+      `SELECT id FROM ${TABLES.D2C_TRANSFER_ROUTES} WHERE dispatch_facility_id = ? AND location_id = ? AND uniware_channel_code = ? AND id <> ? LIMIT 1`,
+      [row.dispatch_facility_id, row.location_id, next.uniwareChannelCode, row.id]);
+    if (dup) c.bad('uniwareChannelCode', 'FIELD_ALREADY_EXISTS', 'uniwareChannelCode', `${next.uniwareChannelCode as string} (route id ${dup.id})`);
+  }
+  if (type === MASTER_LOG_TYPE.LOCATION && 'transferFacilityId' in next && next.transferFacilityId) {
+    // D2C internal transfers (2026-11-03): an active facility
+    const id = Number(next.transferFacilityId);
+    const [f] = await m.query<{ id: number }[]>(`SELECT id FROM ${TABLES.MASTER_FACILITIES} WHERE id = ? AND is_active = 1`, [id]);
+    if (!f) c.bad('transferFacilityId', 'FIELD_NOT_FOUND', 'transferFacilityId', String(id));
+  }
   if (type === MASTER_LOG_TYPE.LOCATION && 'facilityCode' in next && next.facilityCode) {
     // exact code (upper / lower case = main / child warehouse), active only
     const [f] = (await m.query(`SELECT id, code FROM ${TABLES.MASTER_FACILITIES} WHERE code = ? AND is_active = 1`, [next.facilityCode])) as { id: number; code: string }[];
@@ -193,12 +271,21 @@ const crossChecks = async (m: EntityManager, type: MasterLogType, row: Row, next
 export const editRow = async (rawType: unknown, rawId: unknown, body: unknown, by: Actor) => {
   const result = await AppDataSource.transaction((m) => editRowIn(m, rawType, rawId, body, by));
   afterEdit(result);
-  return { changed: result.changed };
+  // marginRequestId: the margin / rate part waits for the two approvals (2026-11-06)
+  return { changed: result.changed, ...(result.marginRequestId ? { marginRequestId: result.marginRequestId } : {}) };
 };
 
 /** After a committed edit: the PO issues answer is fresh again and the POs in review are re-checked (background). */
-export const afterEdit = (result: { changed: string[]; channels: string[] | null }): void => {
+export const afterEdit = (result: { changed: string[]; channels: string[] | null; noPoChecks?: boolean }): void => {
   if (!result.changed.length) return;
+  // the cached Masters lists / PO Overview dropdowns (shared cache, 2026-11-10): any edit, also the ones no PO check reads
+  void forgetMasters();
+  // a D2C transfer route (2026-11-03): no PO check reads it
+  if (result.noPoChecks) return;
+  // a warehouse's in-transit stock settings feed only the in-transit report: no PO check reads them
+  if (result.changed.every((k) => (STOCK_EDIT_KEYS as readonly string[]).includes(k))) return;
+  // nor the D2C transfer settings (2026-11-03): read only by D2C internal transfers
+  if (result.changed.every((k) => (D2C_EDIT_KEYS as readonly string[]).includes(k) || (STOCK_EDIT_KEYS as readonly string[]).includes(k))) return;
   forgetPoIssues(); // "still a problem?" may change at once (2026-10-29)
   recheck(result.channels);
 };
@@ -209,7 +296,8 @@ export const afterEdit = (result: { changed: string[]; channels: string[] | null
  */
 export const editRowIn = async (
   m: EntityManager, rawType: unknown, rawId: unknown, body: unknown, by: Actor, source: MasterLogSource = MASTER_LOG_SOURCE.SCREEN,
-): Promise<{ changed: string[]; channels: string[] | null }> => {
+  opts: { direct?: boolean; requestSource?: MarginRequestSource } = {},
+): Promise<{ changed: string[]; channels: string[] | null; noPoChecks?: boolean; marginRequestId?: string }> => {
   const type = typeOf(rawType);
   const id = idOf(rawId);
   const spec = SPECS[type];
@@ -230,6 +318,8 @@ export const editRowIn = async (
   for (const k of keys.filter((k) => spec.fields[k])) next[k] = spec.fields[k].check(c, k);
 
   const row = await lockRow(m, spec, type, id);
+  // local test mode (env.d2c.testOnly): D2C master fields only on TEST_FACILITY rows
+  await assertTestMasterEdit(m, type, row, keys, next);
   const set: Record<string, unknown> = {};
   await crossChecks(m, type, row, next, c, set);
   c.done();
@@ -239,8 +329,24 @@ export const editRowIn = async (
   const conflicts = keys.filter((k) => k in original && !same(original[k], shown(k))).map((k) => ({ field: k, now: shown(k) }));
   if (conflicts.length) throw appError(ERROR_CODES.MASTER_EDIT_CONFLICT).withDetails(conflicts);
 
-  const changed = keys.filter((k) => !same(next[k], shown(k)));
+  let changed = keys.filter((k) => !same(next[k], shown(k)));
   if (!changed.length) return { changed: [], channels: null };
+  // a channel SKU's margin / rate: a request for the two approvals instead (direct = the approval applying it)
+  let marginRequestId: string | undefined;
+  const marginKeys = type === MASTER_LOG_TYPE.CHANNEL_SKU && !opts.direct ? changed.filter((k) => MARGIN_APPROVAL.FIELDS.includes(k)) : [];
+  if (marginKeys.length) {
+    const stored = (k: string) => (row[spec.fields[k].col] === null || row[spec.fields[k].col] === undefined ? null : Number(row[spec.fields[k].col]));
+    const asStored = (k: string) => Number((spec.fields[k].write ?? ((v: unknown) => v))(next[k]));
+    marginRequestId = await requestMarginEdit(m, {
+      id, channelId: Number(row.channel_id), channelName: str(row.channel_name), channelCode: str(row.channel_code), pepCode: str(row.pep_code),
+    }, {
+      ...(marginKeys.includes('marginPercent') ? { oldMargin: stored('marginPercent'), newMargin: asStored('marginPercent') } : {}),
+      ...(marginKeys.includes('rateAfterMargin') ? { oldRate: stored('rateAfterMargin'), newRate: asStored('rateAfterMargin') } : {}),
+    }, by, remark, opts.requestSource ?? MARGIN_REQUEST_SOURCE.MASTERS);
+    log.info(LOG_SOURCE.APP, `[masters] ${by.email} asked to change ${await rowKeyOf(m, spec, row)}: ${marginKeys.join(', ')} (margin request #${marginRequestId})`);
+    changed = changed.filter((k) => !marginKeys.includes(k));
+    if (!changed.length) return { changed: [], channels: null, marginRequestId };
+  }
   for (const k of changed) {
     const f = spec.fields[k];
     if (!(f.col in set)) set[f.col] = (f.write ?? ((v: unknown) => v))(next[k]);
@@ -248,11 +354,33 @@ export const editRowIn = async (
   if (spec.hasUpdatedAt) set.updated_at = new Date();
   const cols = Object.keys(set);
   await m.query(`UPDATE \`${spec.table}\` SET ${cols.map((x) => `\`${x}\` = ?`).join(', ')} WHERE id = ?`, [...cols.map((x) => set[x]), id]);
+  const rowKey = await rowKeyOf(m, spec, row);
   await logMasterChanges(m, changed.map((k) => ({
-    type, recordId: id, rowKey: spec.rowKey(row), action: MASTER_LOG_ACTION.FIELD_CHANGED, field: k, oldValue: shown(k), newValue: next[k],
+    type, recordId: id, rowKey, action: MASTER_LOG_ACTION.FIELD_CHANGED, field: k, oldValue: shown(k), newValue: next[k],
   })), by, source, remark);
-  log.info(LOG_SOURCE.APP, `[masters] ${by.email} edited ${type} ${spec.rowKey(row)}: ${changed.join(', ')}`);
-  return { changed, channels: await channelsToRecheck(m, type, row) };
+  log.info(LOG_SOURCE.APP, `[masters] ${by.email} edited ${type} ${rowKey}: ${changed.join(', ')}`);
+  return { changed, channels: await channelsToRecheck(m, type, row), noPoChecks: spec.noPoChecks, ...(marginRequestId ? { marginRequestId } : {}) };
+};
+
+/** Switches one row on / off inside the caller's transaction (also the transfer route PATCH, 2026-11-03). */
+export const setActiveIn = async (
+  m: EntityManager, type: MasterLogType, id: string, active: boolean, remark: string | null, by: Actor,
+): Promise<{ changed: boolean; channels: string[] | null }> => {
+  const spec = SPECS[type];
+  const row = await lockRow(m, spec, type, id);
+  // local test mode: a transfer route is switched only when it is a TEST_FACILITY route
+  await assertTestMasterEdit(m, type, row, ['isActive']);
+  // master_skus.is_active NULL counts as active (as the lists show it)
+  const was = row.is_active === null || row.is_active === undefined ? true : !!Number(row.is_active);
+  if (was === active) return { changed: false, channels: null };
+  await m.query(`UPDATE \`${spec.table}\` SET is_active = ?${spec.hasUpdatedAt ? ', updated_at = ?' : ''} WHERE id = ?`, [active, ...(spec.hasUpdatedAt ? [new Date()] : []), id]);
+  const rowKey = await rowKeyOf(m, spec, row);
+  await logMasterChanges(m, [{
+    type, recordId: id, rowKey, action: active ? MASTER_LOG_ACTION.ACTIVATED : MASTER_LOG_ACTION.DEACTIVATED,
+    field: 'is_active', oldValue: was ? 'Active' : 'Inactive', newValue: active ? 'Active' : 'Inactive',
+  }], by, MASTER_LOG_SOURCE.SCREEN, remark);
+  log.info(LOG_SOURCE.APP, `[masters] ${by.email} switched ${type} ${rowKey} ${active ? 'ON' : 'OFF'}`);
+  return { changed: true, channels: await channelsToRecheck(m, type, row) };
 };
 
 /** POST /masters/active/:type/:id { active: boolean, remark? } -> { active, changed } (false = it already was). */
@@ -266,19 +394,9 @@ export const setActive = async (rawType: unknown, rawId: unknown, body: unknown,
   const remark = c.remark();
   c.done();
 
-  const result = await AppDataSource.transaction(async (m) => {
-    const row = await lockRow(m, spec, type, id);
-    // master_skus.is_active NULL counts as active (as the lists show it)
-    const was = row.is_active === null || row.is_active === undefined ? true : !!Number(row.is_active);
-    if (was === active) return { changed: false, channels: null as string[] | null };
-    await m.query(`UPDATE \`${spec.table}\` SET is_active = ?${spec.hasUpdatedAt ? ', updated_at = ?' : ''} WHERE id = ?`, [active, ...(spec.hasUpdatedAt ? [new Date()] : []), id]);
-    await logMasterChanges(m, [{
-      type, recordId: id, rowKey: spec.rowKey(row), action: active ? MASTER_LOG_ACTION.ACTIVATED : MASTER_LOG_ACTION.DEACTIVATED,
-      field: 'is_active', oldValue: was ? 'Active' : 'Inactive', newValue: active ? 'Active' : 'Inactive',
-    }], by, MASTER_LOG_SOURCE.SCREEN, remark);
-    log.info(LOG_SOURCE.APP, `[masters] ${by.email} switched ${type} ${spec.rowKey(row)} ${active ? 'ON' : 'OFF'}`);
-    return { changed: true, channels: await channelsToRecheck(m, type, row) };
-  });
+  const result = await AppDataSource.transaction((m) => setActiveIn(m, type, id, active!, remark, by));
+  if (result.changed) await forgetMasters();
+  if (result.changed && spec.noPoChecks) return { active, changed: result.changed };
   if (result.changed) forgetPoIssues();
   // switched on: POs waiting on this row may pass now (switching off only affects new POs)
   if (result.changed && active) recheck(result.channels);

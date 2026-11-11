@@ -1,6 +1,6 @@
 import { AppDataSource } from '../../config/data-source';
 import { env } from '../../config/env';
-import { ERROR_CODES, FACILITY_CHECK, IST_OFFSET_MS, MAIL_LIST, MASTER_SOURCE, STOCK_BUCKETS, TABLES } from '../../constants';
+import { defaultFacilityStock, ERROR_CODES, FACILITY_CHECK, IST_OFFSET_MS, MAIL_LIST, MASTER_SOURCE, STOCK_BUCKETS, TABLES } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
 import { ActivityLog, MasterFacility } from '../../entities';
 import { appError } from '../../utils/AppError';
@@ -219,7 +219,11 @@ export const addFacility = async (code: string, group: string, by: Actor): Promi
   if (!item) throw appError(ERROR_CODES.INTRANSIT_FACILITY_NOT_IN_CHECK, code);
   const repo = AppDataSource.getRepository(MasterFacility);
   const row = (await findMaster(code)) ?? repo.create({ code: item.code, name: item.name, source: MASTER_SOURCE.UNIWARE });
-  Object.assign(row, { uniwareExport: true, intransitGroup: bucket.group, intransitType: bucket.type, isActive: true });
+  // its bucket's feed and units formula (changed later in Masters > Warehouses)
+  const stock = defaultFacilityStock(bucket.group, row.code);
+  Object.assign(row, {
+    uniwareExport: true, intransitGroup: bucket.group, intransitType: bucket.type, intransitFeed: stock?.feed ?? null, stockFormula: stock?.formula ?? null, isActive: true,
+  });
   await repo.save(row);
   await audit(by, `added ${row.code} as ${bucket.group}`);
   await writeState({ ...state, newFacilities: state.newFacilities.filter((f) => f !== item) });
@@ -243,7 +247,7 @@ export const stopFacility = async (code: string, by: Actor): Promise<FacilityChe
   if (!state.disabled.some((f) => f.code === code)) throw appError(ERROR_CODES.INTRANSIT_FACILITY_NOT_IN_CHECK, code);
   const row = await findMaster(code);
   if (row) {
-    Object.assign(row, { uniwareExport: false, intransitGroup: null, intransitType: null });
+    Object.assign(row, { uniwareExport: false, intransitGroup: null, intransitType: null, intransitFeed: null, stockFormula: null });
     await AppDataSource.getRepository(MasterFacility).save(row);
   }
   await audit(by, `stopped ${code}`);

@@ -29,11 +29,15 @@ const main = async (): Promise<void> => {
     const db = AppDataSource;
     const lines = await db.getRepository(DetailsPurchaseOrder)
       .createQueryBuilder('d')
+      .innerJoin('d.purchaseOrder', 'p')
       .where("(d.brandName IS NULL OR TRIM(d.brandName) IN ('', '0'))")
+      // channel POs only: D2C internal transfers (transferCode NOT NULL, 2026-11-03) keep their own brand rule
+      .andWhere('p.transferCode IS NULL')
       .getMany();
     const headers = await db.getRepository(MasterPurchaseOrder)
       .createQueryBuilder('m')
       .where("(m.brandName IS NULL OR TRIM(m.brandName) IN ('', '0'))")
+      .andWhere('m.transferCode IS NULL')
       .getMany();
     const poUids = [...new Set([...lines.map((l) => String(l.shipmentOrderId)), ...headers.map((h) => String(h.uid))])];
     if (!poUids.length) return console.log('Nothing to fill.');

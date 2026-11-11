@@ -1,3 +1,4 @@
+import { CHANNELS } from './channels';
 /*
  * PO intake control per channel (user, 2026-10-23): Users & Roles -> Settings -> "PO intake". Each channel that comes
  * by email or API is switched ON / OFF and has a limit per day. Every channel starts OFF: after a deploy nothing is
@@ -22,3 +23,13 @@ export const PO_INTAKE = {
   /** First look after the server starts. */
   RELEASE_FIRST_DELAY_MS: 90_000,
 } as const;
+
+/**
+ * "Revised" PO emails compared with the copy already in POST_FG before any OCR (backlog B7 part B, 2026-11-05;
+ * po-pipeline/revised-check.ts): the same sheet -> not taken. Blinkit only (it re-sends POs as "revised" with nothing
+ * changed in 64 of 69 copies on dev; every real change showed in its sheet).
+ */
+export const REVISED_CHECK = {
+  CHANNELS: [CHANNELS.BLINKIT] as readonly string[],
+} as const;
+

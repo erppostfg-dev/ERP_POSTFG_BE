@@ -80,6 +80,27 @@ const decide = async (rows: PoUpload[], folder: string, retryFailed: boolean): P
   return { action: RESUME_ACTION.SKIP, reason: 'nothing to resume' };
 };
 
+/** The retry action for one failed email (Failed tab "Try again", 2026-11-04): from the step it failed at. */
+export const retryActionFor = (rows: PoUpload[], folder: string): Promise<{ action: ResumeAction; reason: string }> => decide(rows, folder, true);
+
+/** Runs one planned item (OCR / process / CSV); the caller took the slot. */
+export const runResumeItem = async (db: DataSource, item: ResumeItem, runOcr: (folder: string) => Promise<void>): Promise<void> => {
+  if (!item.folder) return;
+  const name = path.basename(item.folder);
+  if (item.action === RESUME_ACTION.OCR) await runOcr(item.folder);
+  else if (item.action === RESUME_ACTION.PROCESS) {
+    const ocr = await hasOcrOutput(item.folder);
+    if (ocr && ocr.status !== RESULT_STATUS.OK) await ocrFinished(item.folder, { status: ocr.status ?? RESULT_STATUS.FAILED, code: ocr.code, reason: ocr.reason });
+    else await runFromProcessing(item.folder);
+  } else if (item.action === RESUME_ACTION.CSV_ONLY) {
+    const pos = await readFolderPos(item.folder);
+    for (const row of item.rows.filter((r) => r.poUid)) {
+      const relPath = pos.find((p) => p.po.po_number === row.poNumber)?.relPath ?? FILES.PROCESSED;
+      log.info(LOG_SOURCE.APP, `[resume] ${name}: ${row.poNumber} CSV -> ${await finishCsv(db, item.folder, row, relPath)}`);
+    }
+  }
+};
+
 /** What resume would do, per email, oldest first. Reads only. */
 export const planResume = async (db: DataSource, retryFailed = false): Promise<ResumeItem[]> => {
   const statuses: string[] = [UPLOAD_STATUS.QUEUED, UPLOAD_STATUS.EXTRACTING, UPLOAD_STATUS.PROCESSING];
@@ -125,18 +146,7 @@ export const applyResume = async (db: DataSource, items: ResumeItem[], opts: Res
     const name = path.basename(item.folder);
     log.info(LOG_SOURCE.APP, `[resume] ${name}: ${item.action} (${item.reason})`);
     try {
-      if (item.action === RESUME_ACTION.OCR) await opts.runOcr(item.folder);
-      else if (item.action === RESUME_ACTION.PROCESS) {
-        const ocr = await hasOcrOutput(item.folder);
-        if (ocr && ocr.status !== RESULT_STATUS.OK) await ocrFinished(item.folder, { status: ocr.status ?? RESULT_STATUS.FAILED, code: ocr.code, reason: ocr.reason });
-        else await runFromProcessing(item.folder);
-      } else if (item.action === RESUME_ACTION.CSV_ONLY) {
-        const pos = await readFolderPos(item.folder);
-        for (const row of item.rows.filter((r) => r.poUid)) {
-          const relPath = pos.find((p) => p.po.po_number === row.poNumber)?.relPath ?? FILES.PROCESSED;
-          log.info(LOG_SOURCE.APP, `[resume] ${name}: ${row.poNumber} CSV -> ${await finishCsv(db, item.folder, row, relPath)}`);
-        }
-      }
+      await runResumeItem(db, item, opts.runOcr);
     } catch (err) {
       logError(LOG_SOURCE.APP, `[resume] ${name}: failed (taken again on the next resume)`, err);
     }

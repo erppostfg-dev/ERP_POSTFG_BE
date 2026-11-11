@@ -65,3 +65,77 @@ export const PURPLLE_REQUIRED: { header: HeaderKey[]; line: LineKey[] } = {
     'expiry_date', 'delivery_gstin', 'vendor_gstin'],
   line: ['channel_sku_code', 'qty', 'channel_mrp', 'unit_cost', 'hsn', 'gst'],
 };
+
+/*
+ * Purplle's PO PDF (2026-11-06, Manual Upload): "PO_<number>.PDF", Purplle's SAP PO (MANASH E-COMMERCE PRIVATE LTD), one
+ * PO per PDF. Built from three samples read by the OCR (4300131266 Bhubaneshwar IGST 17 lines, 4300132301 Bhiwandi
+ * SGST + CGST 40 lines, 4300132312 Bhubaneshwar 19 lines; 4300131266 matches its summary copy line for line).
+ * Header (names = the OCR's header_notes for "purplle"): PO Number, PO Date (06.11.2026), PO Type, Validity End Date (both
+ * often empty), Billing / Delivery Name, Address, GSTIN (the delivery pincode is the location key, as for the summary),
+ * Supplier Name / Address / GSTIN (us: which of our GSTINs), and the totals Total Qty, Total IGST or Total SGST + CGST,
+ * Total Amount (INR) (WITH tax).
+ * Lines: SR No | Item Code (PPLB..., = the summary's Sku) | Description | EAN | MRP | HSN Code | UOM | Qty | Rate/Unit (before
+ * tax, = the summary's Price) | IGST Rate + IGST, or SGST Rate + SGST and CGST Rate + CGST | Amount (with tax, rupees).
+ * Filled in purplle.handler.ts (as for the summary, so both give the same PO): line_total = Qty x Rate/Unit and po_value
+ * = their sum, BEFORE GST; gst = IGST %, else SGST % + CGST %; Item Code cut to its PPLB code (the OCR once glued the name
+ * to it at a page break). Not on the PDF: delivery_facility_code (the summary's Plant), expiry_date when not printed.
+ */
+export const PURPLLE_PDF_HEADER_NAMES: Record<string, string[]> = {
+  'PO Number': ['PO Number', 'PO No', 'Purchase Order Number'],
+  'PO Date': ['PO Date', 'Date'],
+  'PO Type': ['PO Type'],
+  'Validity End Date': ['Validity End Date', 'Expiry Date', 'Validity'],
+  'Delivery Address': ['Delivery Address', 'Shipping Address', 'Ship To Address'],
+  'Delivery GSTIN': ['Delivery GSTIN', 'Delivery GST No', 'Shipping GSTIN'],
+  'Supplier GSTIN': ['Supplier GSTIN', 'Supplier GST No', 'Vendor GSTIN'],
+  'Total Qty': ['Total Qty', 'Total Quantity'],
+  'Total Amount (INR)': ['Total Amount (INR)', 'Total Amount', 'Grand Total'],
+};
+
+export const PURPLLE_PDF_LINE_NAMES: Record<string, string[]> = {
+  'SR No': ['SR No', 'Sr No', 'Sr', 'S No'],
+  'Item Code': ['Item Code', 'Item', 'Item Details', 'Sku'],
+  Description: ['Description', 'Item Description', 'Material long text'],
+  EAN: ['EAN', 'EAN Number', 'EAN Code'],
+  MRP: ['MRP'],
+  'HSN Code': ['HSN Code', 'HSN'],
+  Qty: ['Qty', 'Quantity'],
+  'Rate/Unit': ['Rate/Unit', 'Rate', 'Rate Per Unit', 'Unit Price', 'Price'],
+  'IGST Rate': ['IGST Rate', 'IGST %'],
+  'SGST Rate': ['SGST Rate', 'SGST %'],
+  'CGST Rate': ['CGST Rate', 'CGST %'],
+  Amount: ['Amount', 'Amount (INR)'],
+};
+
+export const PURPLLE_PDF_MAPPING: ChannelMapping = {
+  header: [
+    { common: 'po_number', raw: 'PO Number', kind: 'text' },
+    { common: 'po_date', raw: 'PO Date', kind: 'date' },
+    // PO Type and Validity End Date are usually printed empty: read only when there (purplle-pdf.ts).
+    { common: 'shipping address', raw: 'Delivery Address', kind: 'text' },
+    { common: 'delivery_gstin', raw: 'Delivery GSTIN', kind: 'text' },
+    { common: 'vendor_gstin', raw: 'Supplier GSTIN', kind: 'text' },
+  ],
+  line: [
+    { common: 'line_no', raw: 'SR No', kind: 'number' },
+    { common: 'description', raw: 'Description', kind: 'text' },
+    { common: 'ean', raw: 'EAN', kind: 'text' },
+    { common: 'channel_mrp', raw: 'MRP', kind: 'number' },
+    { common: 'hsn', raw: 'HSN Code', kind: 'text' },
+    { common: 'qty', raw: 'Qty', kind: 'number' },
+    // Rate/Unit = the summary's Price: one unit before tax.
+    { common: 'unit_cost', raw: 'Rate/Unit', kind: 'number' },
+  ],
+};
+
+/** Purplle's own SKU code at the start of the PDF's Item Code (PPLB8906129575929, PPLB8906129576377NM1, ...KIT01). */
+export const PURPLLE_ITEM_CODE = /^PPLB[A-Z0-9]+/i;
+
+/** Total Amount (INR) vs SUM(Qty x Rate/Unit x (1 + GST %)): up to Rs 2.41 off in the 3 samples (rates are rounded). */
+export const PURPLLE_PDF_TOTAL_TOLERANCE = 5;
+
+/** The PDF's required fields: no Plant (delivery_facility_code) and usually no validity date, but GSTINs, HSN and GST. */
+export const PURPLLE_PDF_REQUIRED: { header: HeaderKey[]; line: LineKey[] } = {
+  header: ['po_number', 'po_date', 'shipping address', 'delivery_pincode', 'total_qty', 'po_value', 'delivery_gstin', 'vendor_gstin'],
+  line: ['channel_sku_code', 'qty', 'channel_mrp', 'unit_cost', 'hsn', 'gst'],
+};

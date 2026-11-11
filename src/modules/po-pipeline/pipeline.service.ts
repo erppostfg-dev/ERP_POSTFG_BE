@@ -10,8 +10,9 @@ import { MasterDataReader } from '../po-validation/master-data';
 import { alreadyHavePo, intakeGate, processFromOf, shouldHold } from '../po-intake-control/intake-settings.service';
 import { applySave, planSave } from './po-save.service';
 import { applyPlan, emailValues, planEmail } from './po-uploads.service';
+import { unchangedRevision } from './revised-check';
 import { LOG_SOURCE } from '../../constants/logging';
-import { log as appLog } from '../../utils/logger';
+import { log as appLog, writeLog } from '../../utils/logger';
 import { logError } from '../../utils/classify-error';
 import { step } from '../../utils/log-call';
 
@@ -30,6 +31,9 @@ import { step } from '../../utils/log-call';
  */
 
 const on = (): boolean => AppDataSource.isInitialized;
+
+/** The log code of a revised email not taken because nothing changed (B7 part B; LOGGING.md). */
+const REVISED_CHECK_LOG = 'INTAKE_REVISED_UNCHANGED';
 
 const log = (folder: string, msg: string): void => appLog.info(LOG_SOURCE.APP, `[pipeline] ${path.basename(folder)}: ${msg}`);
 
@@ -109,15 +113,28 @@ const emailStoredNow = async (folder: string): Promise<boolean> => {
       const config = 'config' in detectedFirst ? detectedFirst.config : null;
       const poNumber = config?.poNumber ? meta.subject?.match(config.poNumber)?.[1] : undefined;
       const body = await fs.readFile(path.join(folder, FILES.BODY_TEXT), 'utf8').catch(() => '');
-      const have = poNumber && !PO_INTAKE.REVISED_HINT.test(`${meta.subject ?? ''} ${body}`) ? await alreadyHavePo(heldChannel, poNumber) : null;
+      const revised = PO_INTAKE.REVISED_HINT.test(`${meta.subject ?? ''} ${body}`);
+      const have = poNumber && !revised ? await alreadyHavePo(heldChannel, poNumber) : null;
       if (have) {
         allowed = false;
         log(folder, `PO ${poNumber} is already in POST_FG (${have}): no OCR, not taken again`);
         return;
       }
+      // A "revised" email whose sheet is the SAME as the copy we have (B7 part B, 2026-11-05): nothing changed, not taken
+      if (poNumber && revised) {
+        const master = await new MasterDataReader(AppDataSource).forChannel(heldChannel);
+        const same = master ? await unchangedRevision(heldChannel, master.channel.displayName, poNumber, folder, messageId) : null;
+        if (same) {
+          allowed = false;
+          writeLog('info', LOG_SOURCE.APP, REVISED_CHECK_LOG, `revised PO ${poNumber}: its sheet is the same as upload ${same.id} (${same.status}): no OCR, not taken`, {
+            channel: heldChannel, poNumber, sameAs: same.id, sameAsStatus: same.status, folder: path.basename(folder),
+          });
+          return;
+        }
+      }
     }
     if (heldChannel && (await shouldHold(heldChannel))) {
-      const master = await new MasterDataReader(AppDataSource).forChannel(heldChannel as ChannelName);
+      const master = await new MasterDataReader(AppDataSource).forChannel(heldChannel);
       const repo = AppDataSource.getRepository(PoUpload);
       const row = await repo.save(repo.create({ ...(await emailValues(folder, master?.channel.displayName ?? null)), status: UPLOAD_STATUS.HELD }));
       allowed = false;
@@ -225,6 +242,7 @@ const chain = async (folder: string): Promise<{ poNumber: string; status: string
       await applyPlan(AppDataSource, p);
       return p;
     });
+    for (const s of plan.skipped ?? []) log(folder, `${s.poNumber}: already in POST_FG (${s.copy}), left out of this file`);
     for (const r of plan.rows) {
       log(folder, r.final ? `${r.poNumber}: already ${r.existing?.status}, unchanged` : `${r.poNumber}: ${r.status}${r.issues.create.length ? ` (${r.issues.create.length} new issue(s))` : ''}`);
       out.push({ poNumber: r.poNumber, status: r.final ? (r.existing?.status ?? r.status) : r.status });

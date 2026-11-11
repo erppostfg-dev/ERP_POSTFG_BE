@@ -50,6 +50,12 @@ export const PUNCH_S = {
   SKIP_RE: /_s\d*(?:_|$)/i,
 } as const;
 
+/**
+ * A PO number as it may stand in a file name (2026-11-05): slashes / backslashes -> "-" (Octavos "OG/00381/2026-27" ->
+ * OG-00381-2026-27_final_<date>.csv; a "/" made a sub-folder). Every PO number without them stays exactly as it was.
+ */
+export const fileSafePo = (poNumber: string): string => poNumber.replace(/[\\/]+/g, '-');
+
 /** The Uniware sale order upload: one CSV per PO, columns as in the user's sample P5654534_final_2026-09-24.csv. */
 export const UNIWARE_CSV = {
   HEADERS: [
@@ -72,7 +78,7 @@ export const UNIWARE_CSV = {
   SHIPPING_METHOD: 'STD',
   ON_HOLD: 'FALSE',
   /** PO Date is filled with the PO's date (YYYY-MM-DD) when the PO has one, else empty. <PO>_final_<yyyy-mm-dd>.csv, next to the PO's processed.json (and in its S3 folder). */
-  FILE_NAME: (poNumber: string, date: string) => `${poNumber}_final_${date}.csv`,
+  FILE_NAME: (poNumber: string, date: string) => `${fileSafePo(poNumber)}_final_${date}.csv`,
 } as const;
 
 /** An old sale order code inside text (a CSV cell): sf_ + 8-digit date + serial. */

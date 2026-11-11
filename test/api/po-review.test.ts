@@ -101,6 +101,8 @@ describe('PO Review lists and one PO', () => {
     expect(d.issues.map((i: { type?: string; issueType?: string }) => i.type ?? i.issueType)).toEqual(['LOCATION_NOT_MAPPED']);
     expect(JSON.stringify(d)).toContain('IRA90000002');
     expect(d.skuOptions.map((o: { pepCode: string }) => o.pepCode)).toEqual([m.pepCode]);
+    // the line's values as READ from the PO (click-to-find in the review panel searches these, 2026-11-05)
+    expect(d.lines[0]).toMatchObject({ qty: 10, poMrp: 499, printed: { unitCost: '', landingRate: 349.3, lineTotal: 3493 } });
     expect((await api().get(`${V}/po-review/999999`).set('Cookie', reviewer.cookie)).status).toBe(404);
   });
 
@@ -250,9 +252,12 @@ describe('verification before the Uniware hand-off', () => {
     await api().post(`${V}/po-verify/${done.id}/send-back`).set('Cookie', reviewer.cookie).send({}).expect(400);
     await api().post(`${V}/po-verify/${done.id}/send-back`).set('Cookie', reviewer.cookie).send({ remark: 'wrong qty' }).expect(200);
     expect(await statusOf(done)).toBe('needs_review');
-    // the same PO number again: not refused as a duplicate of the cancelled one
+    // the same PO number again: NOT a duplicate of the cancelled saved PO; but the sent-back copy is in review now, so
+    // the new copy is flagged as a copy of THAT one (2026-11-05: never two copies in review)
     const again = await runPo(bigBasketPo(m));
-    expect(await rows('SELECT issue_type FROM po_issues WHERE upload_id = ? AND issue_type = ?', [again.id, 'DUPLICATE_PO'])).toEqual([]);
+    const dup = await rows<{ details: string }>('SELECT details FROM po_issues WHERE upload_id = ? AND issue_type = ?', [again.id, 'DUPLICATE_PO']);
+    expect(dup.map((d) => d.details)).toEqual([expect.stringContaining(`upload #${done.id} (In Review)`)]);
+    expect(dup[0].details).not.toContain('master_purchase_orders');
   });
 
   it('per-channel switch: admin only; OFF = CSV not locked', async () => {

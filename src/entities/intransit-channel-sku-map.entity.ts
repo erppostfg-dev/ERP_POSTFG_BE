@@ -42,6 +42,10 @@ export class IntransitChannelSkuMap {
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive: boolean;
 
+  /** False = a marketplace code the user said not to count at a build's new-SKU question (2026-11-02). */
+  @Column({ name: 'consider', type: 'boolean', default: true })
+  consider: boolean;
+
   @Column({ name: 'created_at', type: 'datetime', precision: 6, default: () => 'CURRENT_TIMESTAMP(6)' })
   createdAt: Date;
 

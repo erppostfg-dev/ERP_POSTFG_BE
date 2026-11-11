@@ -1,14 +1,17 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { DataSource, EntityManager } from 'typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import {
   CHANNEL_TOLERANCES, poTotalAllowed,
   ChannelName,
   FILES,
   FOLDERS,
   ISSUE_ACTION,
+  ISSUE_FIELDS,
   ISSUE_STATUS,
   ISSUE_TYPE,
+  MANUAL_REPLACES_KEY,
+  PIPELINE_STEP,
   PO_FILE_EXTENSIONS,
   PROVIDERS,
   SYSTEM_ACTOR,
@@ -19,9 +22,11 @@ import {
   UploadStatus,
   VALIDATION_TEXT,
   ValidationIssue,
+  validationIssue,
 } from '../../constants';
 import { PoIssue, PoIssueAction, PoUpload } from '../../entities';
 import { EmailMetadata } from '../email-intake/s3-layout';
+import { channelConfigs } from '../ocr/channels.config';
 import { ProcessedPo } from '../po-processing/common/processed-po';
 import { s3UrlFor } from '../po-processing/common/processed-store';
 import { MasterDataReader } from '../po-validation/master-data';
@@ -75,6 +80,8 @@ interface OcrRun {
   startedAt?: string;
   finishedAt?: string;
   durationMs?: number;
+  /** run_po.py's own report (2026-11-05): tokens + cost of the run. */
+  ocr?: { ocr_run?: { totals?: { cost_usd?: number; model_calls?: number; input_tokens?: number; output_tokens?: number; textract_pages?: number } } };
 }
 interface OcrOutput {
   status?: string;
@@ -202,7 +209,10 @@ const ocrSummary = async (folder: string, fp: FolderPo): Promise<Record<string, 
     input_type: fp.po.input_type,
     pipeline: out?.pipeline ?? null,
     lines: fp.po.line_items.length,
-    cost_usd: out?.cost_usd ?? null,
+    // the run's cost: run_po.py's report (ocr_run, 2026-11-05), else the old dev OCR's summary
+    cost_usd: run?.ocr?.ocr_run?.totals?.cost_usd ?? out?.cost_usd ?? null,
+    ocr_tokens: run?.ocr?.ocr_run?.totals ? { input: run.ocr.ocr_run.totals.input_tokens, output: run.ocr.ocr_run.totals.output_tokens } : null,
+    textract_pages: run?.ocr?.ocr_run?.totals?.textract_pages ?? null,
     duration_ms: run?.durationMs ?? null,
     ocr_warnings: out?.warnings ?? [],
     processing_warnings: fp.po.warnings,
@@ -261,12 +271,35 @@ export interface EmailPlan {
   folder: string;
   messageId: string | null;
   rows: RowPlan[];
+  /** POs of a several-PO file left out: already in POST_FG from another email / upload (skipKnownPos, Purplle). */
+  skipped?: { poNumber: string; copy: string }[];
+  /** The email's own row when EVERY PO was left out: closed as rejected with the reason (nothing else to show). */
+  allSkipped?: PoUpload;
 }
 
 /** YYYY-MM-DD from the PO's po_date (a full date-time keeps its day; anything else = null, never a bad DATE value). */
 export const dateOnly = (v: unknown): string | null => {
   const m = typeof v === 'string' ? /^(\d{4}-\d{2}-\d{2})/.exec(v.trim()) : null;
   return m && !Number.isNaN(Date.parse(m[1])) ? m[1] : null;
+};
+
+/** How a live copy is named in the DUPLICATE_PO message. */
+const LIVE_COPY_TEXT = (id: string, status: string) => `upload #${id} (${status === UPLOAD_STATUS.NEEDS_REVIEW ? 'In Review' : status})`;
+/** Statuses in which an upload still counts as the PO's copy (rejected / failed do not). */
+const LIVE_COPY_STATUSES = [UPLOAD_STATUS.QUEUED, UPLOAD_STATUS.HELD, UPLOAD_STATUS.EXTRACTING, UPLOAD_STATUS.PROCESSING,
+  UPLOAD_STATUS.NEEDS_REVIEW, UPLOAD_STATUS.PENDING_APPROVAL, UPLOAD_STATUS.COMPLETED];
+
+/**
+ * An OLDER live upload of the same channel + PO number from another email / upload (2026-11-05), else null. Older =
+ * a lower id than this PO's row (a new row has none yet: every other one is older).
+ */
+const liveCopyOf = async (repo: Repository<PoUpload>, channel: string, poNumber: string, messageId: string | null, ownId?: string): Promise<PoUpload | null> => {
+  const rows = await repo.find({
+    select: ['id', 'status', 'emailMessageId'],
+    where: { channel, poNumber, status: In(LIVE_COPY_STATUSES) },
+    order: { id: 'ASC' },
+  });
+  return rows.find((r) => r.emailMessageId !== messageId && (ownId === undefined || Number(r.id) < Number(ownId))) ?? null;
 };
 
 /** Works out what to write for one email folder. Reads only. */
@@ -277,24 +310,45 @@ export const planEmail = async (db: DataSource, reader: MasterDataReader, folder
   const master = await reader.forChannel(channel);
   const base = await emailValues(folder, master?.channel.displayName ?? null);
   const messageId = base.emailMessageId ?? null;
-  const meta = pos.length > 1 ? ((await readJson<EmailMetadata>(path.join(folder, FILES.METADATA))) ?? {}) : {};
+  const meta = pos.length > 1 || pos[0].relPath !== FILES.PROCESSED ? ((await readJson<EmailMetadata>(path.join(folder, FILES.METADATA))) ?? {}) : {};
 
   const uploads = db.getRepository(PoUpload);
   const issuesRepo = db.getRepository(PoIssue);
   const existingRows = messageId ? await uploads.findBy({ emailMessageId: messageId }) : [];
   // The email's own row (po_number still empty) is taken over by the first PO that has no row yet.
   let emailRow = existingRows.find((r) => r.poNumber === null) ?? null;
+  // skipKnownPos (Purplle, 2026-11-06): a PO of a several-PO file (POs/<PO>/) already in POST_FG from another email or
+  // upload is left out quietly; not when a person chose Process again for this upload (it replaces those copies).
+  const skipKnown = !!channelConfigs.find((c) => c.channel === channel)?.skipKnownPos && !(meta as Record<string, unknown>)[MANUAL_REPLACES_KEY];
+  const skipped: { poNumber: string; copy: string }[] = [];
 
   const rows: RowPlan[] = [];
   for (const fp of pos) {
     const poNumber = fp.po.po_number;
     let existing = existingRows.find((r) => r.poNumber === poNumber) ?? null;
+    if (skipKnown && !existing && poNumber && master && fp.relPath.startsWith(`${FOLDERS.POS}/`)) {
+      const copy = await liveCopyOf(uploads, base.channel ?? master.channel.displayName, poNumber, messageId);
+      if (copy) {
+        skipped.push({ poNumber, copy: LIVE_COPY_TEXT(copy.id, copy.status) });
+        continue;
+      }
+    }
     if (!existing && emailRow) {
       existing = emailRow;
       emailRow = null;
     }
     const final = existing?.status === UPLOAD_STATUS.COMPLETED || existing?.status === UPLOAD_STATUS.REJECTED;
     const validation = await validatePo(fp.po, master, now);
+    // The same PO in another upload still live (2026-11-05): validation only sees SAVED POs, so a second copy read
+    // while the first is in review went to review on its own. Now the NEWER copy is flagged DUPLICATE_PO (reject only)
+    // naming the other one; the older copy is never flagged by the newer one (retrying it does not block both).
+    if (poNumber && master && !validation.issues.some((i) => i.type === ISSUE_TYPE.DUPLICATE_PO)) {
+      const copy = await liveCopyOf(uploads, base.channel ?? master.channel.displayName, poNumber, messageId, existing?.id);
+      if (copy) {
+        validation.issues.push(validationIssue(ISSUE_TYPE.DUPLICATE_PO, { field: ISSUE_FIELDS.PO_NUMBER, actual: poNumber },
+          master.channel.displayName, poNumber, LIVE_COPY_TEXT(copy.id, copy.status)));
+      }
+    }
     const hasOcrIssue = validation.issues.some((i) => i.type === ISSUE_TYPE.OCR_ISSUE);
 
     // Several POs in one email: each PO points to its own file when one carries its number.
@@ -339,7 +393,8 @@ export const planEmail = async (db: DataSource, reader: MasterDataReader, folder
 
     rows.push({ poNumber, relPath: fp.relPath, existing, final, values, status, validation, issues: final ? { create: [], keep: [], close: [] } : plan });
   }
-  return { folder, messageId, rows };
+  const allSkipped = skipped.length && !rows.length && emailRow && emailRow.status !== UPLOAD_STATUS.REJECTED ? emailRow : undefined;
+  return { folder, messageId, rows, ...(skipped.length ? { skipped } : {}), ...(allSkipped ? { allSkipped } : {}) };
 };
 
 /** Writes a plan in ONE transaction: po_uploads rows, then their issues and issue actions. Returns the row id per PO. */
@@ -349,6 +404,13 @@ export const applyPlan = async (db: DataSource, plan: EmailPlan): Promise<Map<st
     const uploads = m.getRepository(PoUpload);
     const issues = m.getRepository(PoIssue);
     const actions = m.getRepository(PoIssueAction);
+    if (plan.allSkipped) {
+      await uploads.save({
+        ...plan.allSkipped,
+        status: UPLOAD_STATUS.REJECTED,
+        errorDetails: { step: PIPELINE_STEP.PROCESSING, reason: VALIDATION_TEXT.ALL_POS_ALREADY_IN((plan.skipped ?? []).map((s) => `${s.poNumber} (${s.copy})`).join(', ')) },
+      });
+    }
     for (const row of plan.rows) {
       if (row.final && row.existing) {
         ids.set(row.poNumber, row.existing.id);

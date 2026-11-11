@@ -1,4 +1,6 @@
-import { FACILITY_GROUPS, type FacilityGroups } from '../../constants';
+import { defaultFacilityStock, FACILITY_GROUPS, type FacilityGroups, type FacilityStock } from '../../constants';
+import type { ComboCheckResult } from './combo-check';
+import type { NewSku, SkuFill, SkuReviewSettings } from './sku-fill';
 import type { WhSummaryRow } from './stages/wh-summary';
 import path from 'path';
 import { Frame } from './frame';
@@ -28,6 +30,16 @@ export interface IntransitSettings {
    * server before the build, 2026-10-30). Absent = FACILITY_GROUPS (the CLI build, no database).
    */
   facilityGroups?: FacilityGroups;
+  /**
+   * Each counted facility's feed and units formula by lower-case code (Masters > Warehouses, 2026-11-02; read by the
+   * server with facilityGroups). Absent, or a facility missing = its bucket's default (the CLI build).
+   */
+  facilityStock?: Record<string, FacilityStock>;
+  /**
+   * Filling missing Sheet35 values (Uniware MRP, COGS = 20% of MRP) and finding new SKUs (user, 2026-11-02; sku-fill.ts).
+   * Absent = neither (the CLI build).
+   */
+  skuReview?: SkuReviewSettings;
 }
 
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -67,6 +79,12 @@ export class Context {
   /** Things a person should see about this build (shown with the run, e.g. an optional input with no copy). */
   readonly warnings: string[] = [];
   lookups?: Lookups;
+  /** Sheet35 values this build filled (stage final_sku; saved to the master by the server). */
+  skuFills: SkuFill[] = [];
+  /** New SKUs / marketplace codes and the other issues to ask about (stage final_sku). */
+  newSkus: NewSku[] = [];
+  /** The combo check, when stage final_sku already ran it (for the question list); else run after the build. */
+  comboCheck?: ComboCheckResult;
   private readonly inputs = new Map<string, Promise<Frame>>();
   private readonly t0 = Date.now();
 
@@ -83,6 +101,11 @@ export class Context {
 
   get facilityGroups(): FacilityGroups {
     return this.settings.facilityGroups ?? FACILITY_GROUPS;
+  }
+
+  /** A counted facility's feed and formula: the stored one, else its bucket's default; null = a bucket without one. */
+  stockOf(group: string, code: string): FacilityStock | null {
+    return this.settings.facilityStock?.[code.toLowerCase()] ?? defaultFacilityStock(group, code);
   }
 
   log(msg: string): void {

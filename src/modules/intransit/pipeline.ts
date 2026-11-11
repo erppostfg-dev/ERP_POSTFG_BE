@@ -18,6 +18,7 @@ import * as shelfwise from './stages/shelfwise';
 import * as shipments from './stages/shipments';
 import * as whSummary from './stages/wh-summary';
 import type { WhSummaryRow } from './stages/wh-summary';
+import type { NewSku, SkuFill } from './sku-fill';
 
 /*
  * The in-transit stock pipeline (pipeline.py): every stage in order, then the workbook. Each stage only reads frames
@@ -62,6 +63,15 @@ export interface PipelineResult {
   warnings: string[];
   /** GMV / Units / COGS per warehouse row (the in-transit mail's table). */
   whSummary: WhSummaryRow[];
+  /** Sheet35 values filled from the product master / Uniware / 20% of MRP (saved to the master by the server). */
+  skuFills: SkuFill[];
+  /** New SKUs / codes not answered yet. */
+  newSkus: NewSku[];
+  /**
+   * The build stopped after final_sku to ask about newSkus (settings.skuReview.pause): no workbook, the other fields
+   * are of the stages run so far (2026-11-02).
+   */
+  paused?: boolean;
 }
 
 export const reportPathFor = (settings: IntransitSettings): string => path.join(settings.outputDir, INTRANSIT_REPORT_NAME);
@@ -88,6 +98,11 @@ export const runPipeline = async (
     ctx.log(`=== ${name} ===`);
     await stage(ctx);
     ctx.timings[name] = Math.round((Date.now() - t) / 10) / 100;
+    // new SKUs to ask about: the rest waits for the answers (the server runs the build again then)
+    if (name === 'final_sku' && settings.skuReview?.pause && ctx.newSkus.length) {
+      ctx.log(`paused: ${ctx.newSkus.length} new SKU(s) / code(s) to answer before the build can finish`);
+      return { ctx, result: { ...resultOf(ctx, null), paused: true } };
+    }
   }
 
   let reportPath: string | null = null;
@@ -100,16 +115,19 @@ export const runPipeline = async (
     ctx.timings.excel = Math.round((Date.now() - t) / 10) / 100;
   }
 
+  return { ctx, result: resultOf(ctx, reportPath) };
+};
+
+const resultOf = (ctx: Context, reportPath: string | null): PipelineResult => {
   const summary = ctx.get('df_summary');
   return {
-    ctx,
-    result: {
-      reportPath,
-      timings: ctx.timings,
-      summary: Array.from({ length: summary.length }, (_, i) => Object.fromEntries(summary.columns.map((c) => [c, summary.get(c)[i]]))),
-      sheetRows: Object.fromEntries(SHEET_FRAMES.map(([label, frame]) => [label, ctx.get(frame).length])),
-      warnings: ctx.warnings,
-      whSummary: ctx.whSummary ?? [],
-    },
+    reportPath,
+    timings: ctx.timings,
+    summary: Array.from({ length: summary.length }, (_, i) => Object.fromEntries(summary.columns.map((c) => [c, summary.get(c)[i]]))),
+    sheetRows: Object.fromEntries(SHEET_FRAMES.filter(([, frame]) => ctx.frames.has(frame)).map(([label, frame]) => [label, ctx.get(frame).length])),
+    warnings: ctx.warnings,
+    whSummary: ctx.whSummary ?? [],
+    skuFills: ctx.skuFills,
+    newSkus: ctx.newSkus,
   };
 };

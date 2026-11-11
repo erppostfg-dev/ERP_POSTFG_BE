@@ -5,6 +5,8 @@ import { LIVE, REVIEW_LIVE, TABLES } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
 import { logError } from '../../utils/classify-error';
 import { inBackground } from '../../utils/log-context';
+import { CACHE_NS } from '../../constants/cache';
+import { forgetCache } from '../cache/cache.service';
 import { forgetPoIssues } from '../po-issues/po-issues.cache';
 
 /*
@@ -23,11 +25,15 @@ let version = '';
 let watcher: NodeJS.Timeout | undefined;
 let checking: Promise<string> | undefined;
 
-/** The current version of the review data (one cheap query). */
+/**
+ * The current version of the review data. Load (2026-11-04, audit K8): no COUNT(*) any more (a full scan every few
+ * seconds): the newest id (a new row) + the newest updated_at (any change; the DB sets it on every update), both read
+ * straight from an index (primary key, idx_*_updated), so the check costs next to nothing however big the tables grow.
+ */
 export const reviewVersion = async (): Promise<string> => {
   const [r] = (await AppDataSource.query(
-    `SELECT (SELECT CONCAT(COUNT(*), '.', COALESCE(UNIX_TIMESTAMP(MAX(updated_at)), 0)) FROM ${TABLES.PO_UPLOADS}) u,
-            (SELECT CONCAT(COUNT(*), '.', COALESCE(MAX(id), 0), '.', COALESCE(UNIX_TIMESTAMP(MAX(updated_at)), 0)) FROM ${TABLES.PO_REVIEW_SUBMISSIONS}) s`,
+    `SELECT (SELECT CONCAT(COALESCE(MAX(id), 0), '.', COALESCE(UNIX_TIMESTAMP(MAX(updated_at)), 0)) FROM ${TABLES.PO_UPLOADS}) u,
+            (SELECT CONCAT(COALESCE(MAX(id), 0), '.', COALESCE(UNIX_TIMESTAMP(MAX(updated_at)), 0)) FROM ${TABLES.PO_REVIEW_SUBMISSIONS}) s`,
   )) as { u: string; s: string }[];
   return `${r.u}-${r.s}`;
 };
@@ -52,6 +58,10 @@ const check = (): Promise<string> => {
 export const bumpReview = (): void => {
   // a review decision / re-check / upload changed what PO issues shows: its shared answer is dropped (2026-10-29)
   forgetPoIssues();
+  // the Approvals lists / badge (shared cache, 2026-11-10): dropped at once, on every server
+  void forgetCache(CACHE_NS.APPROVALS);
+  // the PO Review lists too (their key also holds the version: changes by other processes make new keys anyway)
+  void forgetCache(CACHE_NS.PO_REVIEW_LISTS);
   if (bus.listenerCount('change')) void check();
 };
 

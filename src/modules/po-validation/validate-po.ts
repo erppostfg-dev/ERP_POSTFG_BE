@@ -7,7 +7,9 @@ import {
   PriceChoice,
   PUNCH_S,
   SKU_ANY_CODE,
+  SKU_EAN_THEN_PEP,
   SKU_EAN_TIEBREAK,
+  SKU_NAME_TIEBREAK,
   ChannelName,
   IST_OFFSET_MS,
   ISSUE_FIELDS,
@@ -25,7 +27,9 @@ import { DetailsChannel, MasterSku } from '../../entities';
 import { pincodeFrom } from '../po-processing/common/parse';
 import { Num, ProcessedLine, ProcessedPo } from '../po-processing/common/processed-po';
 import { pickOneLocation } from './location-tiebreak';
+import { pickByDescription } from './sku-name-tiebreak';
 import { ChannelMasterData, matchKey } from './master-data';
+import { addressMismatch } from './address-check';
 
 /*
  * Validation of one processed.json against our master data (read-only). It runs every check and lists every issue,
@@ -52,7 +56,7 @@ export interface ValidatedLocation {
   facilityId: number | null;
   /** -> Uniware Channel (e.g. ZEPTO_B2B) */
   uniwareChannel: string;
-  matchedBy: 'code' | 'pincode' | 'reviewer';
+  matchedBy: 'code' | 'pincode' | 'reviewer' | 'only';
 }
 
 /** A reviewer's choices on resubmit (po-review): they replace the automatic match for this PO only. */
@@ -139,6 +143,7 @@ const findLocation =(po: ProcessedPo, master: ChannelMasterData, issues: Validat
   const code = matchKey(po.delivery_facility_code);
   const pin = matchKey(po.delivery_pincode);
   const byCode = CHANNEL_LOCATION_MATCH[po.channel_name as ChannelName] === LOCATION_MATCH.CODE_THEN_PINCODE;
+  const onlyOne = CHANNEL_LOCATION_MATCH[po.channel_name as ChannelName] === LOCATION_MATCH.ONLY;
 
   let rows: DetailsChannel[] = [];
   let matchedBy: ValidatedLocation['matchedBy'] = 'code';
@@ -147,11 +152,16 @@ const findLocation =(po: ProcessedPo, master: ChannelMasterData, issues: Validat
     rows = master.locations.filter((l) => String(l.id) === picked);
     matchedBy = 'reviewer';
     by = `the reviewer's choice ${picked}`;
+  } else if (onlyOne) {
+    // the channel's only active location (Noble Chemist: no code, no pincode on the form); several -> review below
+    rows = master.locations;
+    matchedBy = 'only';
+    by = VALIDATION_TEXT.LOCATION_ONLY;
   } else if (byCode && code) {
     rows = master.locations.filter((l) => matchKey(l.channelLocationCode) === code);
     by = `facility code "${po.delivery_facility_code}"`;
   }
-  if (!picked && !rows.length && pin) {
+  if (!picked && !onlyOne && !rows.length && pin) {
     rows = master.locations.filter((l) => matchKey(l.consigneePinCode) === pin);
     matchedBy = 'pincode';
     by = `${by ? `${by} or ` : ''}pincode ${po.delivery_pincode}`;
@@ -166,10 +176,10 @@ const findLocation =(po: ProcessedPo, master: ChannelMasterData, issues: Validat
 
   const issue = (detail: string) =>
     issues.push(validationIssue(ISSUE_TYPE.LOCATION_NOT_MAPPED, { field: ISSUE_FIELDS.DELIVERY_LOCATION, actual: po.delivery_facility_code || po.delivery_pincode }, detail));
-  if (!picked && !code && !pin) return issue(VALIDATION_TEXT.NO_LOCATION_KEY), null;
+  if (!picked && !onlyOne && !code && !pin) return issue(VALIDATION_TEXT.NO_LOCATION_KEY), null;
   if (!rows.length) return issue(VALIDATION_TEXT.LOCATION_NONE(by)), null;
   // Several match (a shared pincode): the PO's facility name, GSTIN or address may name exactly one (location-tiebreak.ts).
-  const one = !picked && rows.length > 1 ? pickOneLocation(rows, po) : null;
+  const one = !picked && !onlyOne && rows.length > 1 ? pickOneLocation(rows, po) : null;
   if (one) rows = [one.row];
   if (rows.length > 1) {
     const codes = rows.map((r) => r.channelLocationCode ?? r.uniwareCustomerCode ?? r.id).join(', ');
@@ -248,18 +258,27 @@ const validateLine = (
   const byEanToo = SKU_EAN_TIEBREAK.has(channel) && line.ean && new Set(allByCode.map((r) => matchKey(r.pepCode))).size > 1
     ? allByCode.filter((r) => matchKey(r.eanCode) === matchKey(line.ean)) : [];
   const eanRow = new Set(byEanToo.map((r) => matchKey(r.pepCode))).size === 1 ? (byEanToo.find((r) => r.rateAfterMargin !== null) ?? byEanToo[0]) : undefined;
-  const byCode = eanRow ? [eanRow] : allByCode;
+  // First Club (SKU_NAME_TIEBREAK): still rows of several of our codes -> the one whose product name is in the PO's item
+  // description (SKU263395202 + "... Brightening Raspberry Rush Body Wash 300 ml" -> MCaf383_WB_N1); none / several -> review
+  const nameRow = !eanRow && SKU_NAME_TIEBREAK.has(channel) && new Set(allByCode.map((r) => matchKey(r.pepCode))).size > 1
+    ? pickByDescription(allByCode, line.description, master.skus) : undefined;
+  const byCode = eanRow ? [eanRow] : nameRow ? [nameRow] : allByCode;
   // Slikk's "SKU Id" is a channel code, our pep code or an EAN (SKU_ANY_CODE): then the channel's rows by pep code
   // (one is enough, they share the rate), else by ean_code (rows of different pep codes = ambiguous, as for a code).
   const anyCode = !byCode.length && SKU_ANY_CODE.has(channel);
   const asPep = anyCode ? (master.skusByPep.get(matchKey(line.channel_sku_code)) ?? []) : [];
   const asEan = anyCode && !asPep.length ? (master.skusByEan.get(matchKey(line.channel_sku_code)) ?? []) : [];
+  // Amazon RK World (SKU_EAN_THEN_PEP): the ASIN finds nothing -> the channel's rows by the line's EAN, then by its pep code
+  const eanThenPep = !byCode.length && SKU_EAN_THEN_PEP.has(channel);
+  const byLineEan = eanThenPep && line.ean.trim() ? (master.skusByEan.get(matchKey(line.ean)) ?? []) : [];
+  const byLinePep = eanThenPep && !byLineEan.length && line.pep_sku_code.trim() ? (master.skusByPep.get(matchKey(line.pep_sku_code)) ?? []) : [];
   const oneRow = (rows: typeof byCode) => {
     if (new Set(rows.map((r) => matchKey(r.pepCode))).size > 1) return rows;
     const r = rows.find((x) => x.rateAfterMargin !== null) ?? rows[0];
     return r ? [r] : [];
   };
-  const candidates = pickedPep ? (chosen ? [chosen] : []) : byCode.length ? byCode : asPep.length ? oneRow(asPep) : oneRow(asEan);
+  const candidates = pickedPep ? (chosen ? [chosen] : []) : byCode.length ? byCode : asPep.length ? oneRow(asPep)
+    : asEan.length ? oneRow(asEan) : byLineEan.length ? oneRow(byLineEan) : oneRow(byLinePep);
   const skuIssue = (detail: string) =>
     add(validationIssue(ISSUE_TYPE.SKU_NOT_MAPPED, { field: ISSUE_FIELDS.CHANNEL_SKU_CODE, lineNo, actual: line.channel_sku_code }, where, detail));
   if (pickedPep && !candidates.length) skuIssue(VALIDATION_TEXT.SKU_NONE(pickedPep));
@@ -376,6 +395,9 @@ export const validatePo = async (
     issues.push(validationIssue(ISSUE_TYPE.PO_EXPIRED, { field: ISSUE_FIELDS.EXPIRY_DATE, actual: po.expiry_date }, po.expiry_date, today));
   }
   const location = findLocation(po, master, issues, overrides.locationId);
+  // Billed to one of our warehouses, mapped to another (2026-11-06): review (ADDRESS_MISMATCH, the reviewer decides)
+  const wrongWarehouse = location ? addressMismatch(po, channel, location, master) : null;
+  if (wrongWarehouse) issues.push(wrongWarehouse);
   // The location's Uniware channel differs from the channel's own location sheet (Myntra, 2026-11-03): review (OTHER)
   const expectedUniware = location ? EXPECTED_UNIWARE_CHANNEL[channel]?.[location.locationCode] : undefined;
   if (location && expectedUniware && location.uniwareChannel !== expectedUniware) {

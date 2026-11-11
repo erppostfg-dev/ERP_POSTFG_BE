@@ -57,10 +57,14 @@ export interface ComboCheckResult {
   lookedUp: number;
 }
 
-type Cached = UniwareItemType & { at: string; missing?: boolean };
+/**
+ * One cached Uniware item (shared with sku-fill.ts, 2026-11-02): its type and parts, and - once looked up there - its
+ * MRP and cost price (absent = looked up by the combo check only).
+ */
+export type Cached = UniwareItemType & { at: string; missing?: boolean; mrp?: number | null; cost?: number | null };
 type Gap = { name: string; units: number; channelTypes: Set<string> };
 
-const readCache = async (file: string): Promise<Record<string, Cached>> => {
+export const readCache = async (file: string): Promise<Record<string, Cached>> => {
   try {
     return JSON.parse(await fs.readFile(file, 'utf8')) as Record<string, Cached>;
   } catch {
@@ -69,7 +73,7 @@ const readCache = async (file: string): Promise<Record<string, Cached>> => {
 };
 
 /** Run `fn` over `items`, `n` at a time. */
-const pool = async <T>(items: T[], n: number, fn: (item: T) => Promise<void>): Promise<void> => {
+export const pool = async <T>(items: T[], n: number, fn: (item: T) => Promise<void>): Promise<void> => {
   let next = 0;
   await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => {
     while (next < items.length) await fn(items[next++]);

@@ -1,6 +1,7 @@
 import { NextFunction, Request, Response, Router } from 'express';
 import {
   ACCESS_LEVEL,
+  CACHE_NS,
   APPROVAL_BULK,
   APPROVAL_KIND,
   APPROVAL_LIST_STATUSES,
@@ -9,6 +10,7 @@ import {
   APPROVER_ROLES,
   ERROR_CODES,
   errorMessage,
+  MARGIN_APPROVAL,
   PAGE,
   PO_REVIEW_BODY,
   PO_REVIEW_LIST,
@@ -20,11 +22,13 @@ import {
   type ApprovalKind,
 } from '../constants';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
+import { cached } from '../modules/cache/cache.service';
 import { bulkApprove, bulkReject } from '../modules/po-review/approvals-bulk.service';
 import { rejectSubmission } from '../modules/po-review/po-review-actions.service';
 import { approveWithPrices } from '../modules/po-review/price-check.service';
 import { getApproval, listApprovals } from '../modules/po-review/po-review-approvals.service';
 import { reviewEvents, reviewVersion } from '../modules/po-review/po-review.live';
+import { approveMarginRequest, listMarginRequests, MarginActor, rejectMarginRequest } from '../modules/masters/margin-approval.service';
 import { appError } from '../utils/AppError';
 import { bodyReader, Problem } from './po-review.routes';
 
@@ -44,6 +48,11 @@ import { bodyReader, Problem } from './po-review.routes';
  *   POST /approvals/po-reviews/:id/reject    { remark }    rejected with the reason.
  *   GET  /approvals/events, /approvals/live-state   live updates (same stream as PO Review).
  * Viewer on /approvals to read; editor on /approvals AND one of APPROVER_ROLES (admin, developer) to decide.
+ * Margin changes (2026-11-06, two-layer approval; modules/masters/margin-approval.service.ts):
+ *   GET  /approvals/margin-changes?status=open|applied|rejected
+ *   POST /approvals/margin-changes/:id/approve { remark? }   layer 1 (Operations Manager) then layer 2 (Admin)
+ *   POST /approvals/margin-changes/:id/reject  { remark }
+ *   Viewer on /approvals is enough (Operations Manager only views the page); the service checks the role per layer.
  */
 
 const router = Router();
@@ -116,11 +125,14 @@ router.get('/po-reviews', requireAuth, requirePage(PAGE.APPROVALS, ACCESS_LEVEL.
     const page = int(PO_REVIEW_QUERY.PAGE, 1, Number.MAX_SAFE_INTEGER);
     const pageSize = int(PO_REVIEW_QUERY.PAGE_SIZE, PO_REVIEW_LIST.DEFAULT_PAGE_SIZE, PO_REVIEW_LIST.MAX_PAGE_SIZE);
     if (problems.length) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails(problems);
-    const { items, total, counts, filterOptions } = await listApprovals({
+    const query = {
       status: status as ReviewSubmissionStatus, q: str(PO_REVIEW_QUERY.Q), channels: list(PO_REVIEW_QUERY.CHANNEL),
       kind: kind as ApprovalKind | undefined, issues: list(APPROVAL_QUERY.ISSUE), submittedBy: list(APPROVAL_QUERY.SUBMITTED_BY), from, to, page, pageSize,
       reopened: str(APPROVAL_QUERY.REOPENED) === 'true',
-    });
+    };
+    // the same answer for everyone with the page (the sidebar badge asks every 60 s): shared cache, dropped by every
+    // review change (bumpReview) (2026-11-10, modules/cache)
+    const { items, total, counts, filterOptions } = await cached(CACHE_NS.APPROVALS, `list:${JSON.stringify(query)}`, () => listApprovals(query));
     const canDecide = !!req.auth?.roles.some((r) => (APPROVER_ROLES as readonly string[]).includes(r));
     res.json({ data: items, meta: { page, pageSize, total, counts, canDecide, filterOptions } });
   } catch (err) {
@@ -195,6 +207,31 @@ router.post('/po-reviews/:id/reject', requireAuth, requirePage(PAGE.APPROVALS, A
     const remark = bodyReader(problems).remark((req.body as Record<string, unknown> | undefined)?.[PO_REVIEW_BODY.REMARK], PO_REVIEW_BODY.REMARK, true);
     if (problems.length || !remark) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails(problems);
     res.json({ data: await rejectSubmission(id, remark, actor(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const marginActor = (req: Request): MarginActor => ({ id: req.auth!.user.id, email: req.auth!.user.email, roles: req.auth!.roles });
+const body = (req: Request) => (req.body ?? {}) as Record<string, unknown>;
+
+router.get(MARGIN_APPROVAL.ROUTES.LIST, requireAuth, requirePage(PAGE.APPROVALS, ACCESS_LEVEL.VIEWER), async (req, res, next) => {
+  try {
+    res.json({ data: await listMarginRequests(req.query.status, marginActor(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+router.post(MARGIN_APPROVAL.ROUTES.APPROVE, requireAuth, requirePage(PAGE.APPROVALS, ACCESS_LEVEL.VIEWER), async (req, res, next) => {
+  try {
+    res.json({ data: await approveMarginRequest(req.params.id, body(req), marginActor(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+router.post(MARGIN_APPROVAL.ROUTES.REJECT, requireAuth, requirePage(PAGE.APPROVALS, ACCESS_LEVEL.VIEWER), async (req, res, next) => {
+  try {
+    res.json({ data: await rejectMarginRequest(req.params.id, body(req), marginActor(req)) });
   } catch (err) {
     next(err);
   }

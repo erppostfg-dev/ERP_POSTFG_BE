@@ -88,6 +88,16 @@ export const ERRORS = {
   UNIWARE_CSV_NOT_READY: define(409, (ids: string) => `No Uniware CSV yet for upload(s) ${ids}: only completed POs have one`),
   UNIWARE_NOT_DOWNLOADED: define(409, (ids: string) => `Download the sale order CSV first: upload(s) ${ids} not downloaded yet`),
   UPLOAD_IDS_REQUIRED: define(400, () => 'Pick at least one PO (uploadIds)'),
+  // --- Create in Uniware (2026-11-09, constants/uniware-create.ts) ---
+  UNIWARE_CREATE_OFF: define(409, () => 'Create in Uniware is switched off on this server (UNIWARE_CREATE_ENABLED): download the CSV instead'),
+  UNIWARE_CREATE_NO_PHONE: define(409, () => 'Create in Uniware needs UNIWARE_ORDER_PHONE (the phone on the sale order address): ask a developer'),
+  UNIWARE_CREATE_TOO_MANY: define(400, (max: number) => `Pick at most ${max} POs to create in Uniware at once`),
+  UNIWARE_SYNC_TOO_SOON: define(409, (ago: number, by: string, left: number) => `Sync from Uniware was run ${ago} min ago by ${by}: available again in ${left} min (the server also syncs every 30 min by itself)`),
+  // --- Notices (2026-11-10) ---
+  NOTICES_OFF: define(409, () => 'Notices are switched off (Users & Roles -> Settings)'),
+  NOTICE_EVERYONE_NOT_ALLOWED: define(403, () => 'Only an admin or a developer can send a notice to everyone'),
+  NOTICE_DAILY_LIMIT: define(429, (max: number) => `You have sent ${max} notices in the last 24 hours: try again later`),
+  NOTICE_REPLY_NOT_ALLOWED: define(400, () => 'You can reply only to a notice sent to you alone (not to one sent to everyone or by you)'),
   // --- Line items download (2026-10-26) ---
   LINE_ITEMS_TOO_MANY: define(400, (max: number) => `Pick at most ${max} POs for one line items download`),
   LINE_ITEMS_NOT_PROCESSED: define(409, (ids: string) => `Only processed POs have saved line items: upload(s) ${ids} are not processed`),
@@ -98,6 +108,10 @@ export const ERRORS = {
   MANUAL_FILES_MISSING: define(400, (channel: string, need: string, got: string) => `${channel} needs ${need} for one PO; got ${got}`),
   MANUAL_AMAZON_FILE: define(400, (name: string) => `${name} is not an Amazon shipment file: it needs "Shipment ID FBA…" at the top and the "Merchant SKU … Shipped" lines`),
   MANUAL_DUPLICATE: define(409, (id: string, where: string) => `${id} is already ${where}: it is not processed twice`),
+  /** details.copies = the copies found (2026-11-05): the screen asks Open it / Process again / Cancel. */
+  MANUAL_ALREADY_IN: define(409, (what: string) => `${what} is already in POST_FG: open it, or choose Process again (the copy in review is then replaced)`),
+  /** details.copies: Process again is not possible for at least one of them (sale order made, approval, running). */
+  MANUAL_ALREADY_BLOCKED: define(409, (what: string, why: string) => `${what} cannot be processed again: ${why}`),
   // Channel Pulls (2026-10-30)
   CHANNEL_PULL_NOT_CONFIGURED: define(409, (what: string) => `${what} is not set up on this server (its login is missing in the settings)`),
   CHANNEL_PULL_NOT_FOUND: define(404, (key: string) => `No channel pull ${key}`),
@@ -127,6 +141,7 @@ export const ERRORS = {
   SPAPI_NOT_CONFIGURED: define(503, () => 'Amazon SP-API keys are not set on the server (SPAPI_* in .env)'),
   CONNECTOR_UNKNOWN: define(400, (key: string, known: string) => `No channel API connector "${key}" (known: ${known})`),
   // --- Users & Roles admin (2026-10-15) ---
+  DEVELOPER_ONLY: define(403, () => 'Only developers see the server page'),
   NOT_A_USER_ADMIN: define(403, (roles: string) => `Only ${roles} can add or change users and roles`),
   MASTER_ADD_NOT_ALLOWED: define(403, (roles: string) => `Only ${roles} can add to the masters`),
   MASTER_HISTORY_BAD_REQUEST: define(400, (what: string) => `Masters history: ${what}`),
@@ -183,6 +198,13 @@ export const ERRORS = {
   SUBMISSION_NOT_FOUND: define(404, (id: string) => `No PO review submission ${id}`),
   SUBMISSION_NOT_PENDING: define(409, (id: string, status: string) => `Submission ${id} is ${status}, not pending any more; reload it`),
   NOT_AN_APPROVER: define(403, (roles: string) => `Only ${roles} can approve or reject PO reviews`),
+  // --- Margin changes, two-layer approval (2026-11-06, constants/margin-approval.ts) ---
+  MARGIN_REQUEST_NOT_FOUND: define(404, (id: string) => `No margin change request ${id}`),
+  MARGIN_REQUEST_PENDING: define(409, (what: string, id: string) => `${what} already has a margin change waiting for approval (request #${id}): approve or reject it first`),
+  MARGIN_REQUEST_NOT_OPEN: define(409, (id: string, status: string) => `Margin change request #${id} is ${status}: nothing to decide`),
+  MARGIN_APPROVER_ROLE: define(403, (layer: string, roles: string) => `Only ${roles} can decide at ${layer}`),
+  MARGIN_APPROVER_SAME_PERSON: define(403, (why: string) => `You cannot approve this request: ${why}`),
+  MARGIN_REQUEST_STALE: define(409, (id: string, detail: string) => `Margin change request #${id} no longer fits the master (${detail}): reject it and ask again`),
   REVIEW_RETURNED: define(409, (count: number) => `The PO no longer passes the checks (${count} issue(s)); it went back to In Review with the reason`),
   MASTER_UPDATE_NOT_CONFIRMED: define(409, (count: number) => `${count} of the selected approval(s) update the master on approval: confirm to go on`),
   ISSUE_REMARK_REQUIRED: define(422, (issueId: string, type: string) => `Issue ${issueId} (${type}) is accepted only with a remark: say why`),
@@ -252,6 +274,9 @@ export const ERRORS = {
   SPLIT1_COMPONENT_UNKNOWN: define(422, (skus: string) => `Not added: Uniware does not know these component SKUs: ${skus}`),
   INTRANSIT_RUN_NOT_DONE: define(409, (id: string, status: string) => `Run ${id} is ${status}; the report is ready only when it succeeded`),
   INTRANSIT_RUN_BUSY: define(409, (id: string, status: string) => `Run ${id} is ${status}; wait for it to finish`),
+  INTRANSIT_RUN_NOT_STOPPABLE: define(409, (id: string, status: string) => `Run ${id} is ${status}: there is nothing to stop`),
+  INTRANSIT_NOT_PAUSED: define(409, (id: string, what: string) => `Build ${id} is not waiting for ${what}`),
+  INTRANSIT_SKU_ANSWERS_INVALID: define(400, (problem: string) => `The answers were not saved: ${problem}`),
   INTRANSIT_SOURCE_UNKNOWN: define(404, (source: string, sources: string) => `No connector ${source}; use one of: ${sources}`),
   INTRANSIT_CONNECTOR_RUNNING: define(409, (source: string, id: string) => `The ${source} fetch is already running (run ${id})`),
   INTRANSIT_CONNECTOR_NOT_CONFIGURED: define(500, (source: string, keys: string) => `The ${source} connector needs ${keys} in .env`),
@@ -278,6 +303,30 @@ export const ERRORS = {
   INTRANSIT_MASTERS_PROD_ONLY: define(403, () => 'The in-transit masters are shared with production: change them on the live server (a test machine cannot)'),
   INTRANSIT_SKU_UNKNOWN: define(422, (skus: string) => `Not saved: these SKUs are neither in the product master nor in Uniware: ${skus}`),
   INTRANSIT_UNIWARE_NEEDED: define(422, (skus: string, reason: string) => `Not saved: ${skus} must be looked up in Uniware first (${reason})`),
+
+  // --- D2C internal transfers (2026-11-03; constants/d2c-transfers.ts) ----------------------------------------------
+  D2C_NOT_FOUND: define(404, (id: string) => `No internal transfer ${id}`),
+  D2C_NOT_EDITABLE: define(409, (code: string, why: string) => `${code} cannot be changed: ${why}`),
+  D2C_STALE: define(409, (code: string) => `${code} was changed by someone else since you opened it: reload it and try again`),
+  D2C_INVALID: define(422, (problems: number) => `The transfer was not saved: ${problems} problem(s), see details`),
+  D2C_UPLOAD_FILE: define(400, (reason: string) => `Upload rejected: ${reason}`),
+  D2C_NO_MAPPING: define(422, (channel: string, location: string) => `No transfer location ${location} for channel ${channel}: add it in Masters`),
+  // phase 5 (Uniware sale orders)
+  D2C_NOT_LIVE: define(409, (facility: string) => `Uniware changes are switched off for ${facility}: only the test warehouses may be used until D2C transfers go live`),
+  // local TEST ONLY mode (env.d2c.testOnly): nothing but test-facility transfers may change
+  D2C_TEST_ONLY: define(409, (lane: string) => `local test mode: only TEST_FACILITY transfers can reach Uniware (${lane} is not a test transfer)`),
+  D2C_TEST_ONLY_CHANGE: define(409, (lane: string) => `local test mode: only transfers between test facilities (TEST_FACILITY) can be changed here; ${lane} is a real route`),
+  D2C_TEST_ONLY_MASTER: define(409, (why: string) => `local test mode: only TEST_FACILITY rows of the D2C transfer masters can be changed here; ${why}`),
+  D2C_IN_FLIGHT: define(409, (code: string) => `${code}: its sale order request is still open in Uniware: wait until it is resolved (the sync checks it)`),
+  D2C_UNIWARE_REFUSED: define(422, (code: string, why: string) => `${code}: Uniware refused: ${why}`),
+  D2C_UNIWARE_DOWN: define(502, (code: string, why: string) => `${code}: Uniware could not be reached, nothing was changed: ${why}`),
+  D2C_JOB_NOT_FOUND: define(404, (id: string) => `No sale order job ${id} on this server (it may have restarted): reload the list`),
+  D2C_TOO_MANY: define(400, (max: number) => `At most ${max} transfers at a time`),
+  // phase 6 (Uniware status sync)
+  D2C_RESYNC_FORBIDDEN: define(403, () => 'A full resync (closed, cancelled and erroring transfers too) needs the "D2C transfers: full resync" permission'),
+  // phase 7 (inward POs, GRN, variance reason)
+  D2C_INVOICE_NOT_FOUND: define(404, (id: string) => `No invoice ${id} of an internal transfer`),
+  D2C_TOO_MANY_INVOICES: define(400, (max: number) => `At most ${max} invoices at a time`),
 
   // --- Command-line scripts ---------------------------------------------------------------------------------------
   CLI_USAGE: define(400, (usage: string) => usage),

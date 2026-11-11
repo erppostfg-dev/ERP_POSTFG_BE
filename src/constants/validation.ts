@@ -49,6 +49,10 @@ export const CHANNEL_TOLERANCES: Record<ChannelName, Tolerance> = {
   [CHANNELS.GLUZO]: DEFAULT_TOLERANCE,
   [CHANNELS.SLIKK]: DEFAULT_TOLERANCE,
   [CHANNELS.POP_TECH]: DEFAULT_TOLERANCE,
+  [CHANNELS.FIRST_CLUB]: DEFAULT_TOLERANCE,
+  [CHANNELS.OCTAVOS]: DEFAULT_TOLERANCE,
+  [CHANNELS.NOBLE_CHEMIST]: DEFAULT_TOLERANCE,
+  [CHANNELS.AMAZON_RK_WORLD]: DEFAULT_TOLERANCE,
 };
 
 /**
@@ -79,6 +83,18 @@ export const CHANNEL_MASTER_IDS: Record<ChannelName, number> = {
   [CHANNELS.SLIKK]: 40,
   /** "POP TECH". */
   [CHANNELS.POP_TECH]: 37,
+  /** "FIRST CLUB" (35 SKU rows with rates, 2 locations; checked 2026-11-05). */
+  [CHANNELS.FIRST_CLUB]: 41,
+  /** "OCTAVOS ENTERPRISE" (Smytten; 49 SKU rows, prices from the Smytten Minis Master loaded 2026-11-05; 4 locations). */
+  [CHANNELS.OCTAVOS]: 22,
+  /** "NOBLE CHEMIST" (15 SKU rows by EAN with rates, 1 location GOREGOAN_WEST; checked 2026-11-05). Not "NOBLE PLUS" (36). */
+  [CHANNELS.NOBLE_CHEMIST]: 35,
+  /**
+   * "AMAZON RK WORLD" (Vendor Central). Checked 2026-11-06: 18 locations (FC codes HKA2 / HNR4 / HHY7 ... with Uniware
+   * codes), but 0 SKU rows: until the masters team adds them (channel_code = ASIN, rate = Cost x 1.18) every line goes to
+   * review as SKU not mapped. Not "Amazon" (9, its rates are 15% of MRP).
+   */
+  [CHANNELS.AMAZON_RK_WORLD]: 26,
 };
 
 /**
@@ -88,6 +104,14 @@ export const CHANNEL_MASTER_IDS: Record<ChannelName, number> = {
  * channel_code on 2 Nov).
  */
 export const SKU_ANY_CODE: ReadonlySet<ChannelName> = new Set([CHANNELS.SLIKK]);
+
+/**
+ * Channels whose PO line carries their own code AND the EAN AND our pep code in separate columns (Amazon RK World: ASIN,
+ * External ID, Model number; user 2026-11-05 "match ASIN, then EAN, then Model number"): when no channel row has the
+ * line's code as channel_code, the channel's rows by the line's EAN (ean_code), then by its pep code. Rows of several of
+ * our codes = review, as for a code.
+ */
+export const SKU_EAN_THEN_PEP: ReadonlySet<ChannelName> = new Set([CHANNELS.AMAZON_RK_WORLD]);
 
 /**
  * Channels whose channel_code is the EAN (Pop Tech, user 2026-11-02): when the code gives rows of several of our codes,
@@ -109,6 +133,24 @@ export const LOCATION_TIEBREAK = {
 
 export const SKU_EAN_TIEBREAK: ReadonlySet<ChannelName> = new Set([CHANNELS.POP_TECH]);
 
+/**
+ * Channels whose channel code may sit on rows of several of our codes, told apart by the PO's item description (user
+ * 2026-11-05, First Club: SKU263395202 on MCaf383_WB_N1, MCaf369, MCaf87 and 55MCaf40; the PO line says "mCaffeine
+ * Brightening Raspberry Rush Body Wash 300 ml"): the row whose product name (channel row, else our SKU master) is
+ * contained word for word in the description is taken, when it is the only one. None or several -> review, as before.
+ * Runs after the EAN tie-break (po-validation/sku-name-tiebreak.ts).
+ */
+export const SKU_NAME_TIEBREAK: ReadonlySet<ChannelName> = new Set([CHANNELS.FIRST_CLUB]);
+
+export const SKU_NAME_MATCH = {
+  /** words that say nothing about the product (brand, joiners) */
+  IGNORE_WORDS: ['mcaffeine', 'and', 'with', 'for', 'the', 'of', 'amp'],
+  /** sizes / units ("300 ml", "15gm", "(55 g)", "Rs 129"): the PO's size differs from the master's pack name */
+  IGNORE_WORD_RE: /^(\d+(\.\d+)?(ml|l|g|gm|gms|kg|mg|pc|pcs|n)?|ml|l|g|gm|gms|kg|mg|rs|pc|pcs)$/,
+  /** a product name must keep at least this many words to be used */
+  MIN_WORDS: 2,
+} as const;
+
 
 /**
  * How the PO's delivery location is found in details_channels:
@@ -122,7 +164,11 @@ export const SKU_EAN_TIEBREAK: ReadonlySet<ChannelName> = new Set([CHANNELS.POP_
 /** Pep Technologies' PAN: inside every GSTIN of ours (27AAICP2804J1ZC ...), so a PO's other GSTIN is the buyer's. */
 export const OUR_PAN = 'AAICP2804J';
 
-export const LOCATION_MATCH = { CODE_THEN_PINCODE: 'code_then_pincode', PINCODE: 'pincode' } as const;
+/**
+ * only (2026-11-05, Noble Chemist: its order form carries neither a location code nor a pincode, and the channel has
+ * ONE location): the channel's only active location; none or several -> review.
+ */
+export const LOCATION_MATCH = { CODE_THEN_PINCODE: 'code_then_pincode', PINCODE: 'pincode', ONLY: 'only' } as const;
 export type LocationMatch = (typeof LOCATION_MATCH)[keyof typeof LOCATION_MATCH];
 
 export const CHANNEL_LOCATION_MATCH: Record<ChannelName, LocationMatch> = {
@@ -153,6 +199,16 @@ export const CHANNEL_LOCATION_MATCH: Record<ChannelName, LocationMatch> = {
   /** No location code on the PO: the Ship to pincode (562114 BANGLORE / 122001 GURGOAN; the 28 Oct master has the pincode
    *  only inside the address, consignee_pin_code empty: matched by the address, as for every channel). */
   [CHANNELS.POP_TECH]: LOCATION_MATCH.PINCODE,
+  /** The PO number ends in First Club's warehouse code (FHYBLRNLM01 / FRHHYDMDL01), not our location code: the Shipping
+   *  Address pincode (562123 BENGALURU, 500078 HYDERABAD; only in the master's address on 5 Nov: matched by the address). */
+  [CHANNELS.FIRST_CLUB]: LOCATION_MATCH.PINCODE,
+  /** No location code on the PO: the pincode of Octavos' warehouse block at the top (382427 AHMEDABAD_2, 122503 GURGAON,
+   *  387570 HARYALA / HARYALA_2 = the address decides; 122506 Farukh Nagar not in the master on 5 Nov: review). */
+  [CHANNELS.OCTAVOS]: LOCATION_MATCH.PINCODE,
+  /** One location (GOREGOAN_WEST, New Welcome Agencies); the form has no pincode. */
+  [CHANNELS.NOBLE_CHEMIST]: LOCATION_MATCH.ONLY,
+  /** "Ship-to location" = Amazon's FC code (HKA2 ...) = channel_location_code of AMAZON RK WORLD; the export has no address. */
+  [CHANNELS.AMAZON_RK_WORLD]: LOCATION_MATCH.CODE_THEN_PINCODE,
 };
 
 /** Result of validating one PO. */
@@ -184,6 +240,8 @@ export const ISSUE_FIELDS = {
   VERIFICATION: 'verification',
   /** A rejected PO reopened (2026-11-03): one OTHER issue that a person must accept before it goes for approval. */
   REOPENED: 'reopened',
+  /** Address Mismatch (2026-11-06): the GSTIN the PO is billed to vs the location's warehouse. */
+  BILLED_TO: 'billed_to',
 } as const;
 export type IssueField = (typeof ISSUE_FIELDS)[keyof typeof ISSUE_FIELDS];
 
@@ -193,19 +251,53 @@ export type IssueField = (typeof ISSUE_FIELDS)[keyof typeof ISSUE_FIELDS];
  * rejected; DUPLICATE_PO can only be rejected.
  */
 /**
- * Channels whose PO price is NOT checked (2026-11-03, user: Myntra STRs): the sale order takes our master rate (margin)
+ * Channels whose PO price is NOT checked (2026-11-03, user: Myntra STRs; Noble Chemist's order form prints no price,
+ * 2026-11-05): the sale order takes our master rate (margin)
  * and our GST; the PO's own price is only shown as information. No "price missing", no price / total check; MRP is.
  */
-export const OUR_PRICE_ONLY_CHANNELS: readonly ChannelName[] = [CHANNELS.MYNTRA];
+export const OUR_PRICE_ONLY_CHANNELS: readonly ChannelName[] = [CHANNELS.MYNTRA, CHANNELS.NOBLE_CHEMIST];
 
 /** What a location's Uniware channel should be (a channel's own sheet); our master differing -> review (OTHER). */
 export const EXPECTED_UNIWARE_CHANNEL: Partial<Record<ChannelName, Record<string, string>>> = {
   [CHANNELS.MYNTRA]: Object.fromEntries(MYNTRA_STR.DESTINATIONS.map((d) => [d.location, d.uniwareChannel])),
 };
 
-export const ACCEPTABLE_ISSUE_TYPES: readonly IssueType[] = [ISSUE_TYPE.OTHER, ISSUE_TYPE.PO_EXPIRED, ISSUE_TYPE.TOTAL_MISMATCH];
-/** Price check (2026-10-30): a total still off after the line choices is accepted ("go with the line total") only with a remark. */
-export const REMARK_REQUIRED_ISSUE_TYPES: readonly IssueType[] = [ISSUE_TYPE.TOTAL_MISMATCH];
+export const ACCEPTABLE_ISSUE_TYPES: readonly IssueType[] = [ISSUE_TYPE.OTHER, ISSUE_TYPE.PO_EXPIRED, ISSUE_TYPE.TOTAL_MISMATCH, ISSUE_TYPE.ADDRESS_MISMATCH];
+
+/**
+ * Address Mismatch (2026-11-06, user: "check which address the PO is marked to: if it is our Mumbai warehouse but our
+ * database maps the location to GGN, flag it"): the GSTIN the PO is billed to (vendor_gstin, ours) must belong to the
+ * warehouse the matched location ships from (details_channels.facility_code). Different -> review with ADDRESS_MISMATCH;
+ * the reviewer decides (accept, or fix the location / the master). Not checked: the B2C channels below, a PO without our
+ * GSTIN (some channels don't print it), a warehouse whose GSTIN we don't know.
+ */
+export const ADDRESS_CHECK = {
+  SKIP_CHANNELS: [CHANNELS.AMAZON, CHANNELS.FLIPKART, CHANNELS.MYNTRA] as readonly ChannelName[],
+  /**
+   * Our warehouses' GSTINs, by Uniware facility code (compared ignoring case: MUM_Warehouse2 = MUM_WAREHOUSE2). From the
+   * POs themselves (80 processed POs, 6 Nov: only these two). master_facilities.bill_to_gstin wins when it is filled.
+   */
+  WAREHOUSE_GSTIN: { MUM_WAREHOUSE2: '27AAICP2804J1ZC', GGN_WAREHOUSE: '06AAICP2804J1ZG' } as Record<string, string>,
+  /** What the reviewer reads for each GSTIN. */
+  GSTIN_LABEL: { '27AAICP2804J1ZC': 'Mumbai warehouse (MH)', '06AAICP2804J1ZG': 'Gurgaon warehouse (HR)' } as Record<string, string>,
+} as const;
+
+/**
+ * OTHER issues that are a gap in OUR master (2026-11-05, user: "if it is not in the masters keep it in review with proper
+ * errors; the masters team adds the data"): no rate after margin, no GST for our SKU. They are NOT accepted by a reviewer
+ * (a sale order needs our price and GST) and the re-check closes them once the master has the value (the PO then goes on
+ * by itself).
+ */
+export const MASTER_GAP_FIELDS: readonly string[] = [ISSUE_FIELDS.RATE, ISSUE_FIELDS.GST];
+
+/** Can a reviewer accept this issue with a remark? (type acceptable, and not a gap in our master) */
+export const isAcceptableIssue = (type: string, field: string | null | undefined): boolean =>
+  ACCEPTABLE_ISSUE_TYPES.includes(type as IssueType) && !(type === ISSUE_TYPE.OTHER && MASTER_GAP_FIELDS.includes(field ?? ''));
+/**
+ * Price check (2026-10-30): a total still off after the line choices is accepted ("go with the line total") only with a remark.
+ * Address Mismatch (2026-11-06): shipping from another warehouse than the PO is billed to changes the invoice: say why.
+ */
+export const REMARK_REQUIRED_ISSUE_TYPES: readonly IssueType[] = [ISSUE_TYPE.TOTAL_MISMATCH, ISSUE_TYPE.ADDRESS_MISMATCH];
 
 /** Rupee amounts are compared after rounding to paise, so 0.004 of float noise is never an issue. */
 export const round2 = (n: number): number => Math.round(n * 100) / 100;
@@ -215,8 +307,10 @@ const signed = (n: number): string => `${n > 0 ? '+' : ''}${rs(n)}`;
 
 /** Issue messages, by po_issues.issue_type. `where` is "PO" or "line <n> (<channel SKU code>)". */
 const ISSUE_MESSAGES = {
-  [ISSUE_TYPE.DUPLICATE_PO]: (channel: string, poNumber: string) =>
-    `PO ${poNumber} of ${channel} is already in master_purchase_orders`,
+  [ISSUE_TYPE.DUPLICATE_PO]: (channel: string, poNumber: string, copyOf?: string) =>
+    copyOf
+      ? `PO ${poNumber} of ${channel} is already in POST_FG as ${copyOf}: reject this copy (or open that one)`
+      : `PO ${poNumber} of ${channel} is already in master_purchase_orders`,
   [ISSUE_TYPE.LOCATION_NOT_MAPPED]: (detail: string) => `delivery location: ${detail}`,
   [ISSUE_TYPE.SKU_NOT_MAPPED]: (where: string, detail: string) => `${where}: ${detail}`,
   [ISSUE_TYPE.MRP_MISMATCH]: (where: string, po: number, ours: number, tolerance: number) =>
@@ -229,6 +323,8 @@ const ISSUE_MESSAGES = {
   [ISSUE_TYPE.PO_EXPIRED]: (expiry: string, today: string) => `PO expired on ${expiry} (today ${today})`,
   [ISSUE_TYPE.OCR_ISSUE]: (detail: string) => `OCR output incomplete: ${detail}`,
   [ISSUE_TYPE.OTHER]: (detail: string) => detail,
+  [ISSUE_TYPE.ADDRESS_MISMATCH]: (gstin: string, billedTo: string, location: string, mappedTo: string) =>
+    `Address Mismatch: the PO is billed to ${billedTo} (GSTIN ${gstin}) but location ${location} is mapped to ${mappedTo}`,
 } satisfies Partial<Record<IssueType, (...args: never[]) => string>>;
 
 type IssueMessages = typeof ISSUE_MESSAGES;
@@ -263,6 +359,8 @@ export const VALIDATION_TEXT = {
   NO_LOCATION_KEY: 'the PO has neither a delivery facility code nor a delivery pincode',
   LOCATION_NONE: (by: string) => `no details_channels row matches ${by}`,
   /** Appended to "pincode …" when the channel has locations without consignee_pin_code (their address is searched too). */
+  /** LOCATION_MATCH.ONLY: how the match is named in the messages. */
+  LOCATION_ONLY: "the channel's only location",
   LOCATION_BY_ADDRESS: ' (consignee_pin_code, else the pincode in the location address)',
   LOCATION_MANY: (by: string, n: number, codes: string) => `${n} details_channels rows match ${by} (${codes}); exactly one is needed`,
   LOCATION_INCOMPLETE: (code: string, missing: string) => `details_channels row "${code}" has no ${missing}`,
@@ -275,7 +373,7 @@ export const VALIDATION_TEXT = {
   SKU_NONE_PO_GIVES_PEP: (code: string, pepCode: string) =>
     `channel SKU code ${code} is not in master_channel_skus for this channel; the PO says it is our SKU ${pepCode} (in master_skus): add ${code} -> ${pepCode} with its rate to this channel's SKUs, then Re-check`,
   SKU_MANY: (code: string, pepCodes: string) => `channel SKU code ${code} maps to several of our SKUs (${pepCodes})`,
-  SKU_NO_RATE: (pepCode: string) => `our SKU ${pepCode} has no rate_after_margin in master_channel_skus`,
+  SKU_NO_RATE: (pepCode: string) => `no price in our master: our SKU ${pepCode} has no rate after margin for this channel (master_channel_skus); the masters team adds it, then the re-check completes this PO`,
   /** Switched off on the Masters page (2026-10-28): the PO line or location goes to review. */
   SKU_INACTIVE: (pepCode: string) => `our SKU ${pepCode} is inactive in the PEP SKU master (switch it on, or map the line to another SKU)`,
   FACILITY_INACTIVE: (code: string, facility: string) => `location "${code}" is served by warehouse ${facility}, which is inactive in the Warehouses master`,
@@ -290,4 +388,6 @@ export const VALIDATION_TEXT = {
   OCR_NO_LINES: 'no line items were read',
   /** po_issues.remark when a re-run no longer finds an open issue (e.g. the master data was fixed). */
   AUTO_CLOSED: 'no longer found by validation',
+  /** skipKnownPos (Purplle, 2026-11-06): every PO of the file was already in POST_FG, so none was taken again. */
+  ALL_POS_ALREADY_IN: (pos: string) => `every PO of this file is already in POST_FG, none was taken again: ${pos}`,
 };

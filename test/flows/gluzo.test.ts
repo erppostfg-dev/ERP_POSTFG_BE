@@ -127,3 +127,68 @@ describe('Manual Upload offers Gluzo', () => {
     expect([...s3Objects().keys()].some((k) => k.includes('manual-upload') && k.endsWith('.pdf'))).toBe(true);
   });
 });
+
+/*
+ * 2026-11-04: real OCR outputs whose line names changed (Downloads/Gluzo OCR Process Failed): before, qty / price were
+ * dropped and every line went to review. The handler now reads the values by shape and arithmetic.
+ */
+describe('Gluzo lines whatever the OCR named the columns (value checks)', () => {
+  it('1922973: Product Quantity / Base Price per Unit / Tax Amount / Total Item are read, no warning', async () => {
+    const l = (sku: string, ean: string, qty: string, base: string, tax: string, total: string) => ({
+      SKU: sku, Company: 'mCaffeine', 'Product Name': `p ${sku}`, 'Vendor SKU': sku, 'EAN/UPC': ean, 'Product Quantity': qty,
+      'Tax Rate': '18%', 'Tax Type': 'IGST-18%', 'Base Price per Unit': base, 'Tax Amount': tax, 'Total Item': total,
+    });
+    const po = await process({
+      header: { ...raw.header, 'PO Number': '1922973', 'Total Quantity': '54', 'Grand Total': '₹19368*' },
+      lines: [l('226740', '8906129575639', '6', '296.61', '53.39', '2,100.00'), l('226661', '8906129575349', '12', '329.66', '59.34', '4,668.00'),
+        l('226639', '8906129575929', '36', '296.61', '53.39', '12,600.00')],
+    });
+    expect(po.line_items.map((x) => [x.channel_sku_code, x.ean, x.qty, x.unit_cost, x.landing_rate, x.gst, x.line_total])).toEqual([
+      ['226740', '8906129575639', 6, 296.61, 350, 18, 2100], ['226661', '8906129575349', 12, 329.66, 389, 18, 4668],
+      ['226639', '8906129575929', 36, 296.61, 350, 18, 12600],
+    ]);
+    expect(po.warnings).toEqual([]);
+  });
+
+  it('2263773: SHIFTED names (Tax Code = 18%, Tax Rate = tax per unit, Product SKU = HSN, half EAN) -> right GST, price, HSN', async () => {
+    const l = (sku: string, hsn: string, qty: string, base: string, tax: string, total: string) => ({
+      SKU: sku, Company: 'mCaffeine', 'Product Name': `p ${sku}`, 'Vendor EAN/UPC': '89061295', 'Product SKU': hsn, Quantity: qty,
+      'Tax Code': '18%', 'Tax Type': 'IGST-18%', 'Base Price per Item': base, 'Tax Rate': tax, 'Unit Total': total,
+    });
+    const po = await process({
+      header: { ...raw.header, 'Total Quantity': '560', 'Grand Total': '₹213283.20*' },
+      lines: [l('226648', '33049190', '500', '329.85', '59.37', '194,610.00'), l('226676', '34013019', '60', '263.75', '47.47', '18,673.20')],
+    });
+    expect(po.line_items.map((x) => [x.channel_sku_code, x.ean, x.hsn, x.qty, x.unit_cost, x.landing_rate, x.gst, x.line_total])).toEqual([
+      ['226648', '', '33049190', 500, 329.85, 389.22, 18, 194610], ['226676', '', '34013019', 60, 263.75, 311.22, 18, 18673.2],
+    ]);
+    const fixes = po.warnings.filter((w) => w.code === 'LINE_VALUE_FIXED').map((w) => w.message);
+    expect(fixes).toEqual(expect.arrayContaining([expect.stringContaining('"Tax Rate" 59.37 is not a GST rate: 18%'), expect.stringContaining('"89061295" is not an EAN')]));
+    expect(po.warnings.filter((w) => w.code !== 'LINE_VALUE_FIXED')).toEqual([]);
+  });
+
+  it('price that does not add up -> price with tax = Unit Total / Quantity; missing qty -> Unit Total / price when whole', async () => {
+    const po = await process({
+      header: { ...raw.header, 'Total Quantity': '', 'Grand Total': '' },
+      lines: [
+        { SKU: '226648', Quantity: '500', 'Tax Rate': '18%', 'Base Price': '300', 'Tax per Item': '54', 'Unit Total': '194,610.00' },
+        { SKU: '226676', 'Tax Rate': '18%', 'Base Price': '263.75', 'Tax per Item': '47.47', 'Unit Total': '18,673.20' },
+      ],
+    });
+    expect(po.line_items.map((x) => [x.qty, x.unit_cost, x.landing_rate, x.line_total])).toEqual([[500, 329.85, 389.22, 194610], [60, 263.75, 311.22, 18673.2]]);
+    const fixes = po.warnings.filter((w) => w.code === 'LINE_VALUE_FIXED').map((w) => w.message);
+    expect(fixes).toEqual([expect.stringContaining('line 1: price Base 300 + Tax 54 = 354 does not give'), expect.stringContaining('line 2: qty not on the line')]);
+  });
+
+  it('as validated: the 1922973 names no longer give "no quantity" / "no unit price" issues', async () => {
+    await seedGluzo('110092');
+    const po = await process({
+      lines: [{ SKU: '226648', 'Product Name': 'x', 'Product Quantity': '500', 'Tax Rate': '18%', 'Base Price per Unit': '329.85', 'Tax Amount': '59.37', 'Total Item': '194,610.00' }],
+      header: { ...raw.header, 'Total Quantity': '500', 'Grand Total': '₹194610*' },
+    });
+    const v = await validate(po);
+    expect(v.issues.map((x) => x.type)).not.toContain('QTY_MISMATCH');
+    expect(v.issues.filter((x) => /unit price|quantity/i.test(x.message))).toEqual([]);
+    expect(v.lines.map((x) => [x.channelSkuCode, x.poUnitPrice])).toEqual([['226648', 389.22]]);
+  });
+});

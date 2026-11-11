@@ -17,6 +17,8 @@ export const PO_OVERVIEW_ROUTES = {
   /** Live updates: Server-Sent Events, and the "changes since" fallback the screen polls when SSE is down. */
   EVENTS: '/events',
   CHANGES: '/changes',
+  /** Uniware sale order status (2026-11-06): GET = last run, POST { uids? } = Sync now. */
+  UNIWARE_SYNC: '/uniware-sync',
 } as const;
 
 /*

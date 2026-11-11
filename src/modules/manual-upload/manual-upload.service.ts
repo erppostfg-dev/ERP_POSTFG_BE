@@ -4,10 +4,10 @@ import path from 'path';
 import { In, Not } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
 import { env } from '../../config/env';
-import { CHANNEL_MASTER_IDS, CHANNELS, ChannelName, ERROR_CODES, FILES, FLIPKART, MYNTRA_STR, SOURCE_SYSTEM, UPLOAD_STATUS, IST_OFFSET_MS, MANUAL_UPLOAD, MANUAL_UPLOAD_STATUS, ManualUploadStatus, PO_JOB_TYPE, PROVIDERS, RESULT_STATUS } from '../../constants';
+import { CHANNEL_MASTER_IDS, CHANNELS, ChannelName, COPY_ACTION, ERROR_CODES, errorMessage, FILES, FLIPKART, MYNTRA_STR, SOURCE_SYSTEM, UPLOAD_STATUS, IST_OFFSET_MS, MANUAL_UPLOAD, MANUAL_UPLOAD_STATUS, ManualUploadStatus, PO_JOB_TYPE, PROVIDERS, RESULT_STATUS } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
 import { ActivityLog, ChannelPullItem, ManualUpload, ManualUploadFile, MasterChannel, PoUpload } from '../../entities';
-import { appError } from '../../utils/AppError';
+import { AppError, appError } from '../../utils/AppError';
 import { logError } from '../../utils/classify-error';
 import { runJob } from '../../utils/log-call';
 import { log } from '../../utils/logger';
@@ -28,6 +28,7 @@ import { ChannelConfig, channelConfigs } from '../ocr/channels.config';
 import { extractPo } from '../ocr/extract-po.service';
 import { emailStored } from '../po-pipeline/pipeline.service';
 import { bumpReview } from '../po-review/po-review.live';
+import { findCopies, replaceOldCopies, REPLACES_KEY, UploadCopy } from './upload-copies';
 import { submitJob, usesSqs } from '../po-jobs/po-jobs.queue';
 
 /*
@@ -69,14 +70,15 @@ const sheetText = (c: ChannelConfig): string => {
 };
 /** The files one PO needs (an optional one, e.g. 1mg's PDF, is left out: optionalOf). */
 const needsOf = (c: ChannelConfig): string =>
-  [c.files.pdf && !c.optional?.includes('pdf') ? 'PDF' : '', !c.optional?.includes('sheet') ? sheetText(c) : ''].filter(Boolean).join(' + ');
+  [c.files.pdf && !c.optional?.includes('pdf') ? 'PDF' : '', !c.optional?.includes('sheet') ? sheetText(c) : ''].filter(Boolean).join(c.either ? ' or ' : ' + ');
 /** The file a PO may also have (same file name), e.g. "PDF" for Tata 1mg; "" when none. */
 const optionalOf = (c: ChannelConfig): string =>
   [c.files.pdf && c.optional?.includes('pdf') ? 'PDF' : '', c.files.sheet && c.optional?.includes('sheet') ? sheetText(c) : ''].filter(Boolean).join(' + ');
 
 /** How the channel normally sends POs (the Manual Upload list is grouped by it): api (Amazon), email; manual-only later. */
 export type UploadGroup = 'api' | 'email' | 'manual';
-export interface UploadChannel { channel: string; name: string; needs: string; twoFiles: boolean; group: UploadGroup; optional?: string; manyPos?: boolean }
+/** either: a PDF (one PO) or a sheet (it can hold many POs), each file on its own (Purplle, 2026-11-06). */
+export interface UploadChannel { channel: string; name: string; needs: string; twoFiles: boolean; group: UploadGroup; optional?: string; manyPos?: boolean; either?: boolean }
 
 /** Channels with a PO reader (channels.config) that are active in master_channels. */
 export const uploadChannels = async (): Promise<UploadChannel[]> => {
@@ -85,7 +87,10 @@ export const uploadChannels = async (): Promise<UploadChannel[]> => {
     .map((c): UploadChannel | null => {
       const m = masters.find((x) => x.id === masterIdOf(c.channel));
       return m
-        ? { channel: c.channel, name: m.displayName, needs: needsOf(c), twoFiles: !!(c.files.pdf && c.files.sheet) && !c.optional?.length, group: c.senders.length ? 'email' : 'manual', optional: optionalOf(c) || undefined, manyPos: c.manyPosPerFile || undefined }
+        ? {
+          channel: c.channel, name: m.displayName, needs: needsOf(c), twoFiles: !!(c.files.pdf && c.files.sheet) && !c.optional?.length && !c.either,
+          group: c.senders.length ? 'email' : 'manual', optional: optionalOf(c) || undefined, manyPos: c.manyPosPerFile || undefined, either: c.either || undefined,
+        }
         : null;
     })
     .filter((x): x is UploadChannel => x !== null)
@@ -119,6 +124,12 @@ const myntraMaster = (masters: MasterChannel[]): UploadChannel[] => {
  */
 const groupFiles = (c: ChannelConfig, files: UploadedFile[], channelName: string): UploadedFile[][] => {
   const { pdf, sheet } = c.files;
+  // PDF or sheet (Purplle): every file is read on its own (a PDF = one PO, a summary sheet = its POs).
+  if (c.either) {
+    const bad = files.filter((f) => !pdf?.test(f.originalname) && !sheet?.test(f.originalname));
+    if (bad.length) throw appError(ERROR_CODES.MANUAL_FILES_MISSING, channelName, needsOf(c), bad.map((f) => f.originalname).join(', '));
+    return files.map((f) => [f]);
+  }
   // A PDF + sheet channel whose PDF is optional (Tata 1mg): one PO per sheet, its PDF (same file name) added when there.
   if (pdf && sheet && c.optional?.includes('pdf')) {
     const pdfs = files.filter((f) => pdf.test(f.originalname));
@@ -153,7 +164,11 @@ const groupFiles = (c: ChannelConfig, files: UploadedFile[], channelName: string
 };
 
 /** Stores each PO's files like an email folder, copies it to S3 and adds it to the queue as "uploaded". */
-export const uploadFiles = async (channel: string, files: UploadedFile[], by: Actor): Promise<{ ids: string[] }> => {
+/**
+ * replace (2026-11-05): the person saw the copies of this PO already in POST_FG (MANUAL_ALREADY_IN) and chose Process
+ * again: the new upload remembers them and replaces them when it is processed (upload-copies.ts).
+ */
+export const uploadFiles = async (channel: string, files: UploadedFile[], by: Actor, opts: { replace?: boolean } = {}): Promise<{ ids: string[] }> => {
   if (channel === CHANNELS.AMAZON) return uploadAmazon(files, by);
   if (channel === CHANNELS.FLIPKART) return uploadFlipkart(files, by);
   if (channel === CHANNELS.MYNTRA) return uploadMyntra(files, by);
@@ -169,14 +184,28 @@ export const uploadFiles = async (channel: string, files: UploadedFile[], by: Ac
   const earlier = await repo().find({ where: { status: Not(MANUAL_UPLOAD_STATUS.CANCELLED) }, select: ['id', 'files'] });
   const seenIn = (hash: string) => earlier.find((e) => e.files.some((f) => f.sha1 === hash))?.id;
 
+  // The same PO already in POST_FG (same file, or its number in the file name): ask first (2026-11-05). Nothing is
+  // stored before the person decides; Process again (replace) is refused for a copy that cannot be replaced.
+  const metas = groups.map((group) => group.map((f): ManualUploadFile => ({ filename: safeName(f.originalname), size: f.buffer.length, sha1: sha1(f.buffer) })));
+  const copiesOf: UploadCopy[][] = [];
+  for (const meta of metas) copiesOf.push(await findCopies(channel as ChannelName, master.displayName, meta));
+  const all = copiesOf.flat();
+  if (all.length) {
+    const what = metas.flat().map((m) => m.filename).join(', ');
+    const blocked = all.find((c) => c.action === COPY_ACTION.BLOCKED);
+    if (blocked) throw new AppError(ERROR_CODES.MANUAL_ALREADY_BLOCKED, errorMessage(ERROR_CODES.MANUAL_ALREADY_BLOCKED, what, blocked.why ?? ''), { copies: all });
+    if (!opts.replace) throw new AppError(ERROR_CODES.MANUAL_ALREADY_IN, errorMessage(ERROR_CODES.MANUAL_ALREADY_IN, what), { copies: all });
+  }
+
   const ids: string[] = [];
-  for (const group of groups) {
-    const meta: ManualUploadFile[] = group.map((f) => ({ filename: safeName(f.originalname), size: f.buffer.length, sha1: sha1(f.buffer) }));
+  for (const [gi, group] of groups.entries()) {
+    const meta = metas[gi];
+    const replaces = copiesOf[gi].map((c) => c.uploadId).filter((x): x is string => !!x);
     const dup = meta.map((m) => seenIn(m.sha1)).find(Boolean);
     const now = new Date();
     const row = await repo().save(repo().create({
       channel, files: meta, folder: '', status: MANUAL_UPLOAD_STATUS.UPLOADED, uploadedBy: by.id, uploadedAt: now,
-      note: dup ? `Same file as manual upload #${dup}` : null,
+      note: replaces.length ? MANUAL_UPLOAD.REPLACES_NOTE(replaces) : dup ? `Same file as manual upload #${dup}` : null,
     }));
     const folder = path.resolve(env.storage.emailDir, MANUAL_UPLOAD.FOLDER, `${now.toISOString().slice(0, 10)}_${row.id}`);
     await fs.mkdir(folder, { recursive: true });
@@ -189,6 +218,7 @@ export const uploadFiles = async (channel: string, files: UploadedFile[], by: Ac
       receivedAt: now.toISOString(),
       files: meta.map((m) => ({ filename: m.filename, size: m.size })),
       storedAt: now.toISOString(),
+      ...(replaces.length ? { [REPLACES_KEY]: replaces } : {}),
     }, null, 2)}\n`);
     let s3Folder: string | null = null;
     try {
@@ -453,7 +483,9 @@ const processFlipkart = async (u: ManualUpload): Promise<string | null> => {
 const myntraTakenBy = async (str: string, exceptManualId?: string): Promise<string | null> => {
   const pulled = await AppDataSource.getRepository(ChannelPullItem).findOneBy({ sourceSystem: SOURCE_SYSTEM.MYNTRA_STR, externalId: str });
   const mine = !!exceptManualId && (pulled?.data as Partial<StrItemData> | undefined)?.manualUploadId === exceptManualId;
-  if (pulled && !mine) return `taken from an STR email (Channel Pulls > Myntra: ${pulled.status ?? 'waiting for the robot'})`;
+  // the robot gave up on it (2026-11-04, user): the team downloads it from the portal and uploads it here
+  const robotFailed = pulled?.status === MYNTRA_STR.STATUS.FAILED;
+  if (pulled && !mine && !robotFailed) return `taken from an STR email (Channel Pulls > Myntra: ${pulled.status ?? 'waiting for the robot'})`;
   const [po] = await AppDataSource.query<{ id: string | number; status: string; so: string | null }[]>(
     `SELECT u.id, u.status, m.orderNo1 so FROM po_uploads u LEFT JOIN master_purchase_orders m ON m.uid = u.po_uid
       WHERE u.source_system = ? AND u.external_id = ? AND u.status <> ? ORDER BY u.id DESC LIMIT 1`,
@@ -542,22 +574,26 @@ const processMyntra = async (u: ManualUpload): Promise<string | null> => {
   const where = await myntraTakenBy(ref.str, String(u.id));
   if (where) throw appError(ERROR_CODES.MANUAL_DUPLICATE, ref.str, where);
   const now = new Date();
+  const pulls = AppDataSource.getRepository(ChannelPullItem);
+  const was = await pulls.findOneBy({ sourceSystem: SOURCE_SYSTEM.MYNTRA_STR, externalId: ref.str });
+  // an STR the robot gave up on keeps its email, place and group; the manual upload now stands for it
+  const before = (was?.data ?? {}) as Partial<StrItemData>;
   const data: StrItemData = {
-    email: { folder: `manual upload #${u.id}`, subject: 'Manual Upload', receivedAt: now.toISOString() },
-    order: 1, group: '', priority: '', destination: ref.destination, runs: 0, lastError: null, summary, manualUploadId: String(u.id),
+    email: before.email ?? { folder: `manual upload #${u.id}`, subject: 'Manual Upload', receivedAt: now.toISOString() },
+    order: before.order ?? 1, group: before.group ?? '', priority: before.priority ?? '', destination: ref.destination,
+    runs: before.runs ?? 0, lastError: null, summary, manualUploadId: String(u.id),
     ...(u.s3Folder ? { s3Folder: u.s3Folder } : {}),
   };
-  const pulls = AppDataSource.getRepository(ChannelPullItem);
   const values = {
     status: MYNTRA_STR.STATUS.STORED, warehouse: ref.destination, createdOn: ref.date,
-    label: `${ref.str} · manual upload #${u.id} · ${ref.destination}`.slice(0, 300), data: { ...data }, takenAt: now,
+    label: `${ref.str} · ${[before.group, before.priority].filter(Boolean).join(' ') || 'manual upload'} · ${ref.destination} · manual upload #${u.id}`.slice(0, 300),
+    data: { ...data }, takenAt: now,
   };
-  const was = await pulls.findOneBy({ sourceSystem: SOURCE_SYSTEM.MYNTRA_STR, externalId: ref.str });
   // a retry finds its own row; an STR email taking the same STR meanwhile hits the unique key and is refused
   await pulls.save(was ? { ...was, ...values } : pulls.create({ sourceSystem: SOURCE_SYSTEM.MYNTRA_STR, externalId: ref.str, fetchedAt: now, ...values }));
 
   const po: ProcessedPo = {
-    ...strToProcessed({ ...ref, group: '', priority: '' }, csv).po,
+    ...strToProcessed({ ...ref, group: data.group, priority: data.priority }, csv).po,
     input_type: MYNTRA_STR.MANUAL_INPUT_TYPE,
     ref_file_urls: [s3UrlFor(u.folder, JSON.parse(await fs.readFile(path.join(u.folder, FILES.METADATA), 'utf8')), meta.sourceFile)],
   };
@@ -588,6 +624,8 @@ const runOne = async (u: ManualUpload): Promise<void> => {
       bumpReview();
       return;
     }
+    // Process again (2026-11-05): the old copies of this PO are rejected / dismissed first, so only this one is in review
+    await replaceOldCopies(u);
     const allowed = await emailStored(u.folder);
     if (!allowed) throw new Error(`PIPELINE_LIMIT ${env.pipeline.limit} reached: process it again after a restart`);
     const ocr = await extractPo(u.folder);

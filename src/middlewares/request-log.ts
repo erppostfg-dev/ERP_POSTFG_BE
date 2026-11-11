@@ -64,6 +64,8 @@ export const requestLog = (req: Request, res: Response, next: NextFunction): voi
     const fields = {
       method: req.method, path, status: res.statusCode, ms, userId,
       dbQueries: ctx.dbQueries, extCalls: ctx.extCalls, extMs: ctx.extMs, kb: Math.round(bytes / 1024),
+      ...(ctx.cacheHits || ctx.cacheMisses ? { cacheHits: ctx.cacheHits ?? 0, cacheMisses: ctx.cacheMisses ?? 0 } : {}),
+      ...(ctx.cacheShared ? { cacheShared: ctx.cacheShared } : {}),
       ...(res.locals.errorCode ? { errorCode: res.locals.errorCode, error: res.locals.errorMessage } : {}),
       ...(res.locals.failedAt ? { failedAt: res.locals.failedAt } : {}),
       ...(closedEarly && !stream ? { closedByClient: true } : {}),

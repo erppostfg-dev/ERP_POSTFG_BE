@@ -13,7 +13,7 @@ import { appError } from '../utils/AppError';
  * Myntra STRs (2026-11-03): its robot starts with the STR email (Run now = the waiting STRs again); no schedule (400),
  * no Process now yet (409: step 2).
  *   GET   /channel-pulls                     every channel: set up, PO intake ON / OFF, last process run, robot + schedule, counts
- *   GET   /channel-pulls/:key/items          the robot's recent fetches (newest first) with the PO each became
+ *   GET   /channel-pulls/:key/items          the robot's recent fetches (newest first) with the PO each became; ?status=failed|stored
  *   GET   /channel-pulls/:key/robot          the robot's last run with its log lines
  * Editor:
  *   POST  /channel-pulls/:key/robot          Run robot now (in the background; 202) - 409 running / login missing
@@ -35,7 +35,13 @@ router.get(CHANNEL_PULLS.ROUTES.LIST, ...viewer, async (_req, res, next) => {
 
 router.get(CHANNEL_PULLS.ROUTES.ITEMS, ...viewer, async (req, res, next) => {
   try {
-    res.json({ data: await listPullItems(String(req.params.key)) });
+    // ?status=failed: the STRs the robot gave up on (Myntra, 2026-11-04: the team downloads + uploads them by hand)
+    const raw = req.query[CHANNEL_PULLS.QUERY_STATUS];
+    const status = typeof raw === 'string' && raw ? raw : undefined;
+    if (status && !CHANNEL_PULLS.ITEM_STATUSES.includes(status)) {
+      throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails([{ field: CHANNEL_PULLS.QUERY_STATUS, code: ERROR_CODES.FIELD_NOT_ONE_OF, message: `status: one of ${CHANNEL_PULLS.ITEM_STATUSES.join(', ')}` }]);
+    }
+    res.json({ data: await listPullItems(String(req.params.key), status) });
   } catch (err) { next(err); }
 });
 

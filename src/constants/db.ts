@@ -5,15 +5,15 @@
  */
 
 /**
- * Databases the app may connect to. A temporary safety net: the current DB login can also reach other schemas
- * (prod, inv ...), so the connection is refused for any database not listed here.
- * When dedicated logins exist: add 'mcaff_postfg_prod' for production, or remove this check.
+ * Databases the app may connect to: our dev and prod databases (+ the test one). A safety net: the DB login can also reach
+ * other schemas (inv, prefg ...), so the connection is refused for any database not listed here. mcaff_postfg_prod added
+ * 2026-11-11 (first prod deploy, 326f9e6, was refused with DB_NOT_ALLOWED; PROD_CHECKLIST 2).
  * TEST_DATABASE is used only by `npm test` (user, 2026-10-25): the tests refuse any other database.
  */
 export const TEST_DATABASE = 'mcaff_postfg_test';
 /** Hosts the test database may be on (the laptop's local MySQL, the CI job's MySQL service). */
 export const TEST_DB_HOSTS: readonly string[] = ['127.0.0.1', 'localhost'];
-export const ALLOWED_DATABASES: readonly string[] = ['mcaff_postfg_dev', TEST_DATABASE];
+export const ALLOWED_DATABASES: readonly string[] = ['mcaff_postfg_dev', 'mcaff_postfg_prod', TEST_DATABASE];
 
 /**
  * PEPIMS's database: masters:load --pepims READS its master tables (inside START TRANSACTION READ ONLY, separate
@@ -84,6 +84,15 @@ export const TABLES = {
   FEEDBACK_MEMBERS: 'feedback_members',
   FEEDBACK_IMAGES: 'feedback_images',
   FEEDBACK_COMMENTS: 'feedback_comments',
+  // Feedback notifications (2026-11-06): the bell in the top bar (assigned, added, comment).
+  FEEDBACK_NOTIFICATIONS: 'feedback_notifications',
+  // Margin changes waiting for the two approvals (2026-11-06, constants/margin-approval.ts).
+  MARGIN_CHANGE_REQUESTS: 'margin_change_requests',
+  // Create in Uniware (2026-11-09, constants/uniware-create.ts): one row per request to create a PO's sale order.
+  UNIWARE_CREATES: 'uniware_creates',
+  // Notices (2026-11-10, constants/notices.ts): one-way notes in the bell, kept 2 days; seen = newest notice id per person.
+  NOTICES: 'notices',
+  NOTICE_SEEN: 'notice_seen',
   // Gmail intake (2026-10-29, constants/gmail-intake.ts): each labelled email's channel once read; catch-ups as rows.
   GMAIL_MESSAGES: 'gmail_messages',
   INTAKE_CATCHUPS: 'intake_catchups',
@@ -109,6 +118,10 @@ export const TABLES = {
   /** Mailing lists (2026-10-30; constants/mail-lists.ts): a mail switched on / off, and who gets each mail. */
   MAIL_LIST_SETTINGS: 'mail_list_settings',
   MAIL_RECIPIENTS: 'mail_recipients',
+  /** D2C internal transfers (2026-11-03; constants/d2c-transfers.ts): one row per Uniware invoice / package of a transfer. */
+  PO_INVOICES: 'po_invoices',
+  /** D2C internal transfers (2026-11-03): Uniware channel / customer / vendor codes per route (sending facility + transfer location). */
+  D2C_TRANSFER_ROUTES: 'd2c_transfer_routes',
 } as const;
 
 /** master_sku_components.stage: which split file a combo's parts come from (the report splits in two stages). */
@@ -182,6 +195,8 @@ export const ISSUE_TYPE = {
   TOTAL_MISMATCH: 'TOTAL_MISMATCH',
   PO_EXPIRED: 'PO_EXPIRED',
   OTHER: 'OTHER',
+  /** The PO is billed to one of our warehouses (its GSTIN) but its location is mapped to another (2026-11-06). */
+  ADDRESS_MISMATCH: 'ADDRESS_MISMATCH',
 } as const;
 export type IssueType = (typeof ISSUE_TYPE)[keyof typeof ISSUE_TYPE];
 
@@ -245,6 +260,27 @@ export const SHIPMENT_LOG_ACTION = {
   /** The sale order CSV was uploaded into Uniware (marked by a person; 2026-10-19), or that mark was removed. */
   UNIWARE_UPLOADED: 'uniware_uploaded',
   UNIWARE_UPLOAD_UNDONE: 'uniware_upload_undone',
+  /*
+   * D2C internal transfers (2026-11-03): written only for transfer rows (master_purchase_orders.transferCode NOT NULL);
+   * field edits of a draft reuse field_changed.
+   */
+  STAGE_CHANGED: 'stage_changed',
+  SO_REQUESTED: 'so_requested',
+  SO_CREATED: 'so_created',
+  SO_FAILED: 'so_failed',
+  STOCK_WARNING: 'stock_warning',
+  CANCELLED: 'cancelled',
+  BALANCE_CLOSED: 'balance_closed',
+  EXPIRY_CHANGED: 'expiry_changed',
+  LINE_ADDED: 'line_added',
+  LINE_REMOVED: 'line_removed',
+  INVOICE_SEEN: 'invoice_seen',
+  INWARD_PO_REQUESTED: 'inward_po_requested',
+  INWARD_PO_CREATED: 'inward_po_created',
+  INWARD_PO_FAILED: 'inward_po_failed',
+  GRN_RECEIVED: 'grn_received',
+  VARIANCE_REASON: 'variance_reason',
+  SYNC_ERROR: 'sync_error',
 } as const;
 export type ShipmentLogAction = (typeof SHIPMENT_LOG_ACTION)[keyof typeof SHIPMENT_LOG_ACTION];
 
@@ -255,6 +291,10 @@ export const SHIPMENT_LOG_SOURCE = {
   PIPELINE: 'pipeline',
   REVIEW: 'review',
   SCRIPT: 'script',
+  /** D2C internal transfers (2026-11-03): the tool called Uniware (TOOL · API), Uniware's own change (sync), the app itself. */
+  TOOL_API: 'tool_api',
+  UNIWARE: 'uniware',
+  SYSTEM: 'system',
 } as const;
 export type ShipmentLogSource = (typeof SHIPMENT_LOG_SOURCE)[keyof typeof SHIPMENT_LOG_SOURCE];
 
@@ -268,6 +308,8 @@ export const MASTER_LOG_TYPE = {
   CHANNEL: 'channel',
   LOCATION: 'location',
   FACILITY: 'facility',
+  /** D2C internal transfers (2026-11-03): a route of d2c_transfer_routes (Masters > Warehouses grid). */
+  TRANSFER_ROUTE: 'transfer_route',
 } as const;
 export type MasterLogType = (typeof MASTER_LOG_TYPE)[keyof typeof MASTER_LOG_TYPE];
 

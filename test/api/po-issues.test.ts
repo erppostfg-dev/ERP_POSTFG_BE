@@ -4,6 +4,7 @@ import { api, loginAs, type TestLogin } from '../helpers/auth';
 import { closeDb, resetDb } from '../helpers/db';
 import { bigBasketPo, seedMasters, type Masters } from '../helpers/fixtures';
 import { runPo } from '../helpers/po-flow';
+import { approveMargin } from '../helpers/margins';
 import { covers } from '../helpers/routes';
 
 /*
@@ -88,9 +89,11 @@ describe('shared answer and fresh downloads (2026-10-29: used by everyone; nobod
     await unmappedPo('IRA93100011', 'BB-NEW-2');
     const before = (await api().get(`${V}?days=30`).set('Cookie', admin.cookie)).body.data;
     expect(skuItem(before, 'BB-NEW-2')).toMatchObject({ state: 'open' });
-    await api().post('/api/v1/masters/channel-skus').set('Cookie', admin.cookie).send({
+    const asked = await api().post('/api/v1/masters/channel-skus').set('Cookie', admin.cookie).send({
       channelId: m.channelId, channelCode: 'BB-NEW-2', pepCode: m.pepCode, productName: 'x', brand: 'mCaffeine', mrp: 499, marginPercent: 30, rateAfterMargin: 349.3, eanCode: '8906000000017',
     }).expect(201);
+    // added once both margin approvals are given (2026-11-06)
+    await approveMargin(asked.body.data.requestId);
     const after = (await api().get(`${V}?days=30`).set('Cookie', admin.cookie)).body.data;
     expect(after.cached).toBe(false);
     expect(skuItem(after, 'BB-NEW-2')).toMatchObject({ state: 'fixed' });

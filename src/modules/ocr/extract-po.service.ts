@@ -4,12 +4,12 @@ import { env } from '../../config/env';
 import { detectChannel, emailInfo, StoredMetadata } from './channel-detector';
 import { ChannelConfig } from './channels.config';
 import { DownloadedLink, downloadLinkedFiles } from './link-downloader';
-import { runOcr } from './ocr-runner';
+import { OcrRunReport, runOcr } from './ocr-runner';
 import { readSheets } from './sheet-reader';
 import { submitJob, usesSqs } from '../po-jobs/po-jobs.queue';
 import { syncEmailToS3 } from '../email-intake/s3-mirror.service';
 import { ocrFinished, ocrStarted } from '../po-pipeline/pipeline.service';
-import { ErrorArgs, ErrorCode, ERROR_CODES, errorMessage, FILES, PO_JOB_TYPE, RESULT_STATUS, ResultStatus } from '../../constants';
+import { ErrorArgs, ErrorCode, ERROR_CODES, errorMessage, FILES, PO_JOB_TYPE, PROVIDERS, RESULT_STATUS, ResultStatus } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
 import { log } from '../../utils/logger';
 import { logError } from '../../utils/classify-error';
@@ -32,6 +32,8 @@ export interface ExtractResult {
   durationMs?: number;
   ocr?: Record<string, unknown>;
   logTail?: string;
+  /** stdout that was not the OCR's JSON (stray lines, or no JSON at all), for debugging (2026-11-05). */
+  stdoutTail?: string;
   /** Files downloaded from links in the email body (channels with `links`). */
   links?: DownloadedLink[];
   folder: string;
@@ -47,6 +49,13 @@ const why = <C extends ErrorCode>(code: C, ...args: ErrorArgs<C>): { code: C; re
 
 /** The attachments the channel's OCR needs (run_po.py tells the PDF and the sheet apart itself). */
 const pickFiles = (config: ChannelConfig, filenames: string[]): { files: string[] } | { code: ErrorCode; reason: string } => {
+  // `either` (Purplle, 2026-11-06): ONE file, the sheet when there (no model to pay), else the PDF
+  if (config.either) {
+    const { pdf, sheet } = config.files;
+    const file = (sheet && filenames.find((f) => sheet.test(f))) || (pdf && filenames.find((f) => pdf.test(f)));
+    if (file) return { files: [file] };
+    return why(ERROR_CODES.OCR_FILES_MISSING, config.channel, 'pdf or sheet', `${String(pdf)} or ${String(sheet)}`, filenames.join(', '));
+  }
   const picked: string[] = [];
   for (const kind of ['pdf', 'sheet'] as const) {
     const pattern = config.files[kind];
@@ -90,9 +99,11 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
 
   const filenames = (meta.files ?? []).map((f) => (typeof f === 'string' ? f : f.filename));
 
-  // 2. Channels that send links instead of attachments: download them into the folder first.
+  // 2. Channels that send links instead of attachments: download them into the folder first. A Manual Upload that
+  //    already holds the file the channel needs (Firstcry's .xls, 2026-11-04) has no email and no link: read it as it is.
   let links: DownloadedLink[] | undefined;
-  if (config.links) {
+  const uploadedByHand = meta.provider === PROVIDERS.MANUAL && !('reason' in pickFiles(config, filenames));
+  if (config.links && !uploadedByHand) {
     const dl = await step('download linked files', async () => downloadLinkedFiles(config, dir, await fs.readdir(dir)));
     links = dl.downloaded;
     for (const d of dl.downloaded) if (d.filename && !filenames.includes(d.filename)) filenames.push(d.filename);
@@ -114,7 +125,7 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
     await ocrStarted(dir);
     const t0 = Date.now();
     try {
-      const read = await step('read sheet (no OCR)', () => readSheets(dir, sheets, config.channel), { files: sheets.length });
+      const read = await step('read sheet (no OCR)', () => readSheets(dir, sheets, config.channel, { headerRow: config.sheetHeader }), { files: sheets.length });
       log.info(LOG_SOURCE.OCR, `[extractPo] ${config.channel}: sheet reader, no OCR: ${read.lines} line(s) from ${sheets.length} file(s) (${path.basename(dir)})`);
       return await save({
         status: RESULT_STATUS.OK,
@@ -151,7 +162,8 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
   // 5. Run the OCR (channel + files only). Its JSON (the extracted PO) is saved as the raw JSON, like the sheet reader's.
   log.info(LOG_SOURCE.OCR, `[extractPo] ${config.channel}: ${inputs.join(', ')} (${path.basename(dir)})`);
   await ocrStarted(dir);
-  const run = await step('run OCR', () => runOcr(config.ocrChannel, inputs), { channel: config.channel, files: inputs.length });
+  const run = await step('run OCR', () => runOcr(config.ocrChannel, inputs, { folder: path.basename(dir), channel: config.channel }), { channel: config.channel, files: inputs.length });
+  const report = run.result?.ocr_run as OcrRunReport | undefined;
 
   const ok = run.exitCode === 0 && !!run.result && !run.result.error;
   const ocrError = run.result?.error as string | undefined;
@@ -160,7 +172,8 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
     : run.timedOut
       ? why(ERROR_CODES.OCR_TIMED_OUT, env.ocr.timeoutMs)
       : ocrError
-        ? why(ERROR_CODES.OCR_FAILED, ocrError)
+        // the stage it failed at goes with the reason (Failed tab, po_uploads.error_details): where to look
+        ? why(ERROR_CODES.OCR_FAILED, report?.stage && report.stage !== 'done' ? `${ocrError} (OCR stage: ${report.stage})` : ocrError)
         : why(ERROR_CODES.OCR_EXITED, run.exitCode);
   const reason = failure?.reason;
   if (ok) await fs.writeFile(path.join(dir, FILES.OCR_RAW_JSON), JSON.stringify(run.result, null, 2), 'utf8');
@@ -179,8 +192,10 @@ export const extractPo = async (folder: string): Promise<ExtractResult> => {
     durationMs: run.durationMs,
     ocr: run.result,
     logTail: ok ? undefined : run.logTail,
+    stdoutTail: run.stdoutTail,
   });
-  log.info(LOG_SOURCE.OCR, `[extractPo] ${config.channel} ${result.status}${reason ? `: ${reason}` : ''} (${run.durationMs} ms)`);
+  const cost = report?.totals?.cost_usd;
+  log.info(LOG_SOURCE.OCR, `[extractPo] ${config.channel} ${result.status}${reason ? `: ${reason}` : ''} (${run.durationMs} ms${typeof cost === 'number' ? `, $${cost.toFixed(4)}` : ''})`);
   return result;
 };
 

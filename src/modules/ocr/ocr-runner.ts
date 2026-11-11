@@ -13,7 +13,83 @@ export interface OcrRun {
   /** Last part of what the OCR wrote to stderr (normally nothing: run_po.py runs quiet), for debugging. */
   logTail: string;
   durationMs: number;
+  /** stdout that was NOT the JSON (stray lines before it, or no JSON at all): its last part, for debugging. */
+  stdoutTail?: string;
 }
+
+/** Who the run is for, only for the log lines (the PO folder and the channel). */
+export interface OcrRunContext {
+  folder?: string;
+  channel?: string;
+}
+
+/** What run_po.py reports about the run (ocr_run, 2026-11-05): where it got to, the page decisions, every paid call. */
+export interface OcrRunReport {
+  stage?: string;
+  notes?: { pages?: { page: number; blank: boolean; usable: boolean; reason: string }[]; header_pages?: number[]; tables_source?: string; header_mode?: string };
+  calls?: { label: string; model: string; input_tokens: number; output_tokens: number; cost_usd: number }[];
+  totals?: { model_calls: number; input_tokens: number; output_tokens: number; textract_pages: number; model_cost_usd: number; textract_cost_usd: number; cost_usd: number };
+  duration_ms?: number;
+  log?: string[];
+}
+
+/** Lines of the OCR's own progress log put on a failure line (the end shows the path taken and the error). */
+const FAILURE_LOG_LINES = 25;
+
+/**
+ * run_po.py's JSON from its stdout (2026-11-05): the whole output, else the LAST line that is a JSON object (a stray
+ * line before it, e.g. a background job printing late, used to make the whole run unreadable: "OCR exited with code 1"
+ * and no reason). stray = the rest, kept for debugging.
+ */
+export const parseOcrStdout = (text: string): { result?: Record<string, unknown>; stray?: string } => {
+  const trimmed = text.trim();
+  if (!trimmed) return {};
+  try {
+    return { result: JSON.parse(trimmed) as Record<string, unknown> };
+  } catch {
+    const lines = trimmed.split(/\r?\n/);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (!line.startsWith('{')) continue;
+      try {
+        return { result: JSON.parse(line) as Record<string, unknown>, stray: lines.filter((_, j) => j !== i).join('\n').slice(-LOG_TAIL_CHARS) };
+      } catch {
+        // not this line
+      }
+    }
+    return { stray: trimmed.slice(-LOG_TAIL_CHARS) };
+  }
+};
+
+/** The facts of one OCR run for its log lines: path, pages, tokens and cost (USD, as AWS bills). */
+export interface OcrRunFacts {
+  stage?: string; pages?: number; blankPages?: string; unusablePages?: string; headerPages?: string; tablesSource?: string; headerMode?: string;
+  model?: string; modelCalls?: number; modelIn?: number; modelOut?: number; textractPages?: number;
+  modelCostUsd?: number; textractCostUsd?: number; costUsd?: number;
+}
+export const ocrRunFacts = (report: OcrRunReport | undefined): OcrRunFacts => {
+  if (!report) return {};
+  const t = report.totals;
+  const n = report.notes ?? {};
+  return {
+    stage: report.stage,
+    pages: n.pages?.length,
+    blankPages: n.pages?.filter((p) => p.blank).map((p) => p.page).join(',') || undefined,
+    unusablePages: n.pages?.filter((p) => !p.usable).map((p) => `${p.page}: ${p.reason}`).join('; ') || undefined,
+    headerPages: n.header_pages?.join(','),
+    tablesSource: n.tables_source,
+    headerMode: n.header_mode,
+    model: report.calls?.[0]?.model,
+    modelCalls: t?.model_calls,
+    // model tokens in / out (field names without "token": the logger masks those as secrets)
+    modelIn: t?.input_tokens,
+    modelOut: t?.output_tokens,
+    textractPages: t?.textract_pages,
+    modelCostUsd: t?.model_cost_usd,
+    textractCostUsd: t?.textract_cost_usd,
+    costUsd: t?.cost_usd,
+  };
+};
 
 const LOG_TAIL_CHARS = 8000;
 /** Most of the OCR's stdout kept (the PO as JSON); anything over it is dropped and the JSON fails to parse. */
@@ -23,7 +99,7 @@ const MAX_OUTPUT_BYTES = 50 * 1024 * 1024;
  * Runs `python run_po.py <ocrChannel> <files...>` (local paths or s3:// URIs). The script writes nothing to disk and
  * prints nothing but the extracted PO as JSON on stdout, which is read here in memory (never logged).
  */
-export const runOcr = (ocrChannel: string, files: string[]): Promise<OcrRun> =>
+export const runOcr = (ocrChannel: string, files: string[], context: OcrRunContext = {}): Promise<OcrRun> =>
   new Promise((resolve) => {
     const started = Date.now();
     const script = path.resolve(env.ocr.script);
@@ -58,26 +134,33 @@ export const runOcr = (ocrChannel: string, files: string[]): Promise<OcrRun> =>
 
     const finish = (exitCode: number | null): void => {
       clearTimeout(timer);
-      const text = Buffer.concat(out).toString('utf8').trim();
-      let result: Record<string, unknown> | undefined;
-      if (text) {
-        try {
-          result = JSON.parse(text) as Record<string, unknown>;
-        } catch {
-          // leave result empty; the run then fails with its exit code
-        }
-      }
+      const { result, stray } = parseOcrStdout(Buffer.concat(out).toString('utf8'));
       const durationMs = Date.now() - started;
-      // OCR_TIMEOUT / OCR_NOT_INSTALLED / OCR_FAILED with the OCR's error (or stderr); OCR_CALL / OCR_SLOW when ok.
-      const facts = { op: 'run_po.py', channel: ocrChannel, files: files.length, ms: durationMs, exitCode };
-      const tail = (typeof result?.error === 'string' ? result.error : log).slice(-1500);
-      if (timedOut) logFailure(LOG_SOURCE.OCR, 'TIMEOUT', `OCR stopped after ${Math.round(durationMs / 1000)} s`, { ...facts, limitMs: env.ocr.timeoutMs, logTail: tail });
-      else if (exitCode === null) logFailure(LOG_SOURCE.OCR, 'NOT_INSTALLED', 'OCR could not start', { ...facts, pythonBin: env.ocr.pythonBin, logTail: tail });
-      else if (exitCode !== 0) logFailure(LOG_SOURCE.OCR, 'FAILED', `OCR ended with exit code ${exitCode}`, { ...facts, logTail: tail });
-      else if (env.log.extSlowMs > 0 && durationMs > Math.max(env.log.extSlowMs, env.ocr.timeoutMs / 2)) {
-        writeLog('warn', LOG_SOURCE.OCR, 'OCR_SLOW', `OCR took ${Math.round(durationMs / 1000)} s (over half of OCR_TIMEOUT_MS)`, facts);
-      } else writeLog('info', LOG_SOURCE.OCR, 'OCR_CALL', `OCR done in ${Math.round(durationMs / 1000)} s`, facts);
-      resolve({ exitCode, result, timedOut, logTail: log.slice(-LOG_TAIL_CHARS), durationMs });
+      const report = result?.ocr_run as OcrRunReport | undefined;
+      const facts = { op: 'run_po.py', ocrChannel, channel: context.channel, folder: context.folder, files: files.map((f) => path.basename(f)).join(', '), ms: durationMs, exitCode };
+      const costFacts = ocrRunFacts(report);
+      // OCR_COST (2026-11-05): one line per run, ok or not (a failed run may have paid model calls), to sum the spend
+      // in CloudWatch by day / channel (LOGGING.md). A run with no report (killed, old script) logs costUsd unknown.
+      writeLog('info', LOG_SOURCE.OCR, 'OCR_COST', `OCR run ${exitCode === 0 ? 'ok' : 'failed'}: $${typeof costFacts.costUsd === 'number' ? costFacts.costUsd.toFixed(4) : '?'} (${costFacts.modelCalls ?? '?'} model call(s), ${costFacts.textractPages ?? 0} Textract page(s))`, {
+        ...facts, ok: exitCode === 0 && !result?.error, ...costFacts,
+      });
+      // OCR_TIMEOUT / OCR_NOT_INSTALLED / OCR_FAILED: the OCR's error with its type, AWS code, the stage it failed at,
+      // the page decisions and the last lines of its own log; OCR_CALL / OCR_SLOW when ok.
+      const ocrLog = report?.log?.slice(-FAILURE_LOG_LINES).join('\n');
+      const failure = {
+        ...facts, ...costFacts,
+        error: typeof result?.error === 'string' ? result.error.slice(-1500) : undefined,
+        errorType: result?.error_type, errorCode: result?.error_code,
+        logTail: (ocrLog || stray || log || '(no output)').slice(-3000),
+      };
+      if (timedOut) logFailure(LOG_SOURCE.OCR, 'TIMEOUT', `OCR stopped after ${Math.round(durationMs / 1000)} s`, { ...failure, limitMs: env.ocr.timeoutMs });
+      else if (exitCode === null) logFailure(LOG_SOURCE.OCR, 'NOT_INSTALLED', 'OCR could not start', { ...failure, pythonBin: env.ocr.pythonBin });
+      else if (exitCode !== 0 || result?.error) {
+        logFailure(LOG_SOURCE.OCR, 'FAILED', `OCR failed${report?.stage ? ` at "${report.stage}"` : ''}: ${typeof result?.error === 'string' ? result.error.slice(0, 300) : `exit code ${exitCode}, no readable output`}`, failure);
+      } else if (env.log.extSlowMs > 0 && durationMs > Math.max(env.log.extSlowMs, env.ocr.timeoutMs / 2)) {
+        writeLog('warn', LOG_SOURCE.OCR, 'OCR_SLOW', `OCR took ${Math.round(durationMs / 1000)} s (over half of OCR_TIMEOUT_MS)`, { ...facts, ...costFacts });
+      } else writeLog('info', LOG_SOURCE.OCR, 'OCR_CALL', `OCR done in ${Math.round(durationMs / 1000)} s`, { ...facts, ...costFacts });
+      resolve({ exitCode, result, timedOut, logTail: log.slice(-LOG_TAIL_CHARS), durationMs, ...(stray ? { stdoutTail: stray } : {}) });
     };
 
     child.on('error', (err) => {

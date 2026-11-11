@@ -1,7 +1,9 @@
 import { NextFunction, Request, Response, Router } from 'express';
-import { ACCESS_LEVEL, ERROR_CODES, MASTER_LOG_TYPE, MASTER_ROUTES, MasterLogType, PAGE } from '../constants';
+import { ACCESS_LEVEL, CACHE_NS, ERROR_CODES, MASTER_LOG_TYPE, MASTER_ROUTES, MasterLogType, PAGE } from '../constants';
 import { USER_ADMIN_ROLES } from '../constants/users';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
+import { cached } from '../modules/cache/cache.service';
+import { forgetMasters } from '../modules/masters/masters.cache';
 import { addChannel, addChannelLocation, addChannelSku, addPepSku, formOptions } from '../modules/masters/master-add.service';
 import { isMasterLogType, recentChanges, rowHistory } from '../modules/masters/master-history.service';
 import { editRow, setActive } from '../modules/masters/master-edit.service';
@@ -10,6 +12,10 @@ import { listChannelCustomers } from '../modules/masters/channel-customers.servi
 import { listChannelSkus } from '../modules/masters/channel-skus.service';
 import { listPepSkus } from '../modules/masters/pep-skus.service';
 import { listChannelWarehouses, listPepWarehouses } from '../modules/masters/warehouses.service';
+import { editTransferRoute, listTransferRoutes } from '../modules/masters/transfer-routes.service';
+import { env } from '../config/env';
+import { readSettings } from '../modules/d2c-transfers/settings';
+import { testCodesOf } from '../modules/d2c-transfers/test-mode';
 
 /*
  * Masters routes: ALL master-data endpoints live here, one block per screen, each guarded by its own page key.
@@ -21,6 +27,7 @@ import { listChannelWarehouses, listPepWarehouses } from '../modules/masters/war
  *                                    facilities (from details_channels). Viewer on /masters/channel-customers.
  *   GET /masters/warehouses/pep       our facilities, built from details_channels.facility_code (no warehouse table).
  *                                    Viewer on /masters/warehouses.
+ *                                    Each row has allowInternalTransfer (D2C transfers, 2026-11-03; edited as Yes / No).
  *   GET /masters/channel-locations   every channel delivery location (details_channels). Viewer on /masters/channel-locations
  *                                    (Channel Location Master, 2026-10-16; was /masters/warehouses/channel).
  * All: { data: Item[], meta: { total } }.
@@ -52,6 +59,16 @@ import { listChannelWarehouses, listPepWarehouses } from '../modules/masters/war
  *                                    the Add rules), 404 MASTER_ROW_NOT_FOUND, 409 MASTER_EDIT_CONFLICT [{ field, now }]
  *   POST  /masters/active/:type/:id  { active: boolean, remark? } -> { active, changed }
  *   Re-checks the POs in review afterwards (that channel; every channel for a PEP SKU / warehouse).
+ *
+ * D2C internal transfer routes (2026-11-03; d2c_transfer_routes, loaded by npm run d2c:routes-load):
+ *   GET   /masters/transfer-routes      every route (sender, channel, location, receiving facility, PO prefix, Uniware
+ *                                       channel / customer / vendor codes, active, missingVendor / missingCustomer /
+ *                                       missingChannel). Viewer on /masters/warehouses. { data: TransferRouteItem[], meta: { total, testOnly, testFacilities } }
+ *   PATCH /masters/transfer-routes/:id  { changes: { uniwareChannelCode?, customerCode?, vendorCode?, isActive? }, original?,
+ *                                       remark? } -> { changed: string[] }; admin / developer; logged (history type
+ *                                       transfer_route); 400 / 404 / 409 as the edit above. The location's PO prefix and
+ *                                       receiving facility: PATCH /masters/edit/location/:locationId (transferPoPrefix,
+ *                                       transferFacilityId).
  */
 
 const router = Router();
@@ -64,12 +81,13 @@ const requireMasterAdmin = (req: Request, _res: Response, next: NextFunction) =>
   next();
 };
 const actor = (req: Request) => ({ id: req.auth!.user.id, email: req.auth!.user.email });
+// every write drops the cached Masters lists before it answers (the screen reloads right after; 2026-11-10)
 const created = (fn: (req: Request) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => {
-  fn(req).then((data) => res.status(201).json({ data })).catch(next);
+  fn(req).then(async (data) => { await forgetMasters(); res.status(201).json({ data }); }).catch(next);
 };
 
 router.get(MASTER_ROUTES.FORM_OPTIONS, requireAuth, requireMasterAdmin, (_req, res, next) => {
-  formOptions().then((data) => res.json({ data })).catch(next);
+  cached(CACHE_NS.MASTERS, 'form-options', formOptions).then((data) => res.json({ data })).catch(next);
 });
 router.post(MASTER_ROUTES.PEP_SKUS, requireAuth, requireMasterAdmin, created((req) => addPepSku(req.body, actor(req))));
 router.post(MASTER_ROUTES.CHANNEL_SKUS, requireAuth, requireMasterAdmin, created((req) => addChannelSku(req.body, actor(req))));
@@ -78,7 +96,7 @@ router.post(MASTER_ROUTES.CHANNEL_LOCATIONS, requireAuth, requireMasterAdmin, cr
 
 // ---- Edit + switch on / off (2026-10-28) -------------------------------------
 const ok = (fn: (req: Request) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => {
-  fn(req).then((data) => res.json({ data })).catch(next);
+  fn(req).then(async (data) => { await forgetMasters(); res.json({ data }); }).catch(next);
 };
 router.patch(MASTER_ROUTES.EDIT, requireAuth, requireMasterAdmin, ok((req) => editRow(req.params.type, req.params.id, req.body, actor(req))));
 router.post(MASTER_ROUTES.ACTIVE, requireAuth, requireMasterAdmin, ok((req) => setActive(req.params.type, req.params.id, req.body, actor(req))));
@@ -91,6 +109,7 @@ const HISTORY_PAGE: Record<MasterLogType, string> = {
   [MASTER_LOG_TYPE.CHANNEL]: PAGE.CHANNEL_CUSTOMERS,
   [MASTER_LOG_TYPE.LOCATION]: PAGE.CHANNEL_LOCATIONS,
   [MASTER_LOG_TYPE.FACILITY]: PAGE.WAREHOUSES,
+  [MASTER_LOG_TYPE.TRANSFER_ROUTE]: PAGE.WAREHOUSES,
 };
 router.get(MASTER_ROUTES.HISTORY, requireAuth, (req, res, next) => {
   const type = req.params.type;
@@ -108,7 +127,7 @@ router.get(MASTER_ROUTES.CHANGES, requireAuth, requirePage(PAGE.MASTERS, ACCESS_
 // ---- PEP SKU master ---------------------------------------------------------
 router.get(MASTER_ROUTES.PEP_SKUS, requireAuth, requirePage(PAGE.PEP_SKUS, ACCESS_LEVEL.VIEWER), async (_req, res, next) => {
   try {
-    const items = await listPepSkus();
+    const items = await cached(CACHE_NS.MASTERS, 'pep-skus', listPepSkus);
     res.json({ data: items, meta: { total: items.length } });
   } catch (err) {
     next(err);
@@ -118,7 +137,7 @@ router.get(MASTER_ROUTES.PEP_SKUS, requireAuth, requirePage(PAGE.PEP_SKUS, ACCES
 // ---- Channel SKU master -----------------------------------------------------
 router.get(MASTER_ROUTES.CHANNEL_SKUS, requireAuth, requirePage(PAGE.CHANNEL_SKUS, ACCESS_LEVEL.VIEWER), async (_req, res, next) => {
   try {
-    const items = await listChannelSkus();
+    const items = await cached(CACHE_NS.MASTERS, 'channel-skus', listChannelSkus);
     res.json({ data: items, meta: { total: items.length } });
   } catch (err) {
     next(err);
@@ -128,7 +147,7 @@ router.get(MASTER_ROUTES.CHANNEL_SKUS, requireAuth, requirePage(PAGE.CHANNEL_SKU
 // ---- Channel / Customer master ----------------------------------------------
 router.get(MASTER_ROUTES.CHANNEL_CUSTOMERS, requireAuth, requirePage(PAGE.CHANNEL_CUSTOMERS, ACCESS_LEVEL.VIEWER), async (_req, res, next) => {
   try {
-    const items = await listChannelCustomers();
+    const items = await cached(CACHE_NS.MASTERS, 'channel-customers', listChannelCustomers);
     res.json({ data: items, meta: { total: items.length } });
   } catch (err) {
     next(err);
@@ -138,7 +157,7 @@ router.get(MASTER_ROUTES.CHANNEL_CUSTOMERS, requireAuth, requirePage(PAGE.CHANNE
 // ---- Warehouses (PEP facilities + channel locations) -------------------------
 router.get(MASTER_ROUTES.PEP_WAREHOUSES, requireAuth, requirePage(PAGE.WAREHOUSES, ACCESS_LEVEL.VIEWER), async (_req, res, next) => {
   try {
-    const items = await listPepWarehouses();
+    const items = await cached(CACHE_NS.MASTERS, 'pep-warehouses', listPepWarehouses);
     res.json({ data: items, meta: { total: items.length } });
   } catch (err) {
     next(err);
@@ -147,11 +166,23 @@ router.get(MASTER_ROUTES.PEP_WAREHOUSES, requireAuth, requirePage(PAGE.WAREHOUSE
 
 router.get(MASTER_ROUTES.CHANNEL_LOCATIONS, requireAuth, requirePage(PAGE.CHANNEL_LOCATIONS, ACCESS_LEVEL.VIEWER), async (_req, res, next) => {
   try {
-    const items = await listChannelWarehouses();
+    const items = await cached(CACHE_NS.MASTERS, 'channel-locations', listChannelWarehouses);
     res.json({ data: items, meta: { total: items.length } });
   } catch (err) {
     next(err);
   }
 });
+
+// ---- D2C internal transfer routes (2026-11-03) ---------------------------------
+router.get(MASTER_ROUTES.TRANSFER_ROUTES, requireAuth, requirePage(PAGE.WAREHOUSES, ACCESS_LEVEL.VIEWER), async (_req, res, next) => {
+  try {
+    const items = await listTransferRoutes();
+    // testOnly: local D2C test mode (env.d2c.testOnly), the tab shows a "TEST_FACILITY only" banner
+    res.json({ data: items, meta: { total: items.length, testOnly: env.d2c.testOnly, testFacilities: env.d2c.testOnly ? testCodesOf(await readSettings()) : [] } });
+  } catch (err) {
+    next(err);
+  }
+});
+router.patch(MASTER_ROUTES.TRANSFER_ROUTE, requireAuth, requireMasterAdmin, ok((req) => editTransferRoute(req.params.id, req.body, actor(req))));
 
 export default router;

@@ -33,13 +33,14 @@ export const LOG_SOURCE = {
   OCR: 'ocr', // the Python OCR run as a child process
   PROCESS: 'process', // the Node.js process itself: memory, event loop, crashes, start / stop
   APP: 'app', // our own business steps (pipeline, review, intake) that are not a call to another service
+  CACHE: 'cache', // the shared cache: AWS ElastiCache (Redis / Valkey) or server memory, 2026-11-10
 } as const;
 export type LogSource = (typeof LOG_SOURCE)[keyof typeof LOG_SOURCE];
 
 /** Code prefix of each source. */
 export const LOG_SOURCE_PREFIX: Record<LogSource, string> = {
   api: 'API', db: 'DB', s3: 'S3', sqs: 'SQS', gmail: 'GMAIL', pubsub: 'PUBSUB', google_login: 'GOOGLE_LOGIN', mail: 'MAIL',
-  amazon: 'AMAZON', http: 'HTTP', ocr: 'OCR', process: 'PROCESS', app: 'APP',
+  amazon: 'AMAZON', http: 'HTTP', ocr: 'OCR', process: 'PROCESS', app: 'APP', cache: 'CACHE',
 };
 
 /**
@@ -124,9 +125,16 @@ export const FIXES: Partial<Record<LogSource, Partial<Record<FailureKind, string
     NOT_FOUND: 'The link in the email expired or is wrong; the PO goes to review.',
     UNREACHABLE: 'The portal of the link is down or blocked from this machine.',
   },
+  cache: {
+    UNREACHABLE: 'Answers come from the DB (server memory cache) meanwhile and Redis reconnects by itself. Check REDIS_URL (host / port), that ElastiCache is in the same VPC, and that its security group lets the EC2 security group in on 6379.',
+    BAD_CREDENTIALS: 'REDIS_PASSWORD (ElastiCache AUTH token) or REDIS_USERNAME is wrong (never print them).',
+    TIMEOUT: 'Redis did not answer within 500 ms: memory is used meanwhile. With in-transit encryption ON the URL must start with rediss:// (or REDIS_TLS=true).',
+    CONFIG: 'REDIS_URL is not a redis:// or rediss:// address; ElastiCache Serverless / cluster mode needs REDIS_CLUSTER=true.',
+    ERROR: 'See `error`; the cache is skipped for this call, the request still answers from the DB.',
+  },
   ocr: {
     NOT_INSTALLED: 'Check PYTHON_BIN (e.g. .venv-ocr/Scripts/python.exe) and OCR_SCRIPT in .env.',
-    FAILED: 'See `logTail` for the Python error; the PO stays queued for the next run.',
+    FAILED: 'See `error`, `errorCode`, `stage` and `logTail` (the last lines of the OCR log) on this line; the PO waits in Failed for Try again.',
     TIMEOUT: 'The OCR took longer than OCR_TIMEOUT_MS; a large file, or the OCR API is slow.',
   },
 };
@@ -184,6 +192,14 @@ export const LOG_EVENTS = {
   PROCESS_MEMORY_HIGH: { level: 'warn', reason: 'Process memory (RSS) is above MEMORY_WARN_MB: a large file or list held in memory, or a leak if it keeps growing.' },
   PROCESS_UNHANDLED_REJECTION: { level: 'error', reason: 'A promise failed and nothing handled it: a missing catch. The process exits and pm2 restarts it.' },
   PROCESS_UNCAUGHT_EXCEPTION: { level: 'error', reason: 'An error was thrown that nothing caught. The process exits and pm2 restarts it.' },
+  // --- the shared cache (modules/cache, 2026-11-10): one line per change of state, never one per request ---
+  CACHE_START: { level: 'info', reason: 'The cache started: where answers are kept (redis / memory / off), host, TLS, key prefix, life in seconds.' },
+  CACHE_CONNECTED: { level: 'info', reason: 'Connected to Redis (ElastiCache) for the first time since the start.' },
+  CACHE_DOWN: { level: 'warn', reason: 'Redis stopped answering (or never connected): every answer comes from server memory / the DB until it is back. `fix` says what to check.' },
+  CACHE_STILL_DOWN: { level: 'warn', reason: 'Redis is still not answering (repeated every 5 minutes while down, with the number of errors).' },
+  CACHE_UP: { level: 'info', reason: 'Redis answers again after an outage; every cached answer was dropped once (writes made meanwhile could not reach it).' },
+  CACHE_STATS: { level: 'info', reason: 'Summary since the last one: answers from the cache vs loaded, per kind, Redis speed and errors, calls served from memory while Redis was down.' },
+  CACHE_TOO_BIG: { level: 'warn', reason: 'An answer is bigger than CACHE VALUE_MAX_KB, so it is not cached and is loaded from the DB every time: page or shrink it.' },
   // --- our app ---
   APP_INFO: { level: 'info', reason: 'A step of our own app.' },
   APP_WARN: { level: 'warn', reason: 'Something in our own app needs attention but the work went on.' },

@@ -8,7 +8,7 @@ import { inputBlob, reportBlob, reportSheetBlob, runFileBlob, StoredBlob } from 
 import { sendTable } from '../modules/intransit/table-response';
 import { getDay, masterHistory, removeDaily, restoreVersion, saveInput } from '../modules/intransit/inputs.service';
 import { addToSplit1, ComboRows, finalSkuListings, mapVariants, split1Parents, VariantMap } from '../modules/intransit/split1.service';
-import { deleteRun, getRun, getRunLog, latestInventory, listRuns, Requester, RunView, startConnector, startReport } from '../modules/intransit/runs.service';
+import { answerRunIssues, continueRun, deleteRun, getRun, getRunLog, latestInventory, listRuns, Requester, RunView, startConnector, startReport, stopRun } from '../modules/intransit/runs.service';
 import { listPeriods } from '../modules/intransit/s3/periods';
 import { retryStorage, storageStatus } from '../modules/intransit/s3/status';
 import { storageOn } from '../modules/intransit/s3/scope';
@@ -52,6 +52,16 @@ import { createGunzip, createGzip } from 'zlib';
  *                                          nobody on the list is active
  *   GET    /intransit/runs/:id/report      the workbook (xlsx); 409 unless the run succeeded
  *   DELETE /intransit/runs/:id             204; 409 while queued/running
+ *   POST   /intransit/runs/:id/stop        editor; stop a queued / running build or fetch (2026-11-02): queued -> stopped at
+ *                                          once, running -> stopped within seconds (not once it is saving its files). A
+ *                                          build waiting for that fetch stops too. 409 when it has already ended
+ *   POST   /intransit/runs/:id/issues      editor; { answers: [{ kind, sku?, channel?, code?, action, location? }] } for every
+ *                                          issue a build waits on (options.pause.items, step awaiting-answers): action
+ *                                          consider | not-consider (sku / code), add-split1 | map (combo), map (final-sku),
+ *                                          set-location (location), or ignore (this build only); fixes are saved to the
+ *                                          masters, then the build carries on: { data: { fixed, ignored } }. Live server only
+ *   POST   /intransit/runs/:id/continue    editor; a build waiting for a failed fetch's files uploaded by hand (step
+ *                                          awaiting-upload) goes on with the earlier copies
  *   POST   /intransit/connectors/:source   amazon | uniware | flipkart, body { date?, only?: string | string[], refreshCache? }
  *                                          -> 202 the queued fetch; its good files become the inputs of that day. A past
  *                                          day fetches only what can be fetched for any day (400 when nothing is left).
@@ -353,6 +363,30 @@ router.get(INTRANSIT_ROUTES.RUN_LOG, ...viewer, async (req, res, next) => {
 router.get(INTRANSIT_ROUTES.RUN_REPORT, ...viewer, async (req, res, next) => {
   try {
     await sendDownload(req, res, next, await reportBlob(req.params.id));
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post(INTRANSIT_ROUTES.RUN_STOP, ...editor, async (req, res, next) => {
+  try {
+    res.json({ data: await stopRun(req.params.id, who(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post(INTRANSIT_ROUTES.RUN_ISSUES, ...editor, async (req, res, next) => {
+  try {
+    res.json({ data: await answerRunIssues(req.params.id, (req.body ?? {}).answers, who(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post(INTRANSIT_ROUTES.RUN_CONTINUE, ...editor, async (req, res, next) => {
+  try {
+    res.json({ data: await continueRun(req.params.id, who(req)) });
   } catch (err) {
     next(err);
   }

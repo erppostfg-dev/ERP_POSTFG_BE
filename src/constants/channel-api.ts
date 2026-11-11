@@ -135,8 +135,11 @@ export const FLIPKART = {
   },
   /** A consignment whose status matches this never becomes a PO. */
   SKIP_STATUS: /CANCEL/i,
-  /** Minutes between the connector's looks at the fetched consignments (cheap: the DB only), FLIPKART_POLL_MINUTES overrides. */
-  POLL_MINUTES: 15,
+  /**
+   * Minutes between the connector's looks at the fetched consignments, FLIPKART_POLL_MINUTES overrides. Load (2026-11-04):
+   * a robot run that stored consignments processes them at once, so this is only a safety net (was 15).
+   */
+  POLL_MINUTES: 360,
   /** A robot run at most this long (one browser job; then it is stopped and failed). */
   ROBOT_TIMEOUT_MS: 30 * 60_000,
   /** File names kept in the consignment's folder (and S3). */
@@ -201,6 +204,7 @@ export const MYNTRA_STR = {
   ROBOT_JOB: 'myntra-strs',
   /** Step 2 (2026-11-03): stored STRs become POs (the shared runner: PO intake, never twice, validation, sale order). */
   PROCESSING: true,
+  /** The connector's safety-net look (each robot run that stores STRs processes them at once). */
   /**
    * Myntra's destination -> our Myntra location (user's sheet "myntra location", 3 Nov; Myntra = channel id 5, never
    * Myntra-OR). Matched by the CSV's Destination WH name, else the STR code's destination. The warehouse comes from that
@@ -216,7 +220,7 @@ export const MYNTRA_STR = {
   ],
   /** The STR CSV's prices, kept on the PO as information only (user: our margin makes the price; MRP is checked). */
   PRICE_COLUMNS: { LIST: 'List Price', LANDED: 'Landed Price' },
-  POLL_MINUTES: 60,
+  POLL_MINUTES: 360,
   /** channel_pull_items.status. */
   STATUS: { WAITING: null, STORED: 'stored', FAILED: 'failed' },
   /** The STR CSV's columns (by name; IGST or SGST + CGST by the destination's state). */
@@ -257,4 +261,11 @@ export const CHANNEL_PULLS = {
   POLL_KEY: (key: string) => `channel-pull:${key}:poll`,
   /** Recent consignments listed on the page. */
   ITEMS_MAX: 200,
+  /** Load (2026-11-04): a browser robot waits this long after the last worker job ended (ROBOT_GAP_SECONDS overrides). */
+  ROBOT_GAP_MS: 2 * 60_000,
+  /** ?status=failed (the failed-STR list): every one up to this many. */
+  FAILED_MAX: 2000,
+  QUERY_STATUS: 'status',
+  /** The statuses the items list may be filtered by. */
+  ITEM_STATUSES: ['stored', 'failed'] as readonly string[],
 } as const;

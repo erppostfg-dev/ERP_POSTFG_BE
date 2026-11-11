@@ -169,7 +169,7 @@
       "count": 1
     },
     "@typescript-eslint/no-unnecessary-type-assertion": {
-      "count": 2
+      "count": 1
     }
   },
   "src/modules/po-pipeline/po-save.service.ts": {
@@ -263,11 +263,6 @@
   "src/routes/approvals.routes.ts": {
     "@typescript-eslint/no-unnecessary-type-assertion": {
       "count": 2
-    }
-  },
-  "src/routes/manual-upload.routes.ts": {
-    "@typescript-eslint/no-base-to-string": {
-      "count": 1
     }
   },
   "src/routes/po-intake-control.routes.ts": {

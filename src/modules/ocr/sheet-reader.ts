@@ -2,13 +2,17 @@ import fs from 'fs/promises';
 import path from 'path';
 import { FILES } from '../../constants';
 import { parseCsv } from '../po-processing/common/raw-reader';
+import { excelRows } from './excel-rows';
 
 /*
  * Sheet reader (2026-10-26): for channels whose attachment already IS the PO as a table (channels.config
- * reader: 'sheet'; first Tata 1mg). No OCR: every CSV is read as it is and written as the raw JSON
+ * reader: 'sheet'; first Tata 1mg). No OCR: every sheet is read as it is and written as the raw JSON
  * (FILES.OCR_RAW_JSON, the OCR team's shape: header {}, line_items [{ column: value }]), so the channel's handler and
- * the rest of the chain run exactly as after an OCR run. Several CSVs (one per PO) go into one list; the handler
- * splits them by its PO column. CSV only for now; an Excel channel would add a reader here.
+ * the rest of the chain run exactly as after an OCR run. Several sheets (one per PO) go into one list; the handler
+ * splits them by its PO column.
+ * Excel too (2026-11-05, Noble Chemist's .xls): read through ocr-service sheet_rows.py (excel-rows.ts, no model call).
+ * headerRow: the row holding the column names when it is not the first (the rows above -> header "Line 1", "Line 2" ...).
+ * Blank rows between the lines are skipped.
  */
 
 export interface SheetReadResult {
@@ -17,22 +21,39 @@ export interface SheetReadResult {
   columns: string[];
 }
 
-const SHEET_EXT = /\.csv$/i;
+const CSV_EXT = /\.csv$/i;
+const EXCEL_EXT = /\.(xls|xlsx)$/i;
 
-export const readSheets = async (dir: string, files: string[], channel: string): Promise<SheetReadResult> => {
-  const notCsv = files.filter((f) => !SHEET_EXT.test(f));
-  if (notCsv.length) throw new Error(`the sheet reader reads CSV only; got ${notCsv.join(', ')}`);
+const rowsOf = async (dir: string, file: string): Promise<string[][]> =>
+  CSV_EXT.test(file)
+    ? parseCsv((await fs.readFile(path.join(dir, file), 'utf8')).replace(/^﻿/, ''))
+    : excelRows(path.join(dir, file));
+
+export const readSheets = async (dir: string, files: string[], channel: string, opts: { headerRow?: RegExp } = {}): Promise<SheetReadResult> => {
+  const unknown = files.filter((f) => !CSV_EXT.test(f) && !EXCEL_EXT.test(f));
+  if (unknown.length) throw new Error(`the sheet reader reads CSV and Excel only; got ${unknown.join(', ')}`);
   if (!files.length) throw new Error('no sheet to read');
 
   const lines: Record<string, string>[] = [];
   const columns: string[] = [];
+  const header: Record<string, string> = {};
   for (const file of files) {
-    const rows = parseCsv((await fs.readFile(path.join(dir, file), 'utf8')).replace(/^﻿/, ''));
-    const header = (rows[0] ?? []).map((h) => h.trim());
-    for (const h of header) if (h && !columns.includes(h)) columns.push(h);
-    for (const row of rows.slice(1)) {
+    const rows = await rowsOf(dir, file);
+    let at = 0;
+    if (opts.headerRow) {
+      at = rows.findIndex((r) => opts.headerRow!.test(r.join(' ')));
+      if (at < 0) throw new Error(`${file}: no row with the column names (${String(opts.headerRow)})`);
+      // the title rows above the column names (order no, date, buyer ...): kept for the handler, first file wins
+      rows.slice(0, at).forEach((r, i) => {
+        const text = r.map((c) => c.trim()).filter(Boolean).join(' ');
+        if (text && header[`Line ${i + 1}`] === undefined) header[`Line ${i + 1}`] = text;
+      });
+    }
+    const names = (rows[at] ?? []).map((h) => h.trim());
+    for (const h of names) if (h && !columns.includes(h)) columns.push(h);
+    for (const row of rows.slice(at + 1)) {
       if (row.every((c) => c.trim() === '')) continue;
-      lines.push(Object.fromEntries(header.map((h, i) => [h, (row[i] ?? '').trim()]).filter(([h]) => h)));
+      lines.push(Object.fromEntries(names.map((h, i) => [h, (row[i] ?? '').trim()]).filter(([h]) => h)));
     }
   }
 
@@ -43,7 +64,7 @@ export const readSheets = async (dir: string, files: string[], channel: string):
     sheet: files[0],
     sheets: files,
     reader: 'sheet',
-    header: {},
+    header,
     totals: {},
     line_item_columns: columns,
     line_items: lines,

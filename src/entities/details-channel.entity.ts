@@ -108,6 +108,17 @@ export class DetailsChannel {
   @Column({ name: 'city', type: 'varchar', length: 255, nullable: true })
   city: string | null;
 
+  /**
+   * D2C internal transfers (2026-11-03): the RECEIVING facility of a transfer location (one row per transfer channel +
+   * receiving facility). Not facility_id, which means "warehouse that ships to this location"; null on every other row.
+   */
+  @Column({ name: 'transfer_facility_id', type: 'int', nullable: true })
+  transferFacilityId: number | null;
+
+  /** D2C internal transfers (2026-11-03): PO number prefix of a transfer location (PEPIMS's, e.g. HYP_Nagpur); null on every other row. */
+  @Column({ name: 'transfer_po_prefix', type: 'varchar', length: 100, nullable: true })
+  transferPoPrefix: string | null;
+
   @Column({ name: 'final_shipping_address_embedding', type: 'json', nullable: true })
   finalShippingAddressEmbedding: unknown;
 
@@ -128,4 +139,9 @@ export class DetailsChannel {
   @ManyToOne(() => MasterFacility, { nullable: true, onDelete: 'RESTRICT', onUpdate: 'CASCADE' })
   @JoinColumn({ name: 'facility_id', referencedColumnName: 'id', foreignKeyConstraintName: 'fk_details_channels_facility' })
   facility: MasterFacility | null;
+
+  /** fk_details_channels_transfer_facility: a receiving facility in use cannot be deleted. */
+  @ManyToOne(() => MasterFacility, { nullable: true, onDelete: 'RESTRICT', onUpdate: 'CASCADE' })
+  @JoinColumn({ name: 'transfer_facility_id', referencedColumnName: 'id', foreignKeyConstraintName: 'fk_details_channels_transfer_facility' })
+  transferFacility: MasterFacility | null;
 }
