@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { api, loginAs, type TestLogin } from '../helpers/auth';
 import { closeDb, count, insert, resetDb, rows } from '../helpers/db';
+import { s3Objects } from '../helpers/fake-s3';
 import { covers } from '../helpers/routes';
 
 /*
@@ -12,7 +13,8 @@ covers(['GET /bulk-orders', 'POST /bulk-orders', 'GET /bulk-orders/skus', 'GET /
   'PUT /bulk-orders/:id', 'POST /bulk-orders/:id/cancel', 'POST /bulk-orders/:id/approve', 'POST /bulk-orders/:id/reject',
   'GET /po-review/bulk-orders', 'GET /po-review/bulk-orders/:id',
   'POST /bulk-orders/:id/documents', 'GET /bulk-orders/:id/documents/:docId', 'POST /bulk-orders/:id/payment', 'GET /bulk-orders/settings',
-  'PUT /bulk-orders/settings/:type', 'POST /po-review/bulk-orders/:id/documents', 'GET /po-review/bulk-orders/:id/documents/:docId']);
+  'PUT /bulk-orders/settings/:type', 'POST /po-review/bulk-orders/:id/documents', 'GET /po-review/bulk-orders/:id/documents/:docId',
+  'GET /po-review/bulk-orders/:id/process-options', 'POST /po-review/bulk-orders/:id/process']);
 
 const V = '/api/v1/bulk-orders';
 const YEAR = new Date(Date.now() + 5.5 * 3600_000).getUTCFullYear();
@@ -25,12 +27,17 @@ let approver: TestLogin;
 let opsExec: TestLogin;
 let skuA: number;
 
-const order = (over: Record<string, unknown> = {}) => ({
-  type: 'marketing', orderedBy: 'Brand team', receiverName: 'Ravi Kumar', receiverPhone: '+91 98765-43210',
-  address: ADDRESS, neededBy: TOMORROW, mode: 'Courier', priority: 'Standard',
-  lines: [{ pepCode: 'SKU_A', qty: 10, discountPct: 30 }, { pepCode: 'SKU_B', qty: 3, discountPct: 12.5 }],
-  ...over,
-});
+/** Institutional requester details (required since 2026-11-12); added to every Institutional order of the tests. */
+const INSTITUTION = { institutionName: 'Sunrise Public School', gstin: '27AAACS1234A1Z5', contactEmail: 'office@sunrise.example', billingSameAsDelivery: true };
+const order = (over: Record<string, unknown> = {}) => {
+  const o: Record<string, unknown> = {
+    type: 'marketing', orderedBy: 'Brand team', receiverName: 'Ravi Kumar', receiverPhone: '+91 98765-43210',
+    address: ADDRESS, neededBy: TOMORROW, mode: 'Courier', priority: 'Standard',
+    lines: [{ pepCode: 'SKU_A', qty: 10, discountPct: 30 }, { pepCode: 'SKU_B', qty: 3, discountPct: 12.5 }],
+    ...over,
+  };
+  return o.type === 'institutional' ? { ...INSTITUTION, ...o } : o;
+};
 const create = (who: TestLogin, body: Record<string, unknown>) => api().post(V).set('Cookie', who.cookie).send(body);
 const fields = (res: { body: { error: { details: { field: string }[] } } }) => res.body.error.details.map((d) => d.field);
 
@@ -407,5 +414,117 @@ describe('bulk orders: payment check + documents + settings (2026-11-12)', () =>
     expect(list[0].payment.status).toBe('awaiting_proof');
     await up(inst, i.id, 'invoice', PDF, 'p.pdf', T).expect(403);
     await api().get(`${T}/${i.id}/documents/${d.documents[0].id}`).set('Cookie', inst.cookie).expect(403);
+  });
+});
+
+describe('bulk orders step 3b: Institutional requester details + our team creates the sale order (2026-11-12)', () => {
+  const T = '/api/v1/po-review/bulk-orders';
+  const WH = 'MUM_WAREHOUSE2';
+  const SALE = { facilityCode: WH, uniwareChannel: 'INSTITUTIONAL_B2B', customerCode: 'CUST_SUNRISE_01' };
+  const approve = (id: string) => api().post(`${V}/${id}/approve`).set('Cookie', approver.cookie).send({}).expect(200);
+  const processIt = (who: TestLogin, id: string, body: Record<string, unknown> = SALE) => api().post(`${T}/${id}/process`).set('Cookie', who.cookie).send(body);
+  const approvedInst = async (over: Record<string, unknown> = {}) => {
+    const i = (await create(inst, order({ type: 'institutional', ...over })).expect(201)).body.data as { id: string; poNumber: string };
+    await approve(i.id);
+    return i;
+  };
+
+  beforeEach(async () => {
+    const main = await insert('master_facilities', { code: WH, name: 'Bhiwandi', entity: 'PEP', state: 'Maharashtra', is_active: 1, source: 'manual', uniware_export: 0 });
+    await insert('master_facilities', { code: 'MUM_Warehouse2', name: 'Bhiwandi child', parent_facility_id: main, entity: 'PEP', state: 'Maharashtra', is_active: 1, source: 'manual', uniware_export: 0 });
+    await insert('master_facilities', { code: 'OLD_WH', name: 'Closed', entity: 'PEP', state: 'Maharashtra', is_active: 0, source: 'manual', uniware_export: 0 });
+  });
+
+  it('Institutional orders need the institution name + billing address (or same as delivery); GSTIN / email checked when given', async () => {
+    const bare = { ...order({ type: 'institutional' }), institutionName: undefined, billingSameAsDelivery: undefined, gstin: 'NOT-A-GSTIN', contactEmail: 'nope' };
+    expect(fields(await create(inst, bare).expect(400))).toEqual(expect.arrayContaining(['billingAddress', 'billingAddress.line', 'contactEmail', 'gstin', 'institutionName']));
+    const same = (await create(inst, order({ type: 'institutional', gstin: '27aaacs1234a1z5' })).expect(201)).body.data;
+    expect(same.institution).toEqual({ name: 'Sunrise Public School', gstin: '27AAACS1234A1Z5', email: 'office@sunrise.example', billingAddress: ADDRESS });
+    const billing = { line: 'Accounts, 4 Hill Rd', city: 'Pune', state: 'Maharashtra', pincode: '411001' };
+    const own = (await create(inst, order({ type: 'institutional', gstin: '', billingSameAsDelivery: false, billingAddress: billing })).expect(201)).body.data;
+    expect(own.institution).toMatchObject({ gstin: null, billingAddress: billing });
+    expect((await create(mkt, order()).expect(201)).body.data.institution).toBeNull(); // Marketing: none asked
+  });
+
+  it('only PO review editors process, only approved Institutional orders, with an active warehouse + channel + customer code', async () => {
+    const pending = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
+    expect((await processIt(opsExec, pending.id).expect(409)).body.error.code).toBe('BULK_ORDER_NOT_APPROVED');
+    const i = await approvedInst();
+    const viewer = await loginAs('viewer');
+    await processIt(viewer, i.id).expect(403);
+    await api().get(`${T}/${i.id}/process-options`).set('Cookie', viewer.cookie).expect(403);
+    for (const portal of [inst, approver]) await processIt(portal, i.id).expect(403);
+    expect(fields(await processIt(opsExec, i.id, {}).expect(400)).sort()).toEqual(['customerCode', 'facilityCode', 'uniwareChannel']);
+    expect(fields(await processIt(opsExec, i.id, { ...SALE, facilityCode: 'OLD_WH' }).expect(400))).toEqual(['facilityCode']);
+    expect(fields(await processIt(opsExec, i.id, { ...SALE, facilityCode: 'mum_warehouse2' }).expect(400))).toEqual(['facilityCode']); // case = another warehouse
+    const m = (await create(mkt, order()).expect(201)).body.data;
+    await approve(m.id);
+    expect((await processIt(opsExec, m.id).expect(409)).body.error.code).toBe('BULK_PROCESS_TYPE_LATER');
+    const opts = (await api().get(`${T}/${i.id}/process-options`).set('Cookie', opsExec.cookie).expect(200)).body.data;
+    expect(opts).toEqual({ facilities: [{ code: WH, name: 'Bhiwandi', parentCode: null }, { code: 'MUM_Warehouse2', name: 'Bhiwandi child', parentCode: WH }], customers: [] }); // child under its main
+    expect(await count('master_purchase_orders')).toBe(0);
+  });
+
+  it('process = a normal saved PO: erp_ sale order, PO rows, CSV at the approved price, Processed tab (no Verify), payment never blocks', async () => {
+    const i = await approvedInst();
+    const done = (await processIt(opsExec, i.id).expect(200)).body.data;
+    expect(done).toMatchObject({ status: 'processing', payment: { status: 'awaiting_proof' }, saleOrder: { ...SALE, by: { id: opsExec.userId } } });
+    const code = done.saleOrder.code as string;
+    expect(code).toMatch(/^erp_\d{11}$/);
+    expect(done.events.map((e: { action: string }) => e.action)).toEqual(['created', 'approved', 'processed']);
+
+    const [po] = await rows<{ uid: string; channel: string; facility: string; customerCode: string; orderNo1: string; poNumber: string; location: string | null }>(
+      'SELECT uid, channel, facility, customerCode, orderNo1, poNumber, location FROM master_purchase_orders');
+    expect(po).toMatchObject({ channel: 'Bulk Institutional', facility: WH, customerCode: SALE.customerCode, orderNo1: code, poNumber: i.poNumber, location: null });
+    const lines = await rows<{ skuCode: string; qty: number; poValue: string }>('SELECT skuCode, qty, poValue FROM details_purchase_orders WHERE shipmentOrderId = ? ORDER BY id', [po.uid]);
+    expect(lines.map((l) => [l.skuCode, l.qty, Number(l.poValue)])).toEqual([['SKU_A', 10, 700], ['SKU_B', 3, 916.14]]);
+
+    const [up] = await rows<{ id: string; source: string; status: string; channel: string; external_id: string }>('SELECT id, source, status, channel, external_id FROM po_uploads');
+    expect(up).toMatchObject({ source: 'bulk', status: 'completed', channel: 'Bulk Institutional', external_id: i.poNumber });
+    const csvs = [...s3Objects(`bulk-orders/${i.poNumber}/sale-order-1/`).entries()].filter(([k]) => k.endsWith('.csv'));
+    expect(csvs).toHaveLength(1);
+    const csv = csvs[0][1];
+    expect(csv).toContain(`${code},${i.poNumber},0,INSTITUTIONAL_B2B,SKU_A,STD,SKU_A,SKU_A,70.00,FALSE,10,CUST_SUNRISE_01,${WH},`);
+    expect(csv).toContain(',305.38,FALSE,3,');
+
+    // Processed tab + CSV unlocked at once (no Verify step for bulk orders)
+    const processed = (await api().get('/api/v1/po-review?status=completed').set('Cookie', opsExec.cookie).expect(200)).body.data as { uploadId?: string; id?: string }[];
+    expect(processed.map((p) => String(p.uploadId ?? p.id))).toContain(String(up.id));
+    await api().get(`/api/v1/po-review/${up.id}/uniware-csv`).set('Cookie', opsExec.cookie).expect(200);
+    expect((await api().get(`/api/v1/po-verify?uploadIds=${up.id}`).set('Cookie', opsExec.cookie).expect(200)).body.data.items[0].state).not.toBe('to_verify');
+
+    expect((await processIt(opsExec, i.id).expect(409)).body.error.code).toBe('BULK_ORDER_NOT_APPROVED'); // never twice
+    expect(await count('master_purchase_orders')).toBe(1);
+  });
+
+  it('customer book: the next order of the same GSTIN (or name + pincode) gets the channel + code suggested; one row, used twice', async () => {
+    const a = await approvedInst();
+    await processIt(opsExec, a.id).expect(200);
+    const b = await approvedInst({ receiverName: 'Asha' });
+    const opts = (await api().get(`${T}/${b.id}/process-options`).set('Cookie', opsExec.cookie).expect(200)).body.data;
+    expect(opts.customers).toEqual([expect.objectContaining({ name: 'Sunrise Public School', uniwareChannel: 'INSTITUTIONAL_B2B', customerCode: 'CUST_SUNRISE_01', usedCount: 1, matchedBy: 'gstin' })]);
+    const c = await approvedInst({ gstin: '', institutionName: 'sunrise public school.' });
+    expect((await api().get(`${T}/${c.id}/process-options`).set('Cookie', opsExec.cookie).expect(200)).body.data.customers[0].matchedBy).toBe('name');
+    await processIt(opsExec, b.id, { ...SALE, customerCode: 'CUST_SUNRISE_02' }).expect(200);
+    const book = await rows<{ used_count: number; customer_code: string }>('SELECT used_count, customer_code FROM bulk_customers');
+    expect(book).toEqual([{ used_count: 2, customer_code: 'CUST_SUNRISE_02' }]);
+  });
+
+  it('send back (optional, Verify panel) cancels that sale order and puts the order back to approved; it is processed again, never reopened', async () => {
+    const i = await approvedInst();
+    await processIt(opsExec, i.id).expect(200);
+    const [up] = await rows<{ id: string }>('SELECT id FROM po_uploads');
+    await api().post(`/api/v1/po-verify/${up.id}/send-back`).set('Cookie', opsExec.cookie).send({ remark: 'wrong warehouse' }).expect(200);
+    const back = (await api().get(`${T}/${i.id}`).set('Cookie', opsExec.cookie).expect(200)).body.data;
+    expect(back).toMatchObject({ status: 'approved', saleOrder: null });
+    expect(back.events.at(-1)).toMatchObject({ action: 'sent_back', note: 'wrong warehouse' });
+    expect((await rows<{ statusActive: string }>('SELECT statusActive FROM master_purchase_orders'))[0].statusActive).toBe('Inactive');
+    expect((await rows<{ status: string }>('SELECT status FROM po_uploads'))[0].status).toBe('rejected');
+    expect((await api().post(`/api/v1/po-review/${up.id}/reopen`).set('Cookie', opsExec.cookie).send({ remark: 'x' }).expect(409)).body.error.code).toBe('BULK_UPLOAD_NOT_REOPENABLE');
+
+    const again = (await processIt(opsExec, i.id).expect(200)).body.data;
+    expect(again.status).toBe('processing');
+    expect((await rows<{ external_id: string }>('SELECT external_id FROM po_uploads ORDER BY id')).map((r) => r.external_id)).toEqual([i.poNumber, `${i.poNumber}-2`]);
+    expect([...s3Objects(`bulk-orders/${i.poNumber}/sale-order-2/`).keys()].some((k) => k.endsWith('order.json'))).toBe(true);
   });
 });

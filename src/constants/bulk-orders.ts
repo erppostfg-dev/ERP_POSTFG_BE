@@ -54,6 +54,8 @@ export const BULK_ORDER_STATUS = {
   APPROVED: 'approved',
   REJECTED: 'rejected',
   CANCELLED: 'cancelled',
+  /** Step 3b (2026-11-12): our team created its sale order in POST_FG (PO rows + erp_ code + Uniware CSV). */
+  PROCESSING: 'processing',
 } as const;
 export type BulkOrderStatus = (typeof BULK_ORDER_STATUS)[keyof typeof BULK_ORDER_STATUS];
 export const BULK_ORDER_STATUSES = Object.values(BULK_ORDER_STATUS) as BulkOrderStatus[];
@@ -69,6 +71,10 @@ export const BULK_EVENT = {
   DOCUMENT_ADDED: 'document_added',
   /** The payment check changed (changes: { status: [old, new] }). */
   PAYMENT: 'payment',
+  /** Our team created the sale order (changes: { saleOrderCode, facilityCode, uniwareChannel, customerCode, uploadId }). */
+  PROCESSED: 'processed',
+  /** The Verify step sent the sale order back (cancelled, kept): the order is approved again, to be processed again. */
+  SENT_BACK: 'sent_back',
 } as const;
 export type BulkEventAction = (typeof BULK_EVENT)[keyof typeof BULK_EVENT];
 
@@ -163,10 +169,63 @@ export const BULK_ORDERS = {
   SERIAL_DIGITS: 4,
 } as const;
 
-/** Our team's read-only view in PO Processing & Review > Bulk Orders (step 3a; PO review page access). */
+/** Our team's view in PO Processing & Review > Bulk Orders (step 3a read; 3b process = PO review EDITOR). */
 export const BULK_ORDERS_TEAM = {
   BASE: '/po-review/bulk-orders',
-  ROUTES: { LIST: '/', ONE: '/:id', DOCUMENTS: '/:id/documents', DOCUMENT: '/:id/documents/:docId' },
+  ROUTES: {
+    LIST: '/', ONE: '/:id', DOCUMENTS: '/:id/documents', DOCUMENT: '/:id/documents/:docId',
+    PROCESS_OPTIONS: '/:id/process-options', PROCESS: '/:id/process',
+  },
+} as const;
+
+/**
+ * Step 3b, processing an approved order into a sale order (user 2026-11-12). Institutional first, Marketing next.
+ *   - Our team member types the warehouse (facility), the Uniware channel and the Uniware customer code (both change
+ *     often: he creates the customer in Uniware himself and types the code; POST_FG never creates customers).
+ *   - Customer book (bulk_customers): every processed order saves / updates its customer (the requester's institution
+ *     name, GSTIN, billing address + the typed channel / code); a later order with the same GSTIN, or the same name +
+ *     billing pincode, gets them suggested.
+ *   - The sale order is a normal saved PO: master / details_purchase_orders + erp_ code + Uniware CSV (Selling Price =
+ *     the approved price, MRP less discount %, with GST) + a po_uploads row (source bulk) -> Processed tab, Uniware
+ *     hand-off, PO Overview. NO Verify step (user: typed by hand, no OCR): the CSV is unlocked at once. Payment never
+ *     blocks it (user).
+ *   - The (optional) Verify panel's "Send back" undoes a wrong one: that sale order cancelled (kept, Inactive), the order
+ *     approved again.
+ */
+export const BULK_SALE = {
+  /** Order types our team can process now (Marketing next, user). */
+  TYPES: [BULK_ORDER_TYPE.INSTITUTIONAL] as BulkOrderType[],
+  /** po_uploads.source_system; external_id = the saved PO's number (SALE_PO). */
+  SOURCE_SYSTEM: 'bulk_orders',
+  /**
+   * The saved PO's number of the n-th sale order of an order: INST-2026-0001, then INST-2026-0001-2 after a send back
+   * (the cancelled one stays, and channel + PO number is unique on master_purchase_orders).
+   */
+  SALE_PO: (poNumber: string, n: number) => (n <= 1 ? poNumber : `${poNumber}-${n}`),
+  /** master_purchase_orders.channel / po_uploads.channel (our name; the Uniware channel is typed per order). */
+  CHANNEL: { [BULK_ORDER_TYPE.MARKETING]: 'Bulk Marketing', [BULK_ORDER_TYPE.INSTITUTIONAL]: 'Bulk Institutional' } as Record<BulkOrderType, string>,
+  /**
+   * master_channels ids of those two names (migration BulkOrderProcessing, switched OFF): there only for the saved PO's
+   * channel FK; the Masters pages / forms leave them out (not a channel the masters team keeps).
+   */
+  CHANNEL_IDS: [9101, 9102] as number[],
+  /** processed.json channel_name. */
+  CHANNEL_NAME: { [BULK_ORDER_TYPE.MARKETING]: 'bulk_marketing', [BULK_ORDER_TYPE.INSTITUTIONAL]: 'bulk_institutional' } as Record<BulkOrderType, string>,
+  /** S3: bulk-orders/<PO number>/sale-order-<n>/ (order.json = the "PO file", processed.json, the Uniware CSV). */
+  S3_SUB: (n: number) => `sale-order-${n}`,
+  ORDER_FILE: 'order.json',
+  CODE_MAX: 100,
+  CUSTOMERS_MAX: 5,
+  FACILITIES_MAX: 500,
+} as const;
+
+/** Institutional requester details (portal; user 2026-11-12: "name and all details are from the requester only"). */
+export const BULK_INSTITUTION = {
+  NAME_MAX: 200,
+  EMAIL_MAX: 150,
+  /** 15 characters: 2-digit state, PAN (5 letters, 4 digits, 1 letter), entity, Z, check. */
+  GSTIN_RE: /^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/,
+  EMAIL_RE: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
 } as const;
 
 /** Request body fields (also the `field` of a VALIDATION_FAILED detail). */
@@ -197,4 +256,12 @@ export const BULK_BODY = {
   KIND: 'kind',
   ACTION: 'action',
   PAYMENT_CHECK: 'paymentCheck',
+  INSTITUTION: 'institutionName',
+  GSTIN: 'gstin',
+  EMAIL: 'contactEmail',
+  BILLING: 'billingAddress',
+  BILLING_SAME: 'billingSameAsDelivery',
+  FACILITY: 'facilityCode',
+  UNIWARE_CHANNEL: 'uniwareChannel',
+  CUSTOMER_CODE: 'customerCode',
 } as const;

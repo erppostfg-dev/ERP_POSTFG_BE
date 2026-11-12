@@ -4,6 +4,7 @@ import { ACCESS_LEVEL, BULK_DOCS, BULK_ORDERS_TEAM, PAGE } from '../constants';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
 import { teamBulkOrder, teamBulkOrders } from '../modules/bulk-orders/bulk-orders.service';
 import { teamOpenBulkDocument, teamUploadBulkDocument } from '../modules/bulk-orders/bulk-documents.service';
+import { bulkProcessOptions, processBulkOrder } from '../modules/bulk-orders/bulk-process.service';
 import { sendDocument } from './bulk-documents.send';
 
 /*
@@ -15,6 +16,9 @@ import { sendDocument } from './bulk-documents.send';
  *   GET /po-review/bulk-orders/:id                                 one order with lines + timeline + documents
  *   POST /po-review/bulk-orders/:id/documents                      multipart kind + file (PO review EDITOR; 2026-11-12)
  *   GET /po-review/bulk-orders/:id/documents/:docId                the file (streamed from S3)
+ *   GET /po-review/bulk-orders/:id/process-options                 warehouses + matching saved customers (EDITOR; 3b)
+ *   POST /po-review/bulk-orders/:id/process                        { facilityCode, uniwareChannel, customerCode } ->
+ *                                                                  sale order (EDITOR; 2026-11-12, bulk-process.service)
  * Mounted BEFORE the PO review routes (routes/index.ts), so "bulk-orders" is never read as an upload id.
  */
 const router = Router();
@@ -46,5 +50,20 @@ router.post(BULK_ORDERS_TEAM.ROUTES.DOCUMENTS, ...editor, upload, async (req, re
   }
 });
 router.get(BULK_ORDERS_TEAM.ROUTES.DOCUMENT, ...viewer, sendDocument((req) => teamOpenBulkDocument(String(req.params.id), String(req.params.docId))));
+router.get(BULK_ORDERS_TEAM.ROUTES.PROCESS_OPTIONS, ...editor, async (req, res, next) => {
+  try {
+    res.json({ data: await bulkProcessOptions(String(req.params.id)) });
+  } catch (err) {
+    next(err);
+  }
+});
+router.post(BULK_ORDERS_TEAM.ROUTES.PROCESS, ...editor, async (req, res, next) => {
+  try {
+    const u = req.auth!.user;
+    res.json({ data: await processBulkOrder({ id: u.id, email: u.email }, String(req.params.id), (req.body ?? {}) as Record<string, unknown>) });
+  } catch (err) {
+    next(err);
+  }
+});
 
 export default router;

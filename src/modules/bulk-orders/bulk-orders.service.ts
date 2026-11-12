@@ -6,6 +6,7 @@ import {
   BULK_BODY as F,
   BULK_DELIVERY_MODES,
   BULK_EVENT,
+  BULK_INSTITUTION,
   BulkEventAction,
   BULK_ORDER_STATUS,
   BULK_ORDER_STATUSES,
@@ -120,17 +121,46 @@ const priceAfterDiscount = (mrp: number, discountPct: number): number => Math.ro
 
 interface AddressIn { line: string; city: string; state: string; pincode: string }
 
-const checkAddress = (c: Checker, v: unknown): AddressIn => {
+/** An address object under `field` (delivery `address`, Institutional `billingAddress`). */
+const checkAddress = (c: Checker, v: unknown, field: string = F.ADDRESS): AddressIn => {
   const a = (v && typeof v === 'object' ? v : {}) as Record<string, unknown>;
-  if (!v || typeof v !== 'object') c.add(F.ADDRESS, errorMessage(ERROR_CODES.FIELD_REQUIRED, F.ADDRESS));
+  if (!v || typeof v !== 'object') c.add(field, errorMessage(ERROR_CODES.FIELD_REQUIRED, field));
   const out = {
-    line: c.text(a[F.LINE], `${F.ADDRESS}.${F.LINE}`, BULK_ORDERS.ADDRESS_MAX),
-    city: c.text(a[F.CITY], `${F.ADDRESS}.${F.CITY}`, BULK_ORDERS.CITY_MAX),
-    state: c.text(a[F.STATE], `${F.ADDRESS}.${F.STATE}`, BULK_ORDERS.CITY_MAX),
-    pincode: c.text(a[F.PINCODE], `${F.ADDRESS}.${F.PINCODE}`, 10),
+    line: c.text(a[F.LINE], `${field}.${F.LINE}`, BULK_ORDERS.ADDRESS_MAX),
+    city: c.text(a[F.CITY], `${field}.${F.CITY}`, BULK_ORDERS.CITY_MAX),
+    state: c.text(a[F.STATE], `${field}.${F.STATE}`, BULK_ORDERS.CITY_MAX),
+    pincode: c.text(a[F.PINCODE], `${field}.${F.PINCODE}`, 10),
   };
-  if (out.pincode && !BULK_ORDERS.PINCODE_RE.test(out.pincode)) c.add(`${F.ADDRESS}.${F.PINCODE}`, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, `${F.ADDRESS}.${F.PINCODE}`, '6 digits (not starting with 0)'));
+  if (out.pincode && !BULK_ORDERS.PINCODE_RE.test(out.pincode)) c.add(`${field}.${F.PINCODE}`, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, `${field}.${F.PINCODE}`, '6 digits (not starting with 0)'));
   return out;
+};
+
+/**
+ * Institutional requester details (2026-11-12, user: "name and all details are from the requester"): institution name
+ * and billing address required (or "same as delivery"), GSTIN / email optional but checked when given.
+ */
+interface InstitutionIn { name: string; gstin: string | null; email: string | null; billing: AddressIn | null; billingSame: boolean }
+
+const checkInstitution = (c: Checker, body: Record<string, unknown>): InstitutionIn => {
+  const name = c.text(body[F.INSTITUTION], F.INSTITUTION, BULK_INSTITUTION.NAME_MAX);
+  const gstin = c.text(body[F.GSTIN], F.GSTIN, 15, false).toUpperCase().replace(/\s/g, '') || null;
+  if (gstin && !BULK_INSTITUTION.GSTIN_RE.test(gstin)) c.add(F.GSTIN, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.GSTIN, 'a 15-character GSTIN (e.g. 27AAAAA0000A1Z5)'));
+  const email = c.text(body[F.EMAIL], F.EMAIL, BULK_INSTITUTION.EMAIL_MAX, false) || null;
+  if (email && !BULK_INSTITUTION.EMAIL_RE.test(email)) c.add(F.EMAIL, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.EMAIL, 'an email address'));
+  const same = body[F.BILLING_SAME];
+  if (same !== undefined && typeof same !== 'boolean') c.add(F.BILLING_SAME, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.BILLING_SAME, 'true or false'));
+  const billingSame = same === true;
+  const billing = billingSame ? null : checkAddress(c, body[F.BILLING], F.BILLING);
+  return { name, gstin, email, billing, billingSame };
+};
+
+/** The bulk_orders columns of the requester details (all NULL on a Marketing order). */
+const institutionCols = (i: InstitutionIn | null, delivery: { addressLine: string; city: string; state: string; pincode: string }) => {
+  const b = i ? (i.billingSame ? { line: delivery.addressLine, city: delivery.city, state: delivery.state, pincode: delivery.pincode } : i.billing!) : null;
+  return {
+    institutionName: i?.name ?? null, gstin: i?.gstin ?? null, contactEmail: i?.email ?? null,
+    billingAddressLine: b?.line ?? null, billingCity: b?.city ?? null, billingState: b?.state ?? null, billingPincode: b?.pincode ?? null,
+  };
 };
 
 export const isId = (v: unknown): v is string | number => (typeof v === 'number' && Number.isInteger(v) && v > 0) || (typeof v === 'string' && /^\d{1,18}$/.test(v));
@@ -275,6 +305,8 @@ interface OrderIn {
   address: AddressIn | null;
   saveAs: string;
   lines: LineIn[];
+  /** Institutional only (else null). */
+  institution: InstitutionIn | null;
 }
 
 /** Checks a create / edit body; `fixedType` = an edit (the type never changes). Throws 400 with every wrong field. */
@@ -306,8 +338,9 @@ const parseOrder = (body: Record<string, unknown>, fixedType?: BulkOrderType): O
     saveAs = c.text(body[F.SAVE_LOCATION_AS], F.SAVE_LOCATION_AS, BULK_ORDERS.LABEL_MAX, false);
   }
   const lines = checkLines(c, body[F.LINES]);
+  const institution = type === BULK_ORDER_TYPE.INSTITUTIONAL ? checkInstitution(c, body) : null;
   c.fail();
-  return { type: type!, orderedBy, receiverName, phone: phone!, neededBy, priority: priority!, mode, note, locationId, address, saveAs, lines };
+  return { type: type!, orderedBy, receiverName, phone: phone!, neededBy, priority: priority!, mode, note, locationId, address, saveAs, lines, institution };
 };
 
 /** Today's MRP / name / active of SKUs from OUR master (one read; never the cache, never the request). */
@@ -387,7 +420,7 @@ export const createBulkOrder = async (actor: BulkActor, body: Record<string, unk
     const res = await m.getRepository(BulkOrder).insert({
       poNumber, orderType: o.type, status: BULK_ORDER_STATUS.PENDING_APPROVAL, orderedBy: o.orderedBy, receiverName: o.receiverName,
       receiverPhone: o.phone, ...where, neededBy: o.neededBy, deliveryMode: o.mode, priority: o.priority, note: o.note,
-      ...totalsOf(priced), createdBy: actor.id, paymentStatus: paymentCheck ? BULK_PAYMENT_STATUS.AWAITING_PROOF : null,
+      ...institutionCols(o.institution, where), ...totalsOf(priced), createdBy: actor.id, paymentStatus: paymentCheck ? BULK_PAYMENT_STATUS.AWAITING_PROOF : null,
     });
     const orderId = String(res.identifiers[0].id);
     await m.getRepository(BulkOrderLine).insert(priced.map((l) => ({ ...l, orderId })));
@@ -436,7 +469,7 @@ export const updateBulkOrder = async (actor: BulkActor, id: string, body: Record
     const where = await whereTo(m, o, actor.id);
     const next = {
       orderedBy: o.orderedBy, receiverName: o.receiverName, receiverPhone: o.phone, ...where, neededBy: o.neededBy,
-      deliveryMode: o.mode, priority: o.priority, note: o.note,
+      deliveryMode: o.mode, priority: o.priority, note: o.note, ...institutionCols(o.institution, where),
     };
     const fields = (Object.keys(next) as (keyof typeof next)[]).filter((k) => String(cur[k] ?? '') !== String(next[k] ?? ''));
     await m.getRepository(BulkOrderLine).delete({ orderId: id });
@@ -584,6 +617,16 @@ const orderOut = (o: BulkOrder, names: Map<number, string>) => ({
   orderedBy: o.orderedBy, receiverName: o.receiverName, receiverPhone: o.receiverPhone,
   location: { id: o.locationId ? String(o.locationId) : null, label: o.locationLabel, address: { line: o.addressLine, city: o.city, state: o.state, pincode: o.pincode } },
   neededBy: o.neededBy, mode: o.deliveryMode, priority: o.priority, note: o.note,
+  // Institutional requester details (null on Marketing orders)
+  institution: o.institutionName ? {
+    name: o.institutionName, gstin: o.gstin, email: o.contactEmail,
+    billingAddress: { line: o.billingAddressLine, city: o.billingCity, state: o.billingState, pincode: o.billingPincode },
+  } : null,
+  // our team's current sale order (step 3b); null until processed (and again after a Verify send back)
+  saleOrder: o.saleOrderCode ? {
+    code: o.saleOrderCode, facilityCode: o.facilityCode, uniwareChannel: o.uniwareChannel, customerCode: o.customerCode,
+    uploadId: o.uploadId ? String(o.uploadId) : null, by: o.processedBy ? { id: o.processedBy, name: names.get(o.processedBy) ?? null } : null, at: o.processedAt,
+  } : null,
   lineCount: o.lineCount, totalUnits: o.totalUnits, totalMrp: o.totalMrp, totalValue: o.totalValue,
   createdBy: { id: o.createdBy, name: names.get(o.createdBy) ?? null }, createdAt: o.createdAt,
   decidedBy: o.decidedBy ? { id: o.decidedBy, name: names.get(o.decidedBy) ?? null } : null, decidedAt: o.decidedAt, decisionNote: o.decisionNote,
@@ -626,7 +669,7 @@ const pageOfOrders = async (types: BulkOrderType[], l: ListQuery) => {
     qb.andWhere('(o.poNumber LIKE :like OR o.orderedBy LIKE :like OR o.receiverName LIKE :like OR o.city LIKE :like OR o.locationLabel LIKE :like)', { like });
   }
   const [found, total] = await qb.orderBy('o.createdAt', 'DESC').addOrderBy('o.id', 'DESC').skip((l.page - 1) * l.size).take(l.size).getManyAndCount();
-  const names = await userNames(found.flatMap((o) => [o.createdBy, o.decidedBy ?? 0, o.paymentBy ?? 0]));
+  const names = await userNames(found.flatMap((o) => [o.createdBy, o.decidedBy ?? 0, o.paymentBy ?? 0, o.processedBy ?? 0]));
   return { items: found.map((o) => orderOut(o, names)), meta: { total, page: l.page, pageSize: l.size } };
 };
 
@@ -646,7 +689,7 @@ export const orderFull = async (o: BulkOrder) => {
     AppDataSource.getRepository(BulkOrderEvent).find({ where: { orderId: id }, order: { id: 'ASC' } }),
     AppDataSource.getRepository(BulkOrderDocument).find({ where: { orderId: id }, order: { id: 'DESC' } }),
   ]);
-  const names = await userNames([o.createdBy, o.decidedBy ?? 0, o.paymentBy ?? 0, ...events.map((e) => e.byUserId), ...docs.map((d) => d.uploadedBy)]);
+  const names = await userNames([o.createdBy, o.decidedBy ?? 0, o.paymentBy ?? 0, o.processedBy ?? 0, ...events.map((e) => e.byUserId), ...docs.map((d) => d.uploadedBy)]);
   return {
     ...orderOut(o, names),
     // newest first; replaced ones kept (replacedAt set)

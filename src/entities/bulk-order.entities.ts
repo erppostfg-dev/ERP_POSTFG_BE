@@ -118,6 +118,65 @@ export class BulkOrder {
 
   @Column({ name: 'payment_note', type: 'varchar', length: 1000, nullable: true })
   paymentNote: string | null;
+
+  // ---- Institutional requester details (2026-11-12, migration BulkOrderProcessing; NULL on Marketing orders) ----
+  @Column({ name: 'institution_name', type: 'varchar', length: 200, nullable: true })
+  institutionName: string | null;
+
+  /** Optional; checked as a GSTIN when given. */
+  @Column({ name: 'gstin', type: 'varchar', length: 15, nullable: true })
+  gstin: string | null;
+
+  @Column({ name: 'contact_email', type: 'varchar', length: 150, nullable: true })
+  contactEmail: string | null;
+
+  /** Billing address (the delivery address copied when the requester ticks "same as delivery"). */
+  @Column({ name: 'billing_address_line', type: 'varchar', length: 500, nullable: true })
+  billingAddressLine: string | null;
+
+  @Column({ name: 'billing_city', type: 'varchar', length: 100, nullable: true })
+  billingCity: string | null;
+
+  @Column({ name: 'billing_state', type: 'varchar', length: 100, nullable: true })
+  billingState: string | null;
+
+  @Column({ name: 'billing_pincode', type: 'varchar', length: 10, nullable: true })
+  billingPincode: string | null;
+
+  // ---- Step 3b: our team's sale order (the CURRENT one; a sent-back one is cleared here, kept on the timeline) ----
+  @Column({ name: 'facility_code', type: 'varchar', length: 100, nullable: true })
+  facilityCode: string | null;
+
+  @Column({ name: 'uniware_channel', type: 'varchar', length: 100, nullable: true })
+  uniwareChannel: string | null;
+
+  @Column({ name: 'customer_code', type: 'varchar', length: 100, nullable: true })
+  customerCode: string | null;
+
+  /** bulk_customers.id saved / updated by the processing. */
+  @Column({ name: 'customer_id', type: 'bigint', nullable: true })
+  customerId: string | null;
+
+  @Column({ name: 'processed_by', type: 'int', nullable: true })
+  processedBy: number | null;
+
+  @Column({ name: 'processed_at', type: 'datetime', precision: 6, nullable: true })
+  processedAt: Date | null;
+
+  /** po_uploads.id of the sale order (Processed tab, Verify, Uniware hand-off). */
+  @Column({ name: 'upload_id', type: 'bigint', nullable: true })
+  uploadId: string | null;
+
+  /** master_purchase_orders.uid */
+  @Column({ name: 'po_uid', type: 'bigint', nullable: true })
+  poUid: string | null;
+
+  @Column({ name: 'sale_order_code', type: 'varchar', length: 30, nullable: true })
+  saleOrderCode: string | null;
+
+  /** Sale orders made so far (a send back + process again = 2, ...): S3 folder sale-order-<n>, external id. */
+  @Column({ name: 'sale_order_count', type: 'int', default: 0 })
+  saleOrderCount: number;
 }
 
 /**
@@ -277,6 +336,68 @@ export class BulkOrderDocument {
 
   @Column({ name: 'replaced_at', type: 'datetime', precision: 6, nullable: true })
   replacedAt: Date | null;
+}
+
+/**
+ * A customer our team processed (2026-11-12, Bulk Orders step 3b): the requester's institution details + the Uniware
+ * channel / customer code typed for it. Suggested on a later order with the same GSTIN, or the same name + billing
+ * pincode. Updated (not duplicated) when it is used again; never deleted.
+ */
+@Entity({ name: TABLES.BULK_CUSTOMERS })
+@Index('idx_bulk_customers_gstin', ['gstin'])
+@Index('idx_bulk_customers_pincode', ['pincode'])
+export class BulkCustomer {
+  @PrimaryGeneratedColumn({ name: 'id', type: 'bigint' })
+  id: string;
+
+  @Column({ name: 'name', type: 'varchar', length: 200 })
+  name: string;
+
+  @Column({ name: 'gstin', type: 'varchar', length: 15, nullable: true })
+  gstin: string | null;
+
+  @Column({ name: 'address_line', type: 'varchar', length: 500 })
+  addressLine: string;
+
+  @Column({ name: 'city', type: 'varchar', length: 100 })
+  city: string;
+
+  @Column({ name: 'state', type: 'varchar', length: 100 })
+  state: string;
+
+  @Column({ name: 'pincode', type: 'varchar', length: 10 })
+  pincode: string;
+
+  @Column({ name: 'phone', type: 'varchar', length: 20, nullable: true })
+  phone: string | null;
+
+  @Column({ name: 'email', type: 'varchar', length: 150, nullable: true })
+  email: string | null;
+
+  @Column({ name: 'uniware_channel', type: 'varchar', length: 100 })
+  uniwareChannel: string;
+
+  @Column({ name: 'customer_code', type: 'varchar', length: 100 })
+  customerCode: string;
+
+  /** Orders processed with it. */
+  @Column({ name: 'used_count', type: 'int', default: 0 })
+  usedCount: number;
+
+  @Column({ name: 'last_order_id', type: 'bigint', nullable: true })
+  lastOrderId: string | null;
+
+  @Column({ name: 'created_by', type: 'int' })
+  createdBy: number;
+
+  @Column({ name: 'created_at', type: 'datetime', precision: 6, default: () => 'CURRENT_TIMESTAMP(6)' })
+  createdAt: Date;
+
+  @Column({ name: 'updated_by', type: 'int', nullable: true })
+  updatedBy: number | null;
+
+  @Column({ name: 'updated_at', type: 'datetime', precision: 6, default: () => 'CURRENT_TIMESTAMP(6)' })
+  updatedAt: Date;
 }
 
 /** Settings per order type (admin, user 2026-11-12; a full Bulk Orders admin section comes later). No row = all off. */
