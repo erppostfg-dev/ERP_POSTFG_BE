@@ -104,6 +104,20 @@ export class BulkOrder {
 
   @Column({ name: 'decision_note', type: 'varchar', length: 1000, nullable: true })
   decisionNote: string | null;
+
+  /** BULK_PAYMENT_STATUS; NULL = no payment check for this order (off for its type when it was created). */
+  @Column({ name: 'payment_status', type: 'varchar', length: 20, nullable: true })
+  paymentStatus: string | null;
+
+  /** Who / when / why of the last payment change (the approver; an upload sets only the status). */
+  @Column({ name: 'payment_by', type: 'int', nullable: true })
+  paymentBy: number | null;
+
+  @Column({ name: 'payment_at', type: 'datetime', precision: 6, nullable: true })
+  paymentAt: Date | null;
+
+  @Column({ name: 'payment_note', type: 'varchar', length: 1000, nullable: true })
+  paymentNote: string | null;
 }
 
 /**
@@ -227,4 +241,57 @@ export class BulkOrderCounter {
 
   @Column({ name: 'last_serial', type: 'int' })
   lastSerial: number;
+}
+
+/** A file on an order (proforma / invoice / proof of payment, BULK_DOC_KIND), in S3. Never deleted: a newer one of the
+ *  same kind sets replaced_at on the older ones. */
+@Entity({ name: TABLES.BULK_ORDER_DOCUMENTS })
+@Index('idx_bulk_order_documents_order', ['orderId'])
+export class BulkOrderDocument {
+  @PrimaryGeneratedColumn({ name: 'id', type: 'bigint' })
+  id: string;
+
+  @Column({ name: 'order_id', type: 'bigint' })
+  orderId: string;
+
+  @Column({ name: 'kind', type: 'varchar', length: 30 })
+  kind: string;
+
+  @Column({ name: 'file_name', type: 'varchar', length: 255 })
+  fileName: string;
+
+  @Column({ name: 'content_type', type: 'varchar', length: 100 })
+  contentType: string;
+
+  @Column({ name: 'size_bytes', type: 'int' })
+  sizeBytes: number;
+
+  @Column({ name: 's3_url', type: 'varchar', length: 1000 })
+  s3Url: string;
+
+  @Column({ name: 'uploaded_by', type: 'int' })
+  uploadedBy: number;
+
+  @Column({ name: 'created_at', type: 'datetime', precision: 6, default: () => 'CURRENT_TIMESTAMP(6)' })
+  createdAt: Date;
+
+  @Column({ name: 'replaced_at', type: 'datetime', precision: 6, nullable: true })
+  replacedAt: Date | null;
+}
+
+/** Settings per order type (admin, user 2026-11-12; a full Bulk Orders admin section comes later). No row = all off. */
+@Entity({ name: TABLES.BULK_TYPE_SETTINGS })
+export class BulkTypeSetting {
+  @PrimaryColumn({ name: 'order_type', type: 'varchar', length: 20 })
+  orderType: string;
+
+  /** ON = new orders of the type get a payment status (proof + approver's check). */
+  @Column({ name: 'payment_check', type: 'boolean', default: false })
+  paymentCheck: boolean;
+
+  @Column({ name: 'updated_by', type: 'int', nullable: true })
+  updatedBy: number | null;
+
+  @Column({ name: 'updated_at', type: 'datetime', precision: 6, default: () => 'CURRENT_TIMESTAMP(6)' })
+  updatedAt: Date;
 }

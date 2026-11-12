@@ -13,6 +13,7 @@ import {
   BULK_ORDER_TYPES,
   BULK_ORDERS,
   BULK_PAGE,
+  BULK_PAYMENT_STATUS,
   BULK_PO_PREFIX,
   BULK_PRIORITIES,
   BULK_TYPE_PAGE,
@@ -22,7 +23,7 @@ import {
   IST_OFFSET_MS,
   TABLES,
 } from '../../constants';
-import { BulkLocation, BulkOrder, BulkOrderEvent, BulkOrderLine, MasterSku, User } from '../../entities';
+import { BulkLocation, BulkOrder, BulkOrderDocument, BulkOrderEvent, BulkOrderLine, BulkTypeSetting, MasterSku, User } from '../../entities';
 import { appError } from '../../utils/AppError';
 import { log } from '../../utils/logger';
 import { LOG_SOURCE } from '../../constants/logging';
@@ -45,7 +46,7 @@ export interface BulkRights {
   approve: AccessLevel;
 }
 
-const bulkRights = async (actor: BulkActor): Promise<BulkRights> => {
+export const bulkRights = async (actor: BulkActor): Promise<BulkRights> => {
   const rows = await loadAccess(actor.id, actor.roles);
   return {
     types: Object.fromEntries(BULK_ORDER_TYPES.map((t) => [t, accessFrom(rows, BULK_TYPE_PAGE[t])])) as Record<BulkOrderType, AccessLevel>,
@@ -71,7 +72,7 @@ export const needAnyBulk = async (actor: BulkActor): Promise<BulkRights> => {
 
 interface Issue { field: string; code: string; message: string }
 
-class Checker {
+export class Checker {
   issues: Issue[] = [];
   add(field: string, message: string): void {
     this.issues.push({ field, code: ERROR_CODES.VALIDATION_FAILED, message });
@@ -132,7 +133,7 @@ const checkAddress = (c: Checker, v: unknown): AddressIn => {
   return out;
 };
 
-const isId = (v: unknown): v is string | number => (typeof v === 'number' && Number.isInteger(v) && v > 0) || (typeof v === 'string' && /^\d{1,18}$/.test(v));
+export const isId = (v: unknown): v is string | number => (typeof v === 'number' && Number.isInteger(v) && v > 0) || (typeof v === 'string' && /^\d{1,18}$/.test(v));
 
 // ---- SKUs ----------------------------------------------------------------------------------------------------------
 
@@ -370,7 +371,7 @@ const whereTo = async (m: EntityManager, o: OrderIn, userId: number) => {
 };
 
 /** One timeline row (bulk_order_events), in the same transaction as the change. */
-const addEvent = (m: EntityManager, orderId: string, action: BulkEventAction, by: number, note: string | null, changes: unknown = null) =>
+export const addEvent = (m: EntityManager, orderId: string, action: BulkEventAction, by: number, note: string | null, changes: unknown = null) =>
   m.getRepository(BulkOrderEvent).insert({ orderId, action, byUserId: by, note, changes: changes as object | null });
 
 /** Creates a bulk order (editor on its type): prices from the PEP SKU master, a new PO number, pending approval. */
@@ -378,6 +379,7 @@ export const createBulkOrder = async (actor: BulkActor, body: Record<string, unk
   const o = parseOrder(body);
   needType(await bulkRights(actor), o.type, ACCESS_LEVEL.EDITOR);
   const priced = await priceLines(o.lines);
+  const paymentCheck = (await AppDataSource.getRepository(BulkTypeSetting).findOneBy({ orderType: o.type }))?.paymentCheck === true;
 
   const id = await withDeadlockRetry(() => AppDataSource.transaction(async (m) => {
     const where = await whereTo(m, o, actor.id);
@@ -385,7 +387,7 @@ export const createBulkOrder = async (actor: BulkActor, body: Record<string, unk
     const res = await m.getRepository(BulkOrder).insert({
       poNumber, orderType: o.type, status: BULK_ORDER_STATUS.PENDING_APPROVAL, orderedBy: o.orderedBy, receiverName: o.receiverName,
       receiverPhone: o.phone, ...where, neededBy: o.neededBy, deliveryMode: o.mode, priority: o.priority, note: o.note,
-      ...totalsOf(priced), createdBy: actor.id,
+      ...totalsOf(priced), createdBy: actor.id, paymentStatus: paymentCheck ? BULK_PAYMENT_STATUS.AWAITING_PROOF : null,
     });
     const orderId = String(res.identifiers[0].id);
     await m.getRepository(BulkOrderLine).insert(priced.map((l) => ({ ...l, orderId })));
@@ -408,7 +410,7 @@ const lockPending = async (m: EntityManager, id: string): Promise<BulkOrder> => 
 };
 
 /** The order's type for a check before the transaction (404 when missing or not visible to the person). */
-const typeOfOrder = async (r: BulkRights, id: string): Promise<BulkOrderType> => {
+export const typeOfOrder = async (r: BulkRights, id: string): Promise<BulkOrderType> => {
   if (!isId(id)) throw appError(ERROR_CODES.BULK_ORDER_NOT_FOUND, String(id));
   const o = await AppDataSource.getRepository(BulkOrder).findOne({ select: { id: true, orderType: true }, where: { id } });
   const t = o?.orderType as BulkOrderType | undefined;
@@ -463,7 +465,7 @@ export const cancelBulkOrder = async (actor: BulkActor, id: string, body: Record
 };
 
 /** 403 unless the person approves bulk orders (editor on BULK_PAGE.APPROVE). Admin / developer may approve their own. */
-const needApprover = (r: BulkRights): void => {
+export const needApprover = (r: BulkRights): void => {
   if (!allows(r.approve, ACCESS_LEVEL.EDITOR)) throw appError(ERROR_CODES.BULK_NOT_APPROVER);
 };
 
@@ -585,9 +587,13 @@ const orderOut = (o: BulkOrder, names: Map<number, string>) => ({
   lineCount: o.lineCount, totalUnits: o.totalUnits, totalMrp: o.totalMrp, totalValue: o.totalValue,
   createdBy: { id: o.createdBy, name: names.get(o.createdBy) ?? null }, createdAt: o.createdAt,
   decidedBy: o.decidedBy ? { id: o.decidedBy, name: names.get(o.decidedBy) ?? null } : null, decidedAt: o.decidedAt, decisionNote: o.decisionNote,
+  // null = no payment check on this order (off for its type when it was created)
+  payment: o.paymentStatus ? {
+    status: o.paymentStatus, by: o.paymentBy ? { id: o.paymentBy, name: names.get(o.paymentBy) ?? null } : null, at: o.paymentAt, note: o.paymentNote,
+  } : null,
 });
 
-const userNames = async (ids: number[]): Promise<Map<number, string>> => {
+export const userNames = async (ids: number[]): Promise<Map<number, string>> => {
   const uniq = [...new Set(ids.filter(Boolean))];
   if (!uniq.length) return new Map();
   const us = await AppDataSource.getRepository(User).find({ select: { id: true, name: true, email: true }, where: { id: In(uniq) } });
@@ -620,7 +626,7 @@ const pageOfOrders = async (types: BulkOrderType[], l: ListQuery) => {
     qb.andWhere('(o.poNumber LIKE :like OR o.orderedBy LIKE :like OR o.receiverName LIKE :like OR o.city LIKE :like OR o.locationLabel LIKE :like)', { like });
   }
   const [found, total] = await qb.orderBy('o.createdAt', 'DESC').addOrderBy('o.id', 'DESC').skip((l.page - 1) * l.size).take(l.size).getManyAndCount();
-  const names = await userNames(found.flatMap((o) => [o.createdBy, o.decidedBy ?? 0]));
+  const names = await userNames(found.flatMap((o) => [o.createdBy, o.decidedBy ?? 0, o.paymentBy ?? 0]));
   return { items: found.map((o) => orderOut(o, names)), meta: { total, page: l.page, pageSize: l.size } };
 };
 
@@ -633,15 +639,21 @@ export const listBulkOrders = async (actor: BulkActor, q: Record<string, unknown
 };
 
 /** One order with lines + timeline (no access check: the callers check). */
-const orderFull = async (o: BulkOrder) => {
+export const orderFull = async (o: BulkOrder) => {
   const id = String(o.id);
-  const [lines, events] = await Promise.all([
+  const [lines, events, docs] = await Promise.all([
     AppDataSource.getRepository(BulkOrderLine).find({ where: { orderId: id }, order: { lineNo: 'ASC' } }),
     AppDataSource.getRepository(BulkOrderEvent).find({ where: { orderId: id }, order: { id: 'ASC' } }),
+    AppDataSource.getRepository(BulkOrderDocument).find({ where: { orderId: id }, order: { id: 'DESC' } }),
   ]);
-  const names = await userNames([o.createdBy, o.decidedBy ?? 0, ...events.map((e) => e.byUserId)]);
+  const names = await userNames([o.createdBy, o.decidedBy ?? 0, o.paymentBy ?? 0, ...events.map((e) => e.byUserId), ...docs.map((d) => d.uploadedBy)]);
   return {
     ...orderOut(o, names),
+    // newest first; replaced ones kept (replacedAt set)
+    documents: docs.map((d) => ({
+      id: String(d.id), kind: d.kind, fileName: d.fileName, contentType: d.contentType, sizeBytes: d.sizeBytes,
+      by: { id: d.uploadedBy, name: names.get(d.uploadedBy) ?? null }, at: d.createdAt, replacedAt: d.replacedAt,
+    })),
     events: events.map((e) => ({ action: e.action, by: { id: e.byUserId, name: names.get(e.byUserId) ?? null }, at: e.createdAt, note: e.note, changes: e.changes })),
     lines: lines.map((l) => ({
       lineNo: l.lineNo, pepCode: l.pepCode, name: l.productName, mrp: l.mrp, qty: l.qty, discountPct: l.discountPct,

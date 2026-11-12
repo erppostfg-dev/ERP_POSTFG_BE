@@ -65,8 +65,53 @@ export const BULK_EVENT = {
   CANCELLED: 'cancelled',
   APPROVED: 'approved',
   REJECTED: 'rejected',
+  /** A document uploaded (changes: { kind, fileName, replaced? }). */
+  DOCUMENT_ADDED: 'document_added',
+  /** The payment check changed (changes: { status: [old, new] }). */
+  PAYMENT: 'payment',
 } as const;
 export type BulkEventAction = (typeof BULK_EVENT)[keyof typeof BULK_EVENT];
+
+/**
+ * Payment check (user 2026-11-12). Per order type a setting (bulk_type_settings.payment_check, admin ON / OFF; now ON for
+ * Institutional only): ON = the order gets a payment status at creation (awaiting_proof); OFF = none (NULL, no payment
+ * line). Payment NEVER blocks approval or processing; the proof may come any time; the APPROVER validates it.
+ * A setting change applies to orders created after it.
+ */
+export const BULK_PAYMENT_STATUS = {
+  AWAITING_PROOF: 'awaiting_proof',
+  PROOF_UPLOADED: 'proof_uploaded',
+  VERIFIED: 'verified',
+  REFUSED: 'refused',
+  NOT_NEEDED: 'not_needed',
+} as const;
+export type BulkPaymentStatus = (typeof BULK_PAYMENT_STATUS)[keyof typeof BULK_PAYMENT_STATUS];
+
+/** What the approver does on POST /bulk-orders/:id/payment -> the new payment status. */
+export const BULK_PAYMENT_ACTION = {
+  VERIFY: 'verify',
+  REFUSE: 'refuse',
+  NOT_NEEDED: 'not_needed',
+} as const;
+export type BulkPaymentAction = (typeof BULK_PAYMENT_ACTION)[keyof typeof BULK_PAYMENT_ACTION];
+export const BULK_PAYMENT_ACTIONS = Object.values(BULK_PAYMENT_ACTION) as BulkPaymentAction[];
+
+/** Documents on an order (bulk_order_documents.kind). A new one of a kind marks the older ones of that kind replaced. */
+export const BULK_DOC_KIND = {
+  PROFORMA_INVOICE: 'proforma_invoice',
+  INVOICE: 'invoice',
+  PAYMENT_PROOF: 'payment_proof',
+} as const;
+export type BulkDocKind = (typeof BULK_DOC_KIND)[keyof typeof BULK_DOC_KIND];
+export const BULK_DOC_KINDS = Object.values(BULK_DOC_KIND) as BulkDocKind[];
+
+export const BULK_DOCS = {
+  /** One file per upload, multipart field name. */
+  FIELD_FILE: 'file',
+  MAX_BYTES: 10 * 1024 * 1024,
+  /** S3: bulk-orders/<PO number>/<uuid>.<ext> */
+  S3_FOLDER: 'bulk-orders',
+} as const;
 
 /** The design's markers (figma-make-bulk-orders types.ts): delivery mode (Marketing only) and priority. */
 export const BULK_DELIVERY_MODES = ['Porter', 'Courier', 'Self pickup'] as const;
@@ -84,6 +129,12 @@ export const BULK_ORDERS = {
     CANCEL: '/:id/cancel',
     APPROVE: '/:id/approve',
     REJECT: '/:id/reject',
+    DOCUMENTS: '/:id/documents',
+    DOCUMENT: '/:id/documents/:docId',
+    PAYMENT: '/:id/payment',
+    /** Per-type settings (admin: editor on BULK_PAGE.ROOT). Before '/:id' in the router. */
+    SETTINGS: '/settings',
+    SETTING: '/settings/:type',
   },
   /** Lines per order. */
   LINES_MAX: 200,
@@ -115,7 +166,7 @@ export const BULK_ORDERS = {
 /** Our team's read-only view in PO Processing & Review > Bulk Orders (step 3a; PO review page access). */
 export const BULK_ORDERS_TEAM = {
   BASE: '/po-review/bulk-orders',
-  ROUTES: { LIST: '/', ONE: '/:id' },
+  ROUTES: { LIST: '/', ONE: '/:id', DOCUMENTS: '/:id/documents', DOCUMENT: '/:id/documents/:docId' },
 } as const;
 
 /** Request body fields (also the `field` of a VALIDATION_FAILED detail). */
@@ -143,4 +194,7 @@ export const BULK_BODY = {
   REASON: 'reason',
   LINE_NO: 'lineNo',
   REMOVE_LINES: 'removeLines',
+  KIND: 'kind',
+  ACTION: 'action',
+  PAYMENT_CHECK: 'paymentCheck',
 } as const;

@@ -10,7 +10,9 @@ import { covers } from '../helpers/routes';
  */
 covers(['GET /bulk-orders', 'POST /bulk-orders', 'GET /bulk-orders/skus', 'GET /bulk-orders/locations', 'POST /bulk-orders/locations', 'GET /bulk-orders/:id',
   'PUT /bulk-orders/:id', 'POST /bulk-orders/:id/cancel', 'POST /bulk-orders/:id/approve', 'POST /bulk-orders/:id/reject',
-  'GET /po-review/bulk-orders', 'GET /po-review/bulk-orders/:id']);
+  'GET /po-review/bulk-orders', 'GET /po-review/bulk-orders/:id',
+  'POST /bulk-orders/:id/documents', 'GET /bulk-orders/:id/documents/:docId', 'POST /bulk-orders/:id/payment', 'GET /bulk-orders/settings',
+  'PUT /bulk-orders/settings/:type', 'POST /po-review/bulk-orders/:id/documents', 'GET /po-review/bulk-orders/:id/documents/:docId']);
 
 const V = '/api/v1/bulk-orders';
 const YEAR = new Date(Date.now() + 5.5 * 3600_000).getUTCFullYear();
@@ -315,5 +317,95 @@ describe('bulk orders step 3a: our team sees them in PO Processing & Review (rea
       await api().get(`${T}/${m1.id}`).set('Cookie', portal.cookie).expect(403);
     }
     await api().get(T).expect(401);
+  });
+});
+
+describe('bulk orders: payment check + documents + settings (2026-11-12)', () => {
+  const T = '/api/v1/po-review/bulk-orders';
+  const PDF = Buffer.from('%PDF-1.4\n% proof\n');
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
+  const up = (who: TestLogin, id: string, kind: string, file: Buffer, name: string, base = V) =>
+    api().post(`${base}/${id}/documents`).set('Cookie', who.cookie).field('kind', kind).attach('file', file, name);
+  const pay = (who: TestLogin, id: string, body: Record<string, unknown>) => api().post(`${V}/${id}/payment`).set('Cookie', who.cookie).send(body);
+
+  it('payment check per type: Institutional ON (awaiting proof), Marketing OFF (no payment line); admin turns it on for new orders only', async () => {
+    const i = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
+    const m = (await create(mkt, order()).expect(201)).body.data;
+    expect(i.payment).toMatchObject({ status: 'awaiting_proof', by: null });
+    expect(m.payment).toBeNull();
+
+    for (const who of [mkt, approver, opsExec]) expect((await api().get(`${V}/settings`).set('Cookie', who.cookie).expect(403)).body.error.code).toBe('BULK_NOT_SETTINGS_ADMIN');
+    const admin = await loginAs('admin');
+    expect((await api().get(`${V}/settings`).set('Cookie', admin.cookie).expect(200)).body.data.map((x: { type: string; paymentCheck: boolean }) => [x.type, x.paymentCheck]))
+      .toEqual([['marketing', false], ['institutional', true]]);
+    await api().put(`${V}/settings/marketing`).set('Cookie', admin.cookie).send({ paymentCheck: 'yes' }).expect(400);
+    await api().put(`${V}/settings/other`).set('Cookie', admin.cookie).send({ paymentCheck: true }).expect(400);
+    await api().put(`${V}/settings/marketing`).set('Cookie', mkt.cookie).send({ paymentCheck: true }).expect(403);
+    const after = (await api().put(`${V}/settings/marketing`).set('Cookie', admin.cookie).send({ paymentCheck: true }).expect(200)).body.data;
+    expect(after[0]).toMatchObject({ type: 'marketing', paymentCheck: true, updatedBy: { id: admin.userId } });
+    expect((await create(mkt, order()).expect(201)).body.data.payment.status).toBe('awaiting_proof');
+    expect((await api().get(`${V}/${m.id}`).set('Cookie', mkt.cookie).expect(200)).body.data.payment).toBeNull(); // older order unchanged
+  });
+
+  it('proof upload -> proof uploaded; approver verifies / refuses (reason); a new proof replaces the old one; never blocks approval', async () => {
+    const i = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
+    await api().post(`${V}/${i.id}/approve`).set('Cookie', approver.cookie).send({}).expect(200); // no proof needed to approve
+    expect((await pay(approver, i.id, { action: 'verify' }).expect(409)).body.error.code).toBe('BULK_PAYMENT_NO_PROOF');
+
+    const a = (await up(inst, i.id, 'payment_proof', PDF, 'utr-1.pdf').expect(201)).body.data;
+    expect(a.payment.status).toBe('proof_uploaded');
+    expect(a.documents).toMatchObject([{ kind: 'payment_proof', fileName: 'utr-1.pdf', contentType: 'application/pdf', replacedAt: null }]);
+    const file = await api().get(`${V}/${i.id}/documents/${a.documents[0].id}`).set('Cookie', approver.cookie).buffer(true)
+      .parse((res, cb) => { const parts: Buffer[] = []; res.on('data', (c: Buffer) => parts.push(c)); res.on('end', () => cb(null, Buffer.concat(parts))); }).expect(200);
+    expect(file.headers['content-type']).toBe('application/pdf');
+    expect((file.body as Buffer).subarray(0, 5).toString()).toBe('%PDF-');
+
+    await pay(inst, i.id, { action: 'verify' }).expect(403); // only the approver
+    expect(fields(await pay(approver, i.id, { action: 'refuse' }).expect(400))).toEqual(['note']);
+    const refused = (await pay(approver, i.id, { action: 'refuse', note: 'Amount short by Rs 500' }).expect(200)).body.data;
+    expect(refused.payment).toMatchObject({ status: 'refused', by: { id: approver.userId }, note: 'Amount short by Rs 500' });
+
+    const b = (await up(inst, i.id, 'payment_proof', PNG, 'utr-2.png').expect(201)).body.data;
+    expect(b.payment.status).toBe('proof_uploaded');
+    expect(b.documents.map((d: { fileName: string; replacedAt: string | null }) => [d.fileName, d.replacedAt === null])).toEqual([['utr-2.png', true], ['utr-1.pdf', false]]);
+    const ok = (await pay(approver, i.id, { action: 'verify', note: 'UTR matched' }).expect(200)).body.data;
+    expect(ok.payment.status).toBe('verified');
+    expect(ok.events.filter((e: { action: string }) => e.action === 'payment').map((e: { changes: { status: string[] } }) => e.changes.status))
+      .toEqual([['awaiting_proof', 'proof_uploaded'], ['proof_uploaded', 'refused'], ['refused', 'proof_uploaded'], ['proof_uploaded', 'verified']]);
+    expect(await count('bulk_order_documents')).toBe(2); // nothing deleted
+  });
+
+  it('not needed (free order); no check on the type = 409; closed orders take nothing; uploads checked; other types cannot see a file', async () => {
+    const i = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
+    expect((await pay(approver, i.id, { action: 'not_needed', note: 'Sample for school' }).expect(200)).body.data.payment.status).toBe('not_needed');
+    expect(fields(await pay(approver, i.id, { action: 'paid' }).expect(400))).toEqual(['action']);
+
+    const m = (await create(mkt, order()).expect(201)).body.data;
+    expect((await pay(approver, m.id, { action: 'not_needed' }).expect(409)).body.error.code).toBe('BULK_PAYMENT_NOT_TRACKED');
+    const mDoc = (await up(mkt, m.id, 'proforma_invoice', PDF, 'pi.pdf').expect(201)).body.data; // documents on every type
+    expect(mDoc.payment).toBeNull();
+    await api().get(`${V}/${m.id}/documents/${mDoc.documents[0].id}`).set('Cookie', inst.cookie).expect(404);
+    await api().get(`${V}/${m.id}/documents/999999`).set('Cookie', mkt.cookie).expect(404);
+
+    await up(inst, m.id, 'invoice', PDF, 'x.pdf').expect(404);
+    expect(fields(await up(mkt, m.id, 'receipt', Buffer.from('hello'), 'a.txt').expect(400))).toEqual(['kind', 'file']);
+    expect(fields(await api().post(`${V}/${m.id}/documents`).set('Cookie', mkt.cookie).field('kind', 'invoice').expect(400))).toEqual(['file']);
+
+    await api().post(`${V}/${m.id}/cancel`).set('Cookie', mkt.cookie).send({}).expect(200);
+    expect((await up(mkt, m.id, 'invoice', PDF, 'late.pdf').expect(409)).body.error.code).toBe('BULK_ORDER_CLOSED');
+  });
+
+  it('our team: PO review editors upload (viewers only read), see payment + documents; portal people are refused', async () => {
+    const i = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
+    const d = (await up(opsExec, i.id, 'invoice', PDF, 'inv-77.pdf', T).expect(201)).body.data;
+    expect(d.documents[0]).toMatchObject({ kind: 'invoice', by: { id: opsExec.userId } });
+    expect(d.payment.status).toBe('awaiting_proof'); // an invoice is not a proof
+    const viewer = await loginAs('viewer');
+    await up(viewer, i.id, 'invoice', PDF, 'v.pdf', T).expect(403);
+    await api().get(`${T}/${i.id}/documents/${d.documents[0].id}`).set('Cookie', viewer.cookie).expect(200);
+    const list = (await api().get(`${T}?type=institutional`).set('Cookie', viewer.cookie).expect(200)).body.data;
+    expect(list[0].payment.status).toBe('awaiting_proof');
+    await up(inst, i.id, 'invoice', PDF, 'p.pdf', T).expect(403);
+    await api().get(`${T}/${i.id}/documents/${d.documents[0].id}`).set('Cookie', inst.cookie).expect(403);
   });
 });

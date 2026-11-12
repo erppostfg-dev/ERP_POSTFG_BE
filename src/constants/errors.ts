@@ -98,6 +98,11 @@ export const ERRORS = {
   BULK_NO_ORDER_ACCESS: define(403, () => 'You have no access to bulk orders: ask an admin for a Bulk Orders role'),
   BULK_ORDER_NOT_PENDING: define(409, (po: string, status: string) => `${po} is no longer waiting for approval (now ${status.replace(/_/g, ' ')}): reload it`),
   BULK_NOT_APPROVER: define(403, () => 'Only a bulk order approver can approve or reject: ask an admin for the Approver role'),
+  BULK_ORDER_CLOSED: define(409, (po: string, status: string) => `${po} is ${status}: nothing more can be added to it`),
+  BULK_PAYMENT_NOT_TRACKED: define(409, (po: string) => `${po} has no payment check (it is off for its order type)`),
+  BULK_PAYMENT_NO_PROOF: define(409, (po: string) => `${po} has no new proof of payment to check: verify / refuse needs an uploaded proof`),
+  BULK_DOCUMENT_NOT_FOUND: define(404, (id: string) => `Document ${id} not found on this order`),
+  BULK_NOT_SETTINGS_ADMIN: define(403, () => 'Only an admin can change the Bulk Orders settings'),
   BULK_LOCATION_LABEL_TAKEN: define(409, (label: string) => `A saved location is already called "${label}": pick it, or use another name`),
   UNIWARE_SYNC_TOO_SOON: define(409, (ago: number, by: string, left: number) => `Sync from Uniware was run ${ago} min ago by ${by}: available again in ${left} min (the server also syncs every 30 min by itself)`),
   // --- Notices (2026-11-10) ---
