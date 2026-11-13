@@ -92,6 +92,7 @@ export const BULK_PAYMENT_STATUS = {
   NOT_NEEDED: 'not_needed',
 } as const;
 export type BulkPaymentStatus = (typeof BULK_PAYMENT_STATUS)[keyof typeof BULK_PAYMENT_STATUS];
+export const BULK_PAYMENT_STATUSES = Object.values(BULK_PAYMENT_STATUS) as BulkPaymentStatus[];
 
 /** What the approver does on POST /bulk-orders/:id/payment -> the new payment status. */
 export const BULK_PAYMENT_ACTION = {
@@ -148,6 +149,12 @@ export const BULK_ORDERS = {
   QTY_MAX: 1_000_000,
   /** Discount % (0-100, 2 decimals). No business limit (user): only what makes sense. */
   DISCOUNT_MAX: 100,
+  /**
+   * Fixed price per unit by type (user 2026-11-13, Marketing: "don't show the amount, just put 1 rupee per SKU, one item,
+   * same for everything, no discounts"): every unit at this price (with GST), no discount (a discount sent = 400), the
+   * Uniware CSV Selling Price = this; the portal shows no money on these orders. A type not listed = MRP less discount %.
+   */
+  FIXED_UNIT_PRICE: { [BULK_ORDER_TYPE.MARKETING]: 1 } as Partial<Record<BulkOrderType, number>>,
   /** SKU search: at least this many characters, at most this many answers. */
   SKU_QUERY_MIN: 2,
   SKU_RESULTS_MAX: 20,
@@ -175,11 +182,15 @@ export const BULK_ORDERS_TEAM = {
   ROUTES: {
     LIST: '/', ONE: '/:id', DOCUMENTS: '/:id/documents', DOCUMENT: '/:id/documents/:docId',
     PROCESS_OPTIONS: '/:id/process-options', PROCESS: '/:id/process',
+    /** Payment check by our team (2026-11-13; CAPABILITY.BULK_PAYMENT_VERIFY). */
+    PAYMENT: '/:id/payment',
   },
 } as const;
 
 /**
- * Step 3b, processing an approved order into a sale order (user 2026-11-12). Institutional first, Marketing next.
+ * Step 3b, processing an approved order into a sale order (user 2026-11-12). Institutional first; Marketing 2026-11-13 the
+ * same way (user: Uniware channel (e.g. Jiva) + customer code typed for now, auto-filled later), every unit at ₹1
+ * (BULK_ORDERS.FIXED_UNIT_PRICE).
  *   - Our team member types the warehouse (facility), the Uniware channel and the Uniware customer code (both change
  *     often: he creates the customer in Uniware himself and types the code; POST_FG never creates customers).
  *   - Customer book (bulk_customers): every processed order saves / updates its customer (the requester's institution
@@ -193,8 +204,10 @@ export const BULK_ORDERS_TEAM = {
  *     approved again.
  */
 export const BULK_SALE = {
-  /** Order types our team can process now (Marketing next, user). */
-  TYPES: [BULK_ORDER_TYPE.INSTITUTIONAL] as BulkOrderType[],
+  /** Order types our team can process now (Institutional 2026-11-12, Marketing 2026-11-13). */
+  TYPES: [BULK_ORDER_TYPE.INSTITUTIONAL, BULK_ORDER_TYPE.MARKETING] as BulkOrderType[],
+  /** Types whose processed customer goes into the customer book (bulk_customers). Marketing has no institution (auto-fill later, user). */
+  CUSTOMER_BOOK_TYPES: [BULK_ORDER_TYPE.INSTITUTIONAL] as BulkOrderType[],
   /** po_uploads.source_system; external_id = the saved PO's number (SALE_PO). */
   SOURCE_SYSTEM: 'bulk_orders',
   /**

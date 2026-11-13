@@ -76,6 +76,12 @@ export const CAPABILITY = {
   PO_REVIEW_EDIT_ALL: 'po-review:edit-all',
   /** D2C internal transfers (2026-11-03, decision 12): full Uniware resync, incl. closed / cancelled / erroring transfers. */
   D2C_RESYNC: 'd2c-transfers:resync',
+  /**
+   * Bulk Orders: verify / refuse a proof of payment or mark it not needed (2026-11-13, user: "for now admin and dev; in
+   * future we add the role so they can access"): admin / developer always; any other role = switch it on in the Roles
+   * tab (no code, no migration). Same rule in the portal and in POST_FG PO Processing & Review > Bulk Orders.
+   */
+  BULK_PAYMENT_VERIFY: 'bulk-orders:verify-payment',
 } as const;
 export type Capability = (typeof CAPABILITY)[keyof typeof CAPABILITY];
 export const CAPABILITIES: readonly { key: Capability; label: string; description: string }[] = [
@@ -88,6 +94,11 @@ export const CAPABILITIES: readonly { key: Capability; label: string; descriptio
     key: CAPABILITY.D2C_RESYNC,
     label: 'D2C transfers: full resync',
     description: 'Re-read every transfer from Uniware, including closed, cancelled and erroring ones.',
+  },
+  {
+    key: CAPABILITY.BULK_PAYMENT_VERIFY,
+    label: 'Bulk Orders: verify payments',
+    description: 'Verify or refuse a proof of payment, or mark the payment not needed (POST_FG Bulk Orders and the portal).',
   },
 ];
 export const CAPABILITY_SECTION = 'Special permissions';

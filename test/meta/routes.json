@@ -205,6 +205,7 @@
   "POST /po-review/:uploadId/submit",
   "POST /po-review/bulk-dismiss",
   "POST /po-review/bulk-orders/:id/documents",
+  "POST /po-review/bulk-orders/:id/payment",
   "POST /po-review/bulk-orders/:id/process",
   "POST /po-review/bulk-reopen",
   "POST /po-review/bulk-reread",

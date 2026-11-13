@@ -4,6 +4,7 @@ import { AppDataSource } from '../../config/data-source';
 import {
   ACCESS_LEVEL,
   BULK_BODY as F,
+  CAPABILITY,
   BULK_DOC_KIND,
   BULK_DOC_KINDS,
   BULK_DOCS,
@@ -24,10 +25,10 @@ import { LOG_SOURCE } from '../../constants/logging';
 import { BulkOrder, BulkOrderDocument, BulkTypeSetting } from '../../entities';
 import { appError } from '../../utils/AppError';
 import { log } from '../../utils/logger';
-import { accessFrom, allows, loadAccess } from '../auth/access.service';
+import { accessFrom, allows, hasCapability, loadAccess } from '../auth/access.service';
 import { openS3File, s3UrlOfKey, writeS3File } from '../email-intake/s3-mirror.service';
 import {
-  addEvent, BulkActor, Checker, getBulkOrder, isId, needAnyBulk, needApprover, teamBulkOrder, typeOfOrder, userNames,
+  addEvent, BulkActor, Checker, getBulkOrder, isId, needAnyBulk, teamBulkOrder, typeOfOrder, userNames,
 } from './bulk-orders.service';
 
 /*
@@ -75,8 +76,15 @@ const checkUpload = (body: Record<string, unknown>, file: DocFile | undefined) =
 /** Stores the file in S3, then (one transaction) the row, older ones of the kind replaced, payment status, timeline. */
 const addDocument = async (orderId: string, byUserId: number, body: Record<string, unknown>, file: DocFile | undefined): Promise<void> => {
   const u = checkUpload(body, file);
-  const po = (await AppDataSource.getRepository(BulkOrder).findOne({ select: { id: true, poNumber: true }, where: { id: orderId } }))?.poNumber;
-  if (!po) throw appError(ERROR_CODES.BULK_ORDER_NOT_FOUND, orderId);
+  const found = await AppDataSource.getRepository(BulkOrder).findOne({ select: { id: true, poNumber: true, paymentStatus: true }, where: { id: orderId } });
+  if (!found) throw appError(ERROR_CODES.BULK_ORDER_NOT_FOUND, orderId);
+  const po = found.poNumber;
+  // no payment check on the order (Marketing, user 2026-11-13: "don't show the payment upload to marketing"): no proof
+  if (u.kind === BULK_DOC_KIND.PAYMENT_PROOF && !found.paymentStatus) {
+    const c = new Checker();
+    c.add(F.KIND, `${po} has no payment check: upload a proforma or an invoice instead`);
+    c.fail();
+  }
   const s3Url = s3UrlOfKey(`${BULK_DOCS.S3_FOLDER}/${po}/${randomUUID()}${u.ext}`);
   await writeS3File(s3Url, u.file.buffer);
   const fileName = (u.file.originalname || `${u.kind}${u.ext}`).slice(0, 255);
@@ -137,14 +145,18 @@ const PAYMENT_TO: Record<string, BulkPaymentStatus> = {
   [BULK_PAYMENT_ACTION.NOT_NEEDED]: BULK_PAYMENT_STATUS.NOT_NEEDED,
 };
 
+/** 403 unless the person may verify payments (CAPABILITY.BULK_PAYMENT_VERIFY: admin / developer always, else a role it is on for). */
+const needPaymentVerifier = async (actor: BulkActor): Promise<void> => {
+  if (!(await hasCapability(actor.id, actor.roles, CAPABILITY.BULK_PAYMENT_VERIFY))) throw appError(ERROR_CODES.BULK_NOT_PAYMENT_VERIFIER);
+};
+
 /**
- * The approver's payment check: { action: verify | refuse | not_needed, note? } (refuse needs a note). verify / refuse
- * only while a proof waits (proof_uploaded); not_needed any time. Any order status except rejected / cancelled.
+ * The payment check: { action: verify | refuse | not_needed, note? } (refuse needs a note). verify / refuse only while a
+ * proof waits (proof_uploaded); not_needed any time. Any order status except rejected / cancelled. Who: the special
+ * permission "Bulk Orders: verify payments" (2026-11-13; was the portal approver), in the portal (setBulkPayment: also
+ * needs to see the order's type) or in POST_FG (teamSetBulkPayment: PO review access, checked by the route).
  */
-export const setBulkPayment = async (actor: BulkActor, id: string, body: Record<string, unknown>) => {
-  const r = await needAnyBulk(actor);
-  needApprover(r);
-  await typeOfOrder(r, id);
+const decidePayment = async (actorId: number, id: string, body: Record<string, unknown>): Promise<void> => {
   const c = new Checker();
   const action = c.oneOf(body[F.ACTION], F.ACTION, BULK_PAYMENT_ACTIONS);
   const note = c.text(body[F.NOTE], F.NOTE, BULK_ORDERS.NOTE_MAX, action === BULK_PAYMENT_ACTION.REFUSE) || null;
@@ -155,11 +167,27 @@ export const setBulkPayment = async (actor: BulkActor, id: string, body: Record<
     if (!o.paymentStatus) throw appError(ERROR_CODES.BULK_PAYMENT_NOT_TRACKED, o.poNumber);
     if (action !== BULK_PAYMENT_ACTION.NOT_NEEDED && o.paymentStatus !== BULK_PAYMENT_STATUS.PROOF_UPLOADED) throw appError(ERROR_CODES.BULK_PAYMENT_NO_PROOF, o.poNumber);
     const now = new Date();
-    await m.getRepository(BulkOrder).update({ id }, { paymentStatus: to, paymentBy: actor.id, paymentAt: now, paymentNote: note, updatedAt: now });
-    await addEvent(m, id, BULK_EVENT.PAYMENT, actor.id, note, { status: [o.paymentStatus, to] });
-    log.info(LOG_SOURCE.API, `[bulk-orders] ${o.poNumber} payment ${o.paymentStatus} -> ${to} by user ${actor.id}`);
+    await m.getRepository(BulkOrder).update({ id }, { paymentStatus: to, paymentBy: actorId, paymentAt: now, paymentNote: note, updatedAt: now });
+    await addEvent(m, id, BULK_EVENT.PAYMENT, actorId, note, { status: [o.paymentStatus, to] });
+    log.info(LOG_SOURCE.API, `[bulk-orders] ${o.poNumber} payment ${o.paymentStatus} -> ${to} by user ${actorId}`);
   });
+};
+
+/** Portal: POST /bulk-orders/:id/payment. */
+export const setBulkPayment = async (actor: BulkActor, id: string, body: Record<string, unknown>) => {
+  const r = await needAnyBulk(actor);
+  await needPaymentVerifier(actor);
+  await typeOfOrder(r, id);
+  await decidePayment(actor.id, id, body);
   return getBulkOrder(actor, id);
+};
+
+/** POST_FG: POST /po-review/bulk-orders/:id/payment (any type; the route checks PO review access). */
+export const teamSetBulkPayment = async (actor: BulkActor, id: string, body: Record<string, unknown>) => {
+  await needPaymentVerifier(actor);
+  if (!isId(id)) throw appError(ERROR_CODES.BULK_ORDER_NOT_FOUND, String(id));
+  await decidePayment(actor.id, id, body);
+  return teamBulkOrder(id);
 };
 
 // ---- settings (admin) ----------------------------------------------------------------------------------------------

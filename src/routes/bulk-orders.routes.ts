@@ -41,7 +41,8 @@ import { sendDocument } from './bulk-documents.send';
  *   POST /bulk-orders/:id/documents                       multipart: kind (proforma_invoice | invoice | payment_proof) + file
  *                                                         (PDF / PNG / JPG, 10 MB; editor on its type or approver)
  *   GET  /bulk-orders/:id/documents/:docId                the file (streamed from S3; anyone who sees the order)
- *   POST /bulk-orders/:id/payment                         { action: verify | refuse | not_needed, note? } (approver)
+ *   POST /bulk-orders/:id/payment                         { action: verify | refuse | not_needed, note? } (special permission
+ *                                                         "Bulk Orders: verify payments", 2026-11-13; was the approver)
  * Settings (admin = editor on /bulk-orders):
  *   GET  /bulk-orders/settings                            per type: paymentCheck
  *   PUT  /bulk-orders/settings/:type                      { paymentCheck: boolean } (orders created after it)

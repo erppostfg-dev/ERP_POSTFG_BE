@@ -15,6 +15,7 @@ import {
   BULK_ORDERS,
   BULK_PAGE,
   BULK_PAYMENT_STATUS,
+  BULK_PAYMENT_STATUSES,
   BULK_PO_PREFIX,
   BULK_PRIORITIES,
   BULK_TYPE_PAGE,
@@ -118,6 +119,14 @@ const isDay = (s: string): boolean => /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.i
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 /** MRP less discount %, in whole paise (half up): MRP 100, 30% -> 70; 349, 12.5% -> 305.38. mrp x (100 - d) = paise. */
 const priceAfterDiscount = (mrp: number, discountPct: number): number => Math.round(Number((mrp * (100 - discountPct)).toFixed(6))) / 100;
+/** A type's fixed unit price (Marketing: ₹1, user 2026-11-13), or undefined = MRP less discount %. */
+const fixedPrice = (type: BulkOrderType | null): number | undefined => (type ? BULK_ORDERS.FIXED_UNIT_PRICE[type] : undefined);
+/** The unit price of a line of this type. */
+const unitPriceOf = (type: BulkOrderType, mrp: number, discountPct: number): number => fixedPrice(type) ?? priceAfterDiscount(mrp, discountPct);
+/** A discount % from a request: 0-100, 2 decimals; a fixed-price type takes none (0 or left out). '' = OK. */
+const discountProblem = (d: unknown, type: BulkOrderType | null): string =>
+  !(typeof d === 'number' && Number.isFinite(d) && d >= 0 && d <= BULK_ORDERS.DISCOUNT_MAX && round2(d) === d) ? `a % from 0 to ${BULK_ORDERS.DISCOUNT_MAX} with at most 2 decimals`
+    : fixedPrice(type) !== undefined && d !== 0 ? `0: ${type} orders have no discount (every unit at ₹${fixedPrice(type)})` : '';
 
 interface AddressIn { line: string; city: string; state: string; pincode: string }
 
@@ -235,7 +244,7 @@ export const addBulkLocation = async (actor: BulkActor, body: Record<string, unk
 
 interface LineIn { pepCode: string; qty: number; discountPct: number }
 
-const checkLines = (c: Checker, v: unknown): LineIn[] => {
+const checkLines = (c: Checker, v: unknown, type: BulkOrderType | null): LineIn[] => {
   if (!Array.isArray(v) || !v.length) {
     c.add(F.LINES, errorMessage(ERROR_CODES.FIELD_REQUIRED, F.LINES));
     return [];
@@ -254,9 +263,8 @@ const checkLines = (c: Checker, v: unknown): LineIn[] => {
     if (!(typeof qty === 'number' && Number.isInteger(qty) && qty >= 1 && qty <= BULK_ORDERS.QTY_MAX)) {
       c.add(at(F.QTY), errorMessage(ERROR_CODES.FIELD_NOT_INT_RANGE, at(F.QTY), 1, BULK_ORDERS.QTY_MAX));
     }
-    if (!(typeof d === 'number' && Number.isFinite(d) && d >= 0 && d <= BULK_ORDERS.DISCOUNT_MAX && round2(d) === d)) {
-      c.add(at(F.DISCOUNT), errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, at(F.DISCOUNT), `a % from 0 to ${BULK_ORDERS.DISCOUNT_MAX} with at most 2 decimals`));
-    }
+    const dWhy = discountProblem(d, type);
+    if (dWhy) c.add(at(F.DISCOUNT), errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, at(F.DISCOUNT), dWhy));
     const key = pepCode.toUpperCase();
     if (pepCode && seen.has(key)) c.add(at(F.PEP_CODE), errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, at(F.PEP_CODE), 'a SKU not already on another line (change that line\'s quantity)'));
     seen.add(key);
@@ -337,7 +345,7 @@ const parseOrder = (body: Record<string, unknown>, fixedType?: BulkOrderType): O
     address = checkAddress(c, body[F.ADDRESS]);
     saveAs = c.text(body[F.SAVE_LOCATION_AS], F.SAVE_LOCATION_AS, BULK_ORDERS.LABEL_MAX, false);
   }
-  const lines = checkLines(c, body[F.LINES]);
+  const lines = checkLines(c, body[F.LINES], type);
   const institution = type === BULK_ORDER_TYPE.INSTITUTIONAL ? checkInstitution(c, body) : null;
   c.fail();
   return { type: type!, orderedBy, receiverName, phone: phone!, neededBy, priority: priority!, mode, note, locationId, address, saveAs, lines, institution };
@@ -364,7 +372,7 @@ interface PricedLine {
 }
 
 /** The lines priced on today's MRP (requested = what is asked now); 400 naming each SKU that cannot be sold. */
-const priceLines = async (lines: LineIn[]): Promise<PricedLine[]> => {
+const priceLines = async (type: BulkOrderType, lines: LineIn[]): Promise<PricedLine[]> => {
   const byCode = await skusNow(lines.map((l) => l.pepCode));
   const c = new Checker();
   lines.forEach((l, i) => {
@@ -375,7 +383,7 @@ const priceLines = async (lines: LineIn[]): Promise<PricedLine[]> => {
   return lines.map((l, i) => {
     const s = byCode.get(l.pepCode.toUpperCase())!;
     const mrp = Number(s.mrp);
-    const unitPrice = priceAfterDiscount(mrp, l.discountPct);
+    const unitPrice = unitPriceOf(type, mrp, l.discountPct);
     return {
       lineNo: i + 1, pepCode: s.pepCode, productName: s.productName, mrp,
       requestedQty: l.qty, requestedDiscountPct: l.discountPct, qty: l.qty, discountPct: l.discountPct,
@@ -411,7 +419,7 @@ export const addEvent = (m: EntityManager, orderId: string, action: BulkEventAct
 export const createBulkOrder = async (actor: BulkActor, body: Record<string, unknown>) => {
   const o = parseOrder(body);
   needType(await bulkRights(actor), o.type, ACCESS_LEVEL.EDITOR);
-  const priced = await priceLines(o.lines);
+  const priced = await priceLines(o.type, o.lines);
   const paymentCheck = (await AppDataSource.getRepository(BulkTypeSetting).findOneBy({ orderType: o.type }))?.paymentCheck === true;
 
   const id = await withDeadlockRetry(() => AppDataSource.transaction(async (m) => {
@@ -462,7 +470,7 @@ export const updateBulkOrder = async (actor: BulkActor, id: string, body: Record
   const t = await typeOfOrder(r, id);
   needType(r, t, ACCESS_LEVEL.EDITOR);
   const o = parseOrder(body, t);
-  const priced = await priceLines(o.lines);
+  const priced = await priceLines(t, o.lines);
   await AppDataSource.transaction(async (m) => {
     const cur = await lockPending(m, id);
     const before = await m.getRepository(BulkOrderLine).find({ where: { orderId: id }, order: { lineNo: 'ASC' } });
@@ -505,7 +513,7 @@ export const needApprover = (r: BulkRights): void => {
 interface LineChangeIn { lineNo: number; qty?: number; discountPct?: number }
 
 /** Checks an approve body: line changes (existing line numbers), lines to remove, note. */
-const parseDecision = (body: Record<string, unknown>, lineNos: Set<number>) => {
+const parseDecision = (body: Record<string, unknown>, lineNos: Set<number>, type: BulkOrderType) => {
   const c = new Checker();
   const changes: LineChangeIn[] = [];
   const raw = body[F.LINES];
@@ -524,9 +532,9 @@ const parseDecision = (body: Record<string, unknown>, lineNos: Set<number>) => {
       }
       if (l[F.DISCOUNT] !== undefined) {
         const d = l[F.DISCOUNT];
-        if (!(typeof d === 'number' && Number.isFinite(d) && d >= 0 && d <= BULK_ORDERS.DISCOUNT_MAX && round2(d) === d)) {
-          c.add(at(F.DISCOUNT), errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, at(F.DISCOUNT), `a % from 0 to ${BULK_ORDERS.DISCOUNT_MAX} with at most 2 decimals`));
-        } else out.discountPct = d;
+        const dWhy = discountProblem(d, type);
+        if (dWhy) c.add(at(F.DISCOUNT), errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, at(F.DISCOUNT), dWhy));
+        else out.discountPct = d as number;
       }
       changes.push(out);
     });
@@ -554,7 +562,8 @@ export const approveBulkOrder = async (actor: BulkActor, id: string, body: Recor
   await AppDataSource.transaction(async (m) => {
     const cur = await lockPending(m, id);
     const lines = await m.getRepository(BulkOrderLine).find({ where: { orderId: id }, order: { lineNo: 'ASC' } });
-    const d = parseDecision(body, new Set(lines.map((l) => l.lineNo)));
+    const type = cur.orderType as BulkOrderType;
+    const d = parseDecision(body, new Set(lines.map((l) => l.lineNo)), type);
     const byNo = new Map(d.changes.map((x) => [x.lineNo, x]));
     const kept = lines.filter((l) => !d.remove.has(l.lineNo));
     const today = await skusNow(kept.map((l) => l.pepCode));
@@ -568,9 +577,10 @@ export const approveBulkOrder = async (actor: BulkActor, id: string, body: Recor
     const next = kept.map((l) => {
       const x = byNo.get(l.lineNo);
       const qty = x?.qty ?? l.qty;
-      const discountPct = x?.discountPct ?? l.discountPct;
+      // a fixed-price type (Marketing) never keeps a discount, also on an order saved before that rule
+      const discountPct = fixedPrice(type) !== undefined ? 0 : x?.discountPct ?? l.discountPct;
       const mrp = Number(today.get(l.pepCode.toUpperCase())!.mrp);
-      const unitPrice = priceAfterDiscount(mrp, discountPct);
+      const unitPrice = unitPriceOf(type, mrp, discountPct);
       const diff: Record<string, unknown> = {};
       if (qty !== l.qty) diff.qty = [l.qty, qty];
       if (discountPct !== l.discountPct) diff.discountPct = [l.discountPct, discountPct];
@@ -643,20 +653,22 @@ export const userNames = async (ids: number[]): Promise<Map<number, string>> => 
   return new Map(us.map((u) => [u.id, u.name || u.email]));
 };
 
-interface ListQuery { type: BulkOrderType | null; status: string | null; page: number; size: number; search: string }
+interface ListQuery { type: BulkOrderType | null; status: string | null; payment: string | null; page: number; size: number; search: string }
 
 /** Checks a list query (type, status, q, page, pageSize); 400 with every wrong one. */
 const parseListQuery = (q: Record<string, unknown>): ListQuery => {
   const c = new Checker();
   const type = q.type === undefined || q.type === '' ? null : typeParam(c, q.type);
   const status = q.status === undefined || q.status === '' ? null : c.oneOf(q.status, 'status', BULK_ORDER_STATUSES);
+  // payment status (2026-11-13: "Payments to verify" = proof_uploaded)
+  const payment = q.payment === undefined || q.payment === '' ? null : c.oneOf(q.payment, 'payment', BULK_PAYMENT_STATUSES);
   const page = q.page === undefined ? 1 : Number(q.page);
   const size = q.pageSize === undefined ? BULK_ORDERS.PAGE_SIZE : Number(q.pageSize);
   if (!Number.isInteger(page) || page < 1) c.add('page', errorMessage(ERROR_CODES.FIELD_NOT_INT_RANGE, 'page', 1, 1_000_000));
   if (!Number.isInteger(size) || size < 1 || size > BULK_ORDERS.PAGE_SIZE_MAX) c.add('pageSize', errorMessage(ERROR_CODES.FIELD_NOT_INT_RANGE, 'pageSize', 1, BULK_ORDERS.PAGE_SIZE_MAX));
   const search = c.text(q.q, 'q', 100, false);
   c.fail();
-  return { type, status, page, size, search };
+  return { type, status, payment, page, size, search };
 };
 
 /** One page of orders of these types (newest first) + the total: 1 count + 1 page query, no lines. */
@@ -664,6 +676,7 @@ const pageOfOrders = async (types: BulkOrderType[], l: ListQuery) => {
   if (!types.length) return { items: [], meta: { total: 0, page: l.page, pageSize: l.size } };
   const qb = AppDataSource.getRepository(BulkOrder).createQueryBuilder('o').where('o.orderType IN (:...types)', { types });
   if (l.status) qb.andWhere('o.status = :status', { status: l.status });
+  if (l.payment) qb.andWhere('o.paymentStatus = :payment', { payment: l.payment });
   if (l.search) {
     const like = `%${l.search.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
     qb.andWhere('(o.poNumber LIKE :like OR o.orderedBy LIKE :like OR o.receiverName LIKE :like OR o.city LIKE :like OR o.locationLabel LIKE :like)', { like });
@@ -719,13 +732,16 @@ export const getBulkOrder = async (actor: BulkActor, id: string) => {
 /** Every type's orders for our team + per type how many approved ones wait (the tab's count): 1 extra GROUP BY. */
 export const teamBulkOrders = async (q: Record<string, unknown>) => {
   const l = parseListQuery(q);
+  // per type: approved orders waiting to be processed + proofs of payment waiting to be checked (open orders); 1 GROUP BY
   const [found, counts] = await Promise.all([
     pageOfOrders(l.type ? [l.type] : BULK_ORDER_TYPES, l),
-    AppDataSource.getRepository(BulkOrder).createQueryBuilder('o').select('o.orderType', 'type').addSelect('COUNT(*)', 'n')
-      .where('o.status = :s', { s: BULK_ORDER_STATUS.APPROVED }).groupBy('o.orderType').getRawMany<{ type: string; n: string }>(),
+    AppDataSource.getRepository(BulkOrder).createQueryBuilder('o').select('o.orderType', 'type')
+      .addSelect('SUM(o.status = :s)', 'n').addSelect('SUM(o.paymentStatus = :p AND o.status NOT IN (:...closed))', 'pay')
+      .where('(o.status = :s OR o.paymentStatus = :p)', { s: BULK_ORDER_STATUS.APPROVED, p: BULK_PAYMENT_STATUS.PROOF_UPLOADED, closed: [BULK_ORDER_STATUS.REJECTED, BULK_ORDER_STATUS.CANCELLED] })
+      .groupBy('o.orderType').getRawMany<{ type: string; n: string | null; pay: string | null }>(),
   ]);
-  const waiting = Object.fromEntries(BULK_ORDER_TYPES.map((t) => [t, Number(counts.find((c) => c.type === t)?.n ?? 0)])) as Record<BulkOrderType, number>;
-  return { items: found.items, meta: { ...found.meta, waiting } };
+  const per = (k: 'n' | 'pay') => Object.fromEntries(BULK_ORDER_TYPES.map((t) => [t, Number(counts.find((c) => c.type === t)?.[k] ?? 0)])) as Record<BulkOrderType, number>;
+  return { items: found.items, meta: { ...found.meta, waiting: per('n'), paymentsToVerify: per('pay') } };
 };
 
 /** One order for our team (any type); 404 when missing. */

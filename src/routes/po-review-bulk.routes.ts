@@ -3,7 +3,7 @@ import multer from 'multer';
 import { ACCESS_LEVEL, BULK_DOCS, BULK_ORDERS_TEAM, PAGE } from '../constants';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
 import { teamBulkOrder, teamBulkOrders } from '../modules/bulk-orders/bulk-orders.service';
-import { teamOpenBulkDocument, teamUploadBulkDocument } from '../modules/bulk-orders/bulk-documents.service';
+import { teamOpenBulkDocument, teamSetBulkPayment, teamUploadBulkDocument } from '../modules/bulk-orders/bulk-documents.service';
 import { bulkProcessOptions, processBulkOrder } from '../modules/bulk-orders/bulk-process.service';
 import { sendDocument } from './bulk-documents.send';
 
@@ -19,6 +19,9 @@ import { sendDocument } from './bulk-documents.send';
  *   GET /po-review/bulk-orders/:id/process-options                 warehouses + matching saved customers (EDITOR; 3b)
  *   POST /po-review/bulk-orders/:id/process                        { facilityCode, uniwareChannel, customerCode } ->
  *                                                                  sale order (EDITOR; 2026-11-12, bulk-process.service)
+ *   POST /po-review/bulk-orders/:id/payment                        { action: verify | refuse | not_needed, note? } (PO review
+ *                                                                  VIEWER + special permission "Bulk Orders: verify payments":
+ *                                                                  admin / developer, or a role it is on for; 2026-11-13)
  * Mounted BEFORE the PO review routes (routes/index.ts), so "bulk-orders" is never read as an upload id.
  */
 const router = Router();
@@ -50,6 +53,13 @@ router.post(BULK_ORDERS_TEAM.ROUTES.DOCUMENTS, ...editor, upload, async (req, re
   }
 });
 router.get(BULK_ORDERS_TEAM.ROUTES.DOCUMENT, ...viewer, sendDocument((req) => teamOpenBulkDocument(String(req.params.id), String(req.params.docId))));
+router.post(BULK_ORDERS_TEAM.ROUTES.PAYMENT, ...viewer, async (req, res, next) => {
+  try {
+    res.json({ data: await teamSetBulkPayment({ id: req.auth!.user.id, roles: req.auth!.roles }, String(req.params.id), (req.body ?? {}) as Record<string, unknown>) });
+  } catch (err) {
+    next(err);
+  }
+});
 router.get(BULK_ORDERS_TEAM.ROUTES.PROCESS_OPTIONS, ...editor, async (req, res, next) => {
   try {
     res.json({ data: await bulkProcessOptions(String(req.params.id)) });

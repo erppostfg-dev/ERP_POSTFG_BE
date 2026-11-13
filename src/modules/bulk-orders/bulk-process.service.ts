@@ -4,6 +4,7 @@ import {
   BULK_BODY as F,
   BULK_EVENT,
   BULK_ORDER_STATUS,
+  BULK_ORDERS,
   BULK_SALE,
   BULK_DOCS,
   BulkOrderType,
@@ -51,7 +52,9 @@ import { addEvent, Checker, isId, teamBulkOrder } from './bulk-orders.service';
  *        Uniware CSV) are written last inside it, so a failure leaves nothing half-made.
  *   Optional "Send back" (Verify panel; po-verify sendBack -> bulkSendBack), to undo a wrong one: that sale order cancelled (Inactive, kept), the upload
  *        rejected (kept), the order approved again with the sale order cleared (kept on the timeline) to be processed again.
- * Payment is shown but NEVER blocks (user). Selling Price = the approved unit price (MRP less discount %, with GST).
+ * Payment is shown but NEVER blocks (user). Selling Price = the approved unit price (MRP less discount %, with GST); a
+ * fixed-price type (Marketing: ₹1 a unit, 2026-11-13) always at that price, also an order approved before the rule (its
+ * lines are set to it here, in the same transaction). Marketing has no institution: no customer book row (auto-fill later).
  */
 
 export interface ProcessActor { id: number; email: string }
@@ -105,6 +108,12 @@ export const bulkProcessOptions = async (id: string) => {
 /** One address as a line of text. */
 const addressText = (line: string | null, city: string | null, state: string | null, pin: string | null): string =>
   [line, city, state, pin].filter(Boolean).join(', ');
+
+/** Lines at a type's fixed unit price (Marketing ₹1), else as approved. */
+const atFixedPrice = (type: BulkOrderType, lines: BulkOrderLine[]): BulkOrderLine[] => {
+  const p = BULK_ORDERS.FIXED_UNIT_PRICE[type];
+  return p === undefined ? lines : lines.map((l) => ({ ...l, discountPct: 0, unitPrice: p, lineTotal: Math.round(p * l.qty * 100) / 100 }));
+};
 
 /** The order as the "PO file" of the sale order (order.json): what was approved, by whom, for whom. */
 const orderJson = (o: BulkOrder, lines: BulkOrderLine[], code: string, f: { facilityCode: string; uniwareChannel: string; customerCode: string }) => ({
@@ -196,7 +205,11 @@ export const processBulkOrder = async (actor: ProcessActor, id: string, body: Re
     c.add(F.FACILITY, `${facilityCode} is not an active warehouse in the facility master`);
     c.fail();
   }
-  const lines = await AppDataSource.getRepository(BulkOrderLine).find({ where: { orderId: String(first.id) }, order: { lineNo: 'ASC' } });
+  const type = first.orderType as BulkOrderType;
+  const approvedLines = await AppDataSource.getRepository(BulkOrderLine).find({ where: { orderId: String(first.id) }, order: { lineNo: 'ASC' } });
+  const lines = atFixedPrice(type, approvedLines);
+  const repriced = lines.filter((l, k) => l.unitPrice !== approvedLines[k].unitPrice || l.discountPct !== approvedLines[k].discountPct);
+  const totalValue = Math.round(lines.reduce((s, l) => s + l.lineTotal, 0) * 100) / 100;
   const skus = new Map((await cachedPepSkus()).map((s) => [s.pepCode.toUpperCase(), s]));
 
   const now = new Date();
@@ -209,7 +222,9 @@ export const processBulkOrder = async (actor: ProcessActor, id: string, body: Re
     // The saved PO's number: the order's own, then INST-2026-0001-2 ... after a send back (the cancelled one is kept,
     // and channel + PO number is unique on master_purchase_orders).
     const soPo = BULK_SALE.SALE_PO(o.poNumber, n);
-    const sale: BulkOrder = { ...o, poNumber: soPo };
+    const sale: BulkOrder = { ...o, poNumber: soPo, totalValue };
+    // an order approved before its type's fixed price: its lines + total set to that price (kept on the timeline below)
+    for (const l of repriced) await m.getRepository(BulkOrderLine).update({ id: l.id }, { discountPct: l.discountPct, unitPrice: l.unitPrice, lineTotal: l.lineTotal });
     const folder = `${BULK_DOCS.S3_FOLDER}/${o.poNumber}/${BULK_SALE.S3_SUB(n)}`;
     const orderUrl = s3UrlOfKey(`${folder}/${BULK_SALE.ORDER_FILE}`);
     const processedUrl = s3UrlOfKey(`${folder}/processed.json`);
@@ -228,23 +243,25 @@ export const processBulkOrder = async (actor: ProcessActor, id: string, body: Re
     await details.save(rows.details.map((d) => details.create({ ...d, shipmentOrderId: master.uid })));
     await m.getRepository(ShipmentLog).insert({ shipmentUid: poUid, userId: actor.id, action: SHIPMENT_LOG_ACTION.CREATED, source: SHIPMENT_LOG_SOURCE.REVIEW, remark: code });
 
-    // customer book: the same GSTIN, else the same name + billing pincode -> updated; else a new row
-    const customers = m.getRepository(BulkCustomer);
+    // customer book (Institutional): the same GSTIN, else the same name + billing pincode -> updated; else a new row
     const name = o.institutionName ?? o.receiverName;
-    const pin = o.billingPincode ?? o.pincode;
-    const same = (o.gstin ? await customers.findOne({ where: { gstin: o.gstin }, order: { usedCount: 'DESC' } }) : null)
-      ?? (await customers.find({ where: { pincode: pin } })).find((x) => normName(x.name) === normName(name)) ?? null;
-    const cust = {
-      name, gstin: o.gstin, addressLine: o.billingAddressLine ?? o.addressLine, city: o.billingCity ?? o.city, state: o.billingState ?? o.state, pincode: pin,
-      phone: o.receiverPhone, email: o.contactEmail, uniwareChannel, customerCode, lastOrderId: String(o.id), updatedBy: actor.id, updatedAt: now,
-    };
-    let customerId: string;
-    if (same) {
-      await customers.update({ id: same.id }, { ...cust, usedCount: same.usedCount + 1 });
-      customerId = String(same.id);
-    } else {
-      const res = await customers.insert({ ...cust, usedCount: 1, createdBy: actor.id });
-      customerId = String(res.identifiers[0].id);
+    let customerId: string | null = null;
+    if (BULK_SALE.CUSTOMER_BOOK_TYPES.includes(type)) {
+      const customers = m.getRepository(BulkCustomer);
+      const pin = o.billingPincode ?? o.pincode;
+      const same = (o.gstin ? await customers.findOne({ where: { gstin: o.gstin }, order: { usedCount: 'DESC' } }) : null)
+        ?? (await customers.find({ where: { pincode: pin } })).find((x) => normName(x.name) === normName(name)) ?? null;
+      const cust = {
+        name, gstin: o.gstin, addressLine: o.billingAddressLine ?? o.addressLine, city: o.billingCity ?? o.city, state: o.billingState ?? o.state, pincode: pin,
+        phone: o.receiverPhone, email: o.contactEmail, uniwareChannel, customerCode, lastOrderId: String(o.id), updatedBy: actor.id, updatedAt: now,
+      };
+      if (same) {
+        await customers.update({ id: same.id }, { ...cust, usedCount: same.usedCount + 1 });
+        customerId = String(same.id);
+      } else {
+        const res = await customers.insert({ ...cust, usedCount: 1, createdBy: actor.id });
+        customerId = String(res.identifiers[0].id);
+      }
     }
 
     const ups = m.getRepository(PoUpload);
@@ -259,9 +276,12 @@ export const processBulkOrder = async (actor: ProcessActor, id: string, body: Re
 
     await m.getRepository(BulkOrder).update({ id: String(o.id) }, {
       status: BULK_ORDER_STATUS.PROCESSING, facilityCode: f.facilityCode, uniwareChannel, customerCode, customerId,
-      processedBy: actor.id, processedAt: now, uploadId, poUid, saleOrderCode: code, saleOrderCount: n, updatedAt: now,
+      processedBy: actor.id, processedAt: now, uploadId, poUid, saleOrderCode: code, saleOrderCount: n, updatedAt: now, totalValue,
     });
-    await addEvent(m, String(o.id), BULK_EVENT.PROCESSED, actor.id, null, { saleOrderCode: code, facilityCode: f.facilityCode, uniwareChannel, customerCode, uploadId });
+    await addEvent(m, String(o.id), BULK_EVENT.PROCESSED, actor.id, null, {
+      saleOrderCode: code, facilityCode: f.facilityCode, uniwareChannel, customerCode, uploadId,
+      ...(repriced.length ? { repricedLines: repriced.map((l) => l.lineNo), unitPrice: BULK_ORDERS.FIXED_UNIT_PRICE[type] } : {}),
+    });
 
     // S3 last: a failure here rolls the rows back (an unused file may stay, never a half-made sale order)
     await writeS3Text(orderUrl, `${JSON.stringify(orderJson(sale, lines, code, f), null, 2)}\n`);

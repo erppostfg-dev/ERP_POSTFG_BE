@@ -14,7 +14,7 @@ covers(['GET /bulk-orders', 'POST /bulk-orders', 'GET /bulk-orders/skus', 'GET /
   'GET /po-review/bulk-orders', 'GET /po-review/bulk-orders/:id',
   'POST /bulk-orders/:id/documents', 'GET /bulk-orders/:id/documents/:docId', 'POST /bulk-orders/:id/payment', 'GET /bulk-orders/settings',
   'PUT /bulk-orders/settings/:type', 'POST /po-review/bulk-orders/:id/documents', 'GET /po-review/bulk-orders/:id/documents/:docId',
-  'GET /po-review/bulk-orders/:id/process-options', 'POST /po-review/bulk-orders/:id/process']);
+  'GET /po-review/bulk-orders/:id/process-options', 'POST /po-review/bulk-orders/:id/process', 'POST /po-review/bulk-orders/:id/payment']);
 
 const V = '/api/v1/bulk-orders';
 const YEAR = new Date(Date.now() + 5.5 * 3600_000).getUTCFullYear();
@@ -29,11 +29,13 @@ let skuA: number;
 
 /** Institutional requester details (required since 2026-11-12); added to every Institutional order of the tests. */
 const INSTITUTION = { institutionName: 'Sunrise Public School', gstin: '27AAACS1234A1Z5', contactEmail: 'office@sunrise.example', billingSameAsDelivery: true };
+/** Default lines: Institutional with discounts (MRP less discount %); Marketing without (every unit ₹1, no discount, 2026-11-13). */
 const order = (over: Record<string, unknown> = {}) => {
+  const discounted = over.type === 'institutional';
   const o: Record<string, unknown> = {
     type: 'marketing', orderedBy: 'Brand team', receiverName: 'Ravi Kumar', receiverPhone: '+91 98765-43210',
     address: ADDRESS, neededBy: TOMORROW, mode: 'Courier', priority: 'Standard',
-    lines: [{ pepCode: 'SKU_A', qty: 10, discountPct: 30 }, { pepCode: 'SKU_B', qty: 3, discountPct: 12.5 }],
+    lines: discounted ? [{ pepCode: 'SKU_A', qty: 10, discountPct: 30 }, { pepCode: 'SKU_B', qty: 3, discountPct: 12.5 }] : [{ pepCode: 'SKU_A', qty: 10 }, { pepCode: 'SKU_B', qty: 3 }],
     ...over,
   };
   return o.type === 'institutional' ? { ...INSTITUTION, ...o } : o;
@@ -113,7 +115,7 @@ describe('bulk orders: SKU search', () => {
     await rows('UPDATE master_skus SET mrp = 120 WHERE id = ?', [skuA]);
     expect(await mrpOf()).toBe(100);
     // ... but an order always takes the MRP from the DB
-    const o = (await create(mkt, order({ lines: [{ pepCode: 'SKU_A', qty: 1, discountPct: 0 }] })).expect(201)).body.data;
+    const o = (await create(inst, order({ type: 'institutional', lines: [{ pepCode: 'SKU_A', qty: 1, discountPct: 0 }] })).expect(201)).body.data;
     expect(o.lines[0]).toMatchObject({ mrp: 120, unitPrice: 120 });
     // a Masters page save drops the cached list at once
     const admin = await loginAs('admin');
@@ -123,19 +125,30 @@ describe('bulk orders: SKU search', () => {
 });
 
 describe('bulk orders: create', () => {
-  it('price = MRP from our master less the discount; totals; requested values kept; pending approval; phone cleaned', async () => {
-    const res = await create(mkt, order({ lines: [{ pepCode: 'sku_a', qty: 10, discountPct: 30, mrp: 1, unitPrice: 1 }, { pepCode: 'SKU_B', qty: 3, discountPct: 12.5 }] })).expect(201);
+  it('Institutional price = MRP from our master less the discount; totals; requested values kept; pending approval; phone cleaned', async () => {
+    const res = await create(inst, order({ type: 'institutional', lines: [{ pepCode: 'sku_a', qty: 10, discountPct: 30, mrp: 1, unitPrice: 1 }, { pepCode: 'SKU_B', qty: 3, discountPct: 12.5 }] })).expect(201);
     const o = res.body.data;
     expect(o).toMatchObject({
-      poNumber: `MKT-${YEAR}-0001`, type: 'marketing', status: 'pending_approval', receiverPhone: '9876543210', mode: 'Courier',
+      poNumber: `INST-${YEAR}-0001`, type: 'institutional', status: 'pending_approval', receiverPhone: '9876543210', mode: null,
       lineCount: 2, totalUnits: 13, totalMrp: 2047, totalValue: 1616.14, neededBy: TOMORROW,
-      location: { id: null, label: null, address: ADDRESS }, createdBy: { id: mkt.userId },
+      location: { id: null, label: null, address: ADDRESS }, createdBy: { id: inst.userId },
     });
     expect(o.lines).toEqual([
       { lineNo: 1, pepCode: 'SKU_A', name: 'Coffee Body Scrub 100g', mrp: 100, qty: 10, discountPct: 30, unitPrice: 70, lineTotal: 700, requestedQty: 10, requestedDiscountPct: 30 },
       { lineNo: 2, pepCode: 'SKU_B', name: 'Coffee Face Wash 100ml', mrp: 349, qty: 3, discountPct: 12.5, unitPrice: 305.38, lineTotal: 916.14, requestedQty: 3, requestedDiscountPct: 12.5 },
     ]);
-    expect((await api().get(`${V}/${o.id}`).set('Cookie', mkt.cookie).expect(200)).body.data).toEqual(o);
+    expect((await api().get(`${V}/${o.id}`).set('Cookie', inst.cookie).expect(200)).body.data).toEqual(o);
+  });
+
+  it('Marketing (2026-11-13): every unit ₹1 whatever the MRP, no discount (a discount sent = 400), MRP still kept', async () => {
+    const o = (await create(mkt, order({ lines: [{ pepCode: 'SKU_A', qty: 10 }, { pepCode: 'SKU_B', qty: 3, discountPct: 0 }] })).expect(201)).body.data;
+    expect(o).toMatchObject({ poNumber: `MKT-${YEAR}-0001`, type: 'marketing', lineCount: 2, totalUnits: 13, totalMrp: 2047, totalValue: 13 });
+    expect(o.lines.map((l: Record<string, unknown>) => [l.pepCode, l.mrp, l.discountPct, l.unitPrice, l.lineTotal])).toEqual([['SKU_A', 100, 0, 1, 10], ['SKU_B', 349, 0, 1, 3]]);
+    const res = await create(mkt, order({ lines: [{ pepCode: 'SKU_A', qty: 1, discountPct: 30 }] })).expect(400);
+    expect(fields(res)).toEqual(['lines[0].discountPct']);
+    expect(res.body.error.details[0].message).toContain('no discount');
+    const edited = (await api().put(`${V}/${o.id}`).set('Cookie', mkt.cookie).send(order({ lines: [{ pepCode: 'SKU_B', qty: 5 }] })).expect(200)).body.data;
+    expect(edited).toMatchObject({ totalValue: 5, totalMrp: 1745 });
   });
 
   it('PO numbers: one series per type and year, never repeated (also when 8 are created at the same moment)', async () => {
@@ -232,15 +245,15 @@ describe('bulk orders step 2: edit, cancel, approve, reject (timeline)', () => {
   const post = (who: TestLogin, id: string, what: string, body: Record<string, unknown> = {}) => api().post(`${V}/${id}/${what}`).set('Cookie', who.cookie).send(body);
 
   it("the requester's type may edit a pending order: same PO number, lines priced again, still pending; others may not", async () => {
-    const o = (await create(mkt, order()).expect(201)).body.data;
-    const edited = (await api().put(`${V}/${o.id}`).set('Cookie', mkt.cookie)
-      .send(order({ type: 'institutional', receiverName: 'Asha', lines: [{ pepCode: 'SKU_B', qty: 2, discountPct: 10 }] })).expect(200)).body.data;
-    expect(edited).toMatchObject({ poNumber: o.poNumber, type: 'marketing', status: 'pending_approval', receiverName: 'Asha', lineCount: 1, totalValue: 628.2 });
+    const o = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
+    const edited = (await api().put(`${V}/${o.id}`).set('Cookie', inst.cookie)
+      .send(order({ type: 'marketing', ...INSTITUTION, receiverName: 'Asha', lines: [{ pepCode: 'SKU_B', qty: 2, discountPct: 10 }] })).expect(200)).body.data;
+    expect(edited).toMatchObject({ poNumber: o.poNumber, type: 'institutional', status: 'pending_approval', receiverName: 'Asha', lineCount: 1, totalValue: 628.2 });
     expect(edited.lines).toEqual([expect.objectContaining({ lineNo: 1, pepCode: 'SKU_B', qty: 2, discountPct: 10, unitPrice: 314.1, requestedQty: 2, requestedDiscountPct: 10 })]);
     expect(edited.events.map((e: { action: string }) => e.action)).toEqual(['created', 'edited']);
     expect(edited.events[1].changes.fields).toEqual(['receiverName']);
-    await api().put(`${V}/${o.id}`).set('Cookie', approver.cookie).send(order()).expect(403);
-    await api().put(`${V}/${o.id}`).set('Cookie', inst.cookie).send(order()).expect(404);
+    await api().put(`${V}/${o.id}`).set('Cookie', approver.cookie).send(order({ type: 'institutional' })).expect(403);
+    await api().put(`${V}/${o.id}`).set('Cookie', mkt.cookie).send(order({ type: 'institutional' })).expect(404);
   });
 
   it('cancel: by its type, reason optional; a cancelled order cannot be edited, approved or cancelled again', async () => {
@@ -256,9 +269,9 @@ describe('bulk orders step 2: edit, cancel, approve, reject (timeline)', () => {
   });
 
   it("approve: approver changes qty / discount, removes a line; priced on TODAY's MRP; requested values kept; changes on the timeline", async () => {
-    const o = (await create(mkt, order()).expect(201)).body.data; // SKU_A 10 @30% (MRP 100), SKU_B 3 @12.5%
+    const o = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data; // SKU_A 10 @30% (MRP 100), SKU_B 3 @12.5%
     await rows('UPDATE master_skus SET mrp = 110 WHERE id = ?', [skuA]); // MRP changed since the order
-    await post(mkt, o.id, 'approve').expect(403);
+    await post(inst, o.id, 'approve').expect(403);
     const a = (await post(approver, o.id, 'approve', { lines: [{ lineNo: 1, qty: 8, discountPct: 25 }], removeLines: [2], note: 'Cut to budget' }).expect(200)).body.data;
     expect(a).toMatchObject({ status: 'approved', decidedBy: { id: approver.userId }, decisionNote: 'Cut to budget', lineCount: 1, totalUnits: 8, totalMrp: 880, totalValue: 660 });
     expect(a.lines).toEqual([expect.objectContaining({ lineNo: 1, mrp: 110, qty: 8, discountPct: 25, unitPrice: 82.5, lineTotal: 660, requestedQty: 10, requestedDiscountPct: 30 })]);
@@ -268,8 +281,24 @@ describe('bulk orders step 2: edit, cancel, approve, reject (timeline)', () => {
       { lineNo: 2, pepCode: 'SKU_B', removed: true },
     ]);
     // the requester sees the same
-    expect((await one(mkt, o.id)).totalValue).toBe(660);
+    expect((await one(inst, o.id)).totalValue).toBe(660);
     expect((await post(approver, o.id, 'reject', { reason: 'x' }).expect(409)).body.error.code).toBe('BULK_ORDER_NOT_PENDING');
+  });
+
+  it('approve a Marketing order: qty may change, a discount is refused, every unit stays ₹1', async () => {
+    const o = (await create(mkt, order()).expect(201)).body.data;
+    expect(fields(await post(approver, o.id, 'approve', { lines: [{ lineNo: 1, discountPct: 20 }] }).expect(400))).toEqual(['lines[0].discountPct']);
+    const a = (await post(approver, o.id, 'approve', { lines: [{ lineNo: 1, qty: 4 }, { lineNo: 2, discountPct: 0 }] }).expect(200)).body.data;
+    expect(a).toMatchObject({ status: 'approved', totalUnits: 7, totalValue: 7 });
+    expect(a.lines.map((l: Record<string, unknown>) => [l.qty, l.unitPrice, l.lineTotal])).toEqual([[4, 1, 4], [3, 1, 3]]);
+  });
+
+  it('a Marketing order saved with discounts before the ₹1 rule: approval sets every unit to ₹1 (on the timeline)', async () => {
+    const o = (await create(mkt, order()).expect(201)).body.data;
+    await rows('UPDATE bulk_order_lines SET discount_pct = 30, requested_discount_pct = 30, unit_price = 70, line_total = 700 WHERE order_id = ? AND line_no = 1', [o.id]);
+    const a = (await post(approver, o.id, 'approve').expect(200)).body.data;
+    expect(a.lines[0]).toMatchObject({ discountPct: 0, unitPrice: 1, lineTotal: 10, requestedDiscountPct: 30 });
+    expect(a.events[1].changes.lines).toEqual([{ lineNo: 1, pepCode: 'SKU_A', discountPct: [30, 0] }]);
   });
 
   it('approve checks: known line numbers, at least one line stays, every SKU still sellable today', async () => {
@@ -354,10 +383,11 @@ describe('bulk orders: payment check + documents + settings (2026-11-12)', () =>
     expect((await api().get(`${V}/${m.id}`).set('Cookie', mkt.cookie).expect(200)).body.data.payment).toBeNull(); // older order unchanged
   });
 
-  it('proof upload -> proof uploaded; approver verifies / refuses (reason); a new proof replaces the old one; never blocks approval', async () => {
+  it('proof upload -> proof uploaded; admin verifies / refuses (reason); a new proof replaces the old one; never blocks approval', async () => {
+    const admin = await loginAs('admin');
     const i = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
     await api().post(`${V}/${i.id}/approve`).set('Cookie', approver.cookie).send({}).expect(200); // no proof needed to approve
-    expect((await pay(approver, i.id, { action: 'verify' }).expect(409)).body.error.code).toBe('BULK_PAYMENT_NO_PROOF');
+    expect((await pay(admin, i.id, { action: 'verify' }).expect(409)).body.error.code).toBe('BULK_PAYMENT_NO_PROOF');
 
     const a = (await up(inst, i.id, 'payment_proof', PDF, 'utr-1.pdf').expect(201)).body.data;
     expect(a.payment.status).toBe('proof_uploaded');
@@ -367,15 +397,16 @@ describe('bulk orders: payment check + documents + settings (2026-11-12)', () =>
     expect(file.headers['content-type']).toBe('application/pdf');
     expect((file.body as Buffer).subarray(0, 5).toString()).toBe('%PDF-');
 
-    await pay(inst, i.id, { action: 'verify' }).expect(403); // only the approver
-    expect(fields(await pay(approver, i.id, { action: 'refuse' }).expect(400))).toEqual(['note']);
-    const refused = (await pay(approver, i.id, { action: 'refuse', note: 'Amount short by Rs 500' }).expect(200)).body.data;
-    expect(refused.payment).toMatchObject({ status: 'refused', by: { id: approver.userId }, note: 'Amount short by Rs 500' });
+    await pay(inst, i.id, { action: 'verify' }).expect(403); // only "verify payments" (admin / developer)
+    expect((await pay(approver, i.id, { action: 'verify' }).expect(403)).body.error.code).toBe('BULK_NOT_PAYMENT_VERIFIER'); // 2026-11-13: not the approver
+    expect(fields(await pay(admin, i.id, { action: 'refuse' }).expect(400))).toEqual(['note']);
+    const refused = (await pay(admin, i.id, { action: 'refuse', note: 'Amount short by Rs 500' }).expect(200)).body.data;
+    expect(refused.payment).toMatchObject({ status: 'refused', by: { id: admin.userId }, note: 'Amount short by Rs 500' });
 
     const b = (await up(inst, i.id, 'payment_proof', PNG, 'utr-2.png').expect(201)).body.data;
     expect(b.payment.status).toBe('proof_uploaded');
     expect(b.documents.map((d: { fileName: string; replacedAt: string | null }) => [d.fileName, d.replacedAt === null])).toEqual([['utr-2.png', true], ['utr-1.pdf', false]]);
-    const ok = (await pay(approver, i.id, { action: 'verify', note: 'UTR matched' }).expect(200)).body.data;
+    const ok = (await pay(admin, i.id, { action: 'verify', note: 'UTR matched' }).expect(200)).body.data;
     expect(ok.payment.status).toBe('verified');
     expect(ok.events.filter((e: { action: string }) => e.action === 'payment').map((e: { changes: { status: string[] } }) => e.changes.status))
       .toEqual([['awaiting_proof', 'proof_uploaded'], ['proof_uploaded', 'refused'], ['refused', 'proof_uploaded'], ['proof_uploaded', 'verified']]);
@@ -383,14 +414,20 @@ describe('bulk orders: payment check + documents + settings (2026-11-12)', () =>
   });
 
   it('not needed (free order); no check on the type = 409; closed orders take nothing; uploads checked; other types cannot see a file', async () => {
+    const dev = await loginAs('developer');
     const i = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
-    expect((await pay(approver, i.id, { action: 'not_needed', note: 'Sample for school' }).expect(200)).body.data.payment.status).toBe('not_needed');
-    expect(fields(await pay(approver, i.id, { action: 'paid' }).expect(400))).toEqual(['action']);
+    expect((await pay(dev, i.id, { action: 'not_needed', note: 'Sample for school' }).expect(200)).body.data.payment.status).toBe('not_needed');
+    expect(fields(await pay(dev, i.id, { action: 'paid' }).expect(400))).toEqual(['action']);
 
     const m = (await create(mkt, order()).expect(201)).body.data;
-    expect((await pay(approver, m.id, { action: 'not_needed' }).expect(409)).body.error.code).toBe('BULK_PAYMENT_NOT_TRACKED');
+    expect((await pay(dev, m.id, { action: 'not_needed' }).expect(409)).body.error.code).toBe('BULK_PAYMENT_NOT_TRACKED');
     const mDoc = (await up(mkt, m.id, 'proforma_invoice', PDF, 'pi.pdf').expect(201)).body.data; // documents on every type
     expect(mDoc.payment).toBeNull();
+    // no payment check (Marketing, 2026-11-13): a proof of payment is refused, nothing stored
+    const noProof = await up(mkt, m.id, 'payment_proof', PDF, 'utr.pdf').expect(400);
+    expect(fields(noProof)).toEqual(['kind']);
+    expect(noProof.body.error.details[0].message).toContain('no payment check');
+    expect(await count('bulk_order_documents')).toBe(1);
     await api().get(`${V}/${m.id}/documents/${mDoc.documents[0].id}`).set('Cookie', inst.cookie).expect(404);
     await api().get(`${V}/${m.id}/documents/999999`).set('Cookie', mkt.cookie).expect(404);
 
@@ -414,6 +451,36 @@ describe('bulk orders: payment check + documents + settings (2026-11-12)', () =>
     expect(list[0].payment.status).toBe('awaiting_proof');
     await up(inst, i.id, 'invoice', PDF, 'p.pdf', T).expect(403);
     await api().get(`${T}/${i.id}/documents/${d.documents[0].id}`).set('Cookie', inst.cookie).expect(403);
+  });
+
+  it('POST_FG payments (2026-11-13): "Payments to verify" list + count; only admin / developer verify (or a role it is switched on for in Roles)', async () => {
+    const teamPay = (who: TestLogin, id: string, body: Record<string, unknown>) => api().post(`${T}/${id}/payment`).set('Cookie', who.cookie).send(body);
+    const a = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
+    const b = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
+    await up(inst, a.id, 'payment_proof', PDF, 'utr-a.pdf').expect(201);
+    await up(inst, b.id, 'payment_proof', PDF, 'utr-b.pdf').expect(201);
+    await api().post(`${V}/${b.id}/cancel`).set('Cookie', inst.cookie).send({}).expect(200); // closed: not counted
+
+    const toVerify = (await api().get(`${T}?type=institutional&payment=proof_uploaded`).set('Cookie', opsExec.cookie).expect(200)).body;
+    expect(toVerify.data.map((o: { id: string }) => o.id)).toEqual([b.id, a.id]);
+    expect(toVerify.meta.paymentsToVerify).toEqual({ marketing: 0, institutional: 1 });
+    expect(fields(await api().get(`${T}?payment=paid`).set('Cookie', opsExec.cookie).expect(400))).toEqual(['payment']);
+
+    // PO review editor without the permission: refused; portal-only people: no PO review page
+    expect((await teamPay(opsExec, a.id, { action: 'verify' }).expect(403)).body.error.code).toBe('BULK_NOT_PAYMENT_VERIFIER');
+    await teamPay(approver, a.id, { action: 'verify' }).expect(403);
+    const admin = await loginAs('admin');
+    const done = (await teamPay(admin, a.id, { action: 'verify', note: 'UTR 1234 matched' }).expect(200)).body.data;
+    expect(done.payment).toMatchObject({ status: 'verified', by: { id: admin.userId }, note: 'UTR 1234 matched' });
+    expect((await api().get(`${T}?payment=proof_uploaded`).set('Cookie', opsExec.cookie).expect(200)).body.meta.paymentsToVerify.institutional).toBe(0);
+    await teamPay(admin, '999999', { action: 'not_needed' }).expect(404);
+
+    // later (user): a role gets it from Users & Roles -> Roles, no code: the Operations Executive role now verifies
+    const c = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
+    await api().patch('/api/v1/admin/roles/operations-executive').set('Cookie', admin.cookie).send({ grants: { '/operations/po-review': 'viewer', 'bulk-orders:verify-payment': 'editor' } }).expect(200); // the screen sends the full set
+    const ops2 = await loginAs('operations-executive');
+    expect((await teamPay(ops2, c.id, { action: 'not_needed', note: 'Free sample' }).expect(200)).body.data.payment.status).toBe('not_needed');
+    expect((await api().get('/api/v1/auth/me').set('Cookie', ops2.cookie).expect(200)).body.data.capabilities['bulk-orders:verify-payment']).toBe(true);
   });
 });
 
@@ -457,9 +524,6 @@ describe('bulk orders step 3b: Institutional requester details + our team create
     expect(fields(await processIt(opsExec, i.id, {}).expect(400)).sort()).toEqual(['customerCode', 'facilityCode', 'uniwareChannel']);
     expect(fields(await processIt(opsExec, i.id, { ...SALE, facilityCode: 'OLD_WH' }).expect(400))).toEqual(['facilityCode']);
     expect(fields(await processIt(opsExec, i.id, { ...SALE, facilityCode: 'mum_warehouse2' }).expect(400))).toEqual(['facilityCode']); // case = another warehouse
-    const m = (await create(mkt, order()).expect(201)).body.data;
-    await approve(m.id);
-    expect((await processIt(opsExec, m.id).expect(409)).body.error.code).toBe('BULK_PROCESS_TYPE_LATER');
     const opts = (await api().get(`${T}/${i.id}/process-options`).set('Cookie', opsExec.cookie).expect(200)).body.data;
     expect(opts).toEqual({ facilities: [{ code: WH, name: 'Bhiwandi', parentCode: null }, { code: 'MUM_Warehouse2', name: 'Bhiwandi child', parentCode: WH }], customers: [] }); // child under its main
     expect(await count('master_purchase_orders')).toBe(0);
@@ -508,6 +572,36 @@ describe('bulk orders step 3b: Institutional requester details + our team create
     await processIt(opsExec, b.id, { ...SALE, customerCode: 'CUST_SUNRISE_02' }).expect(200);
     const book = await rows<{ used_count: number; customer_code: string }>('SELECT used_count, customer_code FROM bulk_customers');
     expect(book).toEqual([{ used_count: 2, customer_code: 'CUST_SUNRISE_02' }]);
+  });
+
+  it('Marketing (2026-11-13): processed the same way (channel + customer code typed, e.g. Jiva), CSV at ₹1 a unit, no customer book row', async () => {
+    const m = (await create(mkt, order()).expect(201)).body.data as { id: string; poNumber: string };
+    await approve(m.id);
+    expect((await api().get(`${T}/${m.id}/process-options`).set('Cookie', opsExec.cookie).expect(200)).body.data.customers).toEqual([]);
+    const JIVA = { facilityCode: WH, uniwareChannel: 'JIVA', customerCode: 'CUST_JIVA_01' };
+    const done = (await processIt(opsExec, m.id, JIVA).expect(200)).body.data;
+    expect(done).toMatchObject({ status: 'processing', payment: null, totalValue: 13, saleOrder: { ...JIVA } });
+    const code = done.saleOrder.code as string;
+    const [po] = await rows<{ uid: string; channel: string; customerCode: string }>('SELECT uid, channel, customerCode FROM master_purchase_orders');
+    expect(po).toMatchObject({ channel: 'Bulk Marketing', customerCode: 'CUST_JIVA_01' });
+    const lines = await rows<{ skuCode: string; qty: number; poValue: string }>('SELECT skuCode, qty, poValue FROM details_purchase_orders WHERE shipmentOrderId = ? ORDER BY id', [po.uid]);
+    expect(lines.map((l) => [l.skuCode, l.qty, Number(l.poValue)])).toEqual([['SKU_A', 10, 10], ['SKU_B', 3, 3]]);
+    const csv = [...s3Objects(`bulk-orders/${m.poNumber}/sale-order-1/`).entries()].find(([k]) => k.endsWith('.csv'))![1];
+    expect(csv).toContain(`${code},${m.poNumber},0,JIVA,SKU_A,STD,SKU_A,SKU_A,1.00,FALSE,10,CUST_JIVA_01,${WH},`);
+    expect(csv).toContain(',1.00,FALSE,3,');
+    expect(await count('bulk_customers')).toBe(0);
+  });
+
+  it('a Marketing order approved with discounts before the ₹1 rule is punched at ₹1 (lines set, on the timeline)', async () => {
+    const m = (await create(mkt, order()).expect(201)).body.data as { id: string; poNumber: string };
+    await approve(m.id);
+    await rows('UPDATE bulk_order_lines SET discount_pct = 30, unit_price = 70, line_total = 700 WHERE order_id = ? AND line_no = 1', [m.id]);
+    const done = (await processIt(opsExec, m.id).expect(200)).body.data;
+    expect(done.totalValue).toBe(13);
+    expect(done.lines[0]).toMatchObject({ discountPct: 0, unitPrice: 1, lineTotal: 10 });
+    expect(done.events.at(-1).changes).toMatchObject({ repricedLines: [1], unitPrice: 1 });
+    const csv = [...s3Objects(`bulk-orders/${m.poNumber}/sale-order-1/`).entries()].find(([k]) => k.endsWith('.csv'))![1];
+    expect(csv).not.toContain('70.00');
   });
 
   it('send back (optional, Verify panel) cancels that sale order and puts the order back to approved; it is processed again, never reopened', async () => {
