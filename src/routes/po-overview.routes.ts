@@ -8,6 +8,8 @@ import {
   NOT_ASSIGNED_DATE,
   NotAssignedDate,
   PAGE,
+  PO_GROUPS,
+  PoGroup,
   PO_OVERVIEW_LIST,
   PO_OVERVIEW_QUERY,
   PO_OVERVIEW_ROUTES,
@@ -96,6 +98,10 @@ const parseQuery = (req: Request): { filters: PoOverviewFilters; paging: Paging 
   if (badDate) {
     problems.push({ field: Q.NOT_ASSIGNED, code: ERROR_CODES.FIELD_NOT_ONE_OF, message: errorMessage(ERROR_CODES.FIELD_NOT_ONE_OF, Q.NOT_ASSIGNED, allowedDates.join(', ')) });
   }
+  const poGroup = list(Q.PO_GROUP);
+  if (poGroup.some((g) => !(PO_GROUPS as readonly string[]).includes(g))) {
+    problems.push({ field: Q.PO_GROUP, code: ERROR_CODES.FIELD_NOT_ONE_OF, message: errorMessage(ERROR_CODES.FIELD_NOT_ONE_OF, Q.PO_GROUP, PO_GROUPS.join(', ')) });
+  }
   const [poDateFrom, poDateTo] = dayRange(Q.PO_DATE_FROM, Q.PO_DATE_TO);
   const [workingDateFrom, workingDateTo] = dayRange(Q.WORKING_DATE_FROM, Q.WORKING_DATE_TO);
   const [dispatchDateFrom, dispatchDateTo] = dayRange(Q.DISPATCH_DATE_FROM, Q.DISPATCH_DATE_TO);
@@ -110,6 +116,7 @@ const parseQuery = (req: Request): { filters: PoOverviewFilters; paging: Paging 
       docketNo: text(Q.DOCKET_NO),
       brand: list(Q.BRAND),
       channel: list(Q.CHANNEL),
+      poGroup: poGroup as PoGroup[],
       facility: list(Q.FACILITY),
       location: list(Q.LOCATION),
       statusPlanning: list(Q.STATUS_PLANNING),
