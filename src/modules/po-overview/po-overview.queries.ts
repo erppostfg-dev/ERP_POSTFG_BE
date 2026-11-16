@@ -1,6 +1,7 @@
 import { In, IsNull, SelectQueryBuilder } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
-import { NOT_ASSIGNED, NOT_ASSIGNED_DATE, NotAssignedDate, STATUS_STAGE, STATUS_WHEN_EMPTY, TABLES } from '../../constants';
+import { APPOINTMENT_SOURCE, AppointmentSource, NOT_ASSIGNED, NOT_ASSIGNED_DATE, NotAssignedDate, STATUS_STAGE, STATUS_WHEN_EMPTY, TABLES } from '../../constants';
+import { fromEmailSql } from '../appointments/appointment.service';
 import {
   DetailsChannel,
   DetailsPurchaseOrder,
@@ -47,6 +48,8 @@ export interface PoOverviewFilters {
   dispatchDateTo?: string;
   appointmentDateFrom?: string;
   appointmentDateTo?: string;
+  /** Where the appointment date came from (2026-11-16): any of email / typed / cancelled / none. */
+  appointmentSource?: AppointmentSource[];
 }
 
 export interface Paging {
@@ -56,7 +59,8 @@ export interface Paging {
 
 /** A stage status as the final-status lookup sees it: empty = STATUS_WHEN_EMPTY. */
 const stageSql = (col: string) => `COALESCE(NULLIF(TRIM(${col}), ''), '${STATUS_WHEN_EMPTY}')`;
-const CURRENT_APPOINTMENT_SQL = 'COALESCE(po.currentAppointmentDate, po.firstAppointmentDateCOPT)';
+// cancelled by an appointment email (2026-11-16) = no date, even with a First Appointment Date (COPT)
+const CURRENT_APPOINTMENT_SQL = `(CASE WHEN ${fromEmailSql(true)} THEN NULL ELSE COALESCE(po.currentAppointmentDate, po.firstAppointmentDateCOPT) END)`;
 
 /** `col IN (values)`, plus empty rows when NOT_ASSIGNED is picked. */
 const whereIn = <T extends object>(qb: SelectQueryBuilder<T>, col: string, values: string[], key: string, inSql?: (p: string) => string) => {
@@ -122,6 +126,16 @@ const applyFilters = async <T extends object>(qb: SelectQueryBuilder<T>, f: PoOv
   range(qb, 'po.workingDatePlanner', f.workingDateFrom, f.workingDateTo, 'workingDate');
   range(qb, 'po.dispatchDate', f.dispatchDateFrom, f.dispatchDateTo, 'dispatchDate');
   range(qb, CURRENT_APPOINTMENT_SQL, f.appointmentDateFrom, f.appointmentDateTo, 'apptDate');
+
+  if (f.appointmentSource?.length) {
+    const parts = f.appointmentSource.map((s) => {
+      if (s === APPOINTMENT_SOURCE.EMAIL) return fromEmailSql(false);
+      if (s === APPOINTMENT_SOURCE.CANCELLED) return fromEmailSql(true);
+      if (s === APPOINTMENT_SOURCE.TYPED) return `(COALESCE(po.currentAppointmentDate, po.firstAppointmentDateCOPT) IS NOT NULL AND NOT ${fromEmailSql()})`;
+      return `${CURRENT_APPOINTMENT_SQL} IS NULL AND NOT ${fromEmailSql(true)}`;
+    });
+    qb.andWhere(`(${parts.map((p) => `(${p})`).join(' OR ')})`);
+  }
 
   for (const d of f.notAssigned) {
     if (d === NOT_ASSIGNED_DATE.WORKING_DATE) qb.andWhere('po.workingDatePlanner IS NULL');

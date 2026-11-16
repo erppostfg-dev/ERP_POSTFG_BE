@@ -105,6 +105,8 @@ export const TABLES = {
   BULK_TYPE_SETTINGS: 'bulk_type_settings',
   // Bulk Orders step 3b (2026-11-12): customers our team processed (institution + Uniware channel / customer code).
   BULK_CUSTOMERS: 'bulk_customers',
+  /** Appointment dates from email (2026-11-16, constants/appointments.ts). */
+  PO_APPOINTMENT_EMAILS: 'po_appointment_emails',
   // Gmail intake (2026-10-29, constants/gmail-intake.ts): each labelled email's channel once read; catch-ups as rows.
   GMAIL_MESSAGES: 'gmail_messages',
   INTAKE_CATCHUPS: 'intake_catchups',
