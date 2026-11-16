@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { CACHE } from '../constants/cache';
+import { PEPIMS_DATABASE } from '../constants/db';
 import { ERROR_CODES } from '../constants/errors';
 import { GMAIL_PACE } from '../constants/gmail-intake';
 import { LOG_DEFAULTS, LOG_FORMAT, LOG_LEVEL_RANK, type LogFormat, type LogLevel } from '../constants/logging';
@@ -315,6 +316,11 @@ export const env = {
   // automatic runs; 0 = only after masters:load and on the button.
   recheck: {
     minutes: Number(process.env.RECHECK_MINUTES ?? REVIEW_RECHECK.DEFAULT_MINUTES),
+  },
+  // PEPIMS -> POST_FG import + sync (2026-11-16, constants/pepims-sync.ts): the database PEPIMS's POs are READ from
+  // (read-only connection, same DB login). Tests point it at their own copy (postfg_test_pepims).
+  pepimsSync: {
+    sourceDb: (process.env.PEPIMS_SYNC_SOURCE_DB ?? '').trim() || PEPIMS_DATABASE,
   },
   // Channel API connectors (2026-10-16): POs pulled from channel APIs into the same chain. Off by default, like the
   // email listener; each connector also needs its own keys. Poll minutes: the connector's env value, else the constant.

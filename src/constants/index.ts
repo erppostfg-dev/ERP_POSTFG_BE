@@ -30,6 +30,7 @@ export * from './po-jobs';
 export * from './po-overview';
 export * from './po-overview-columns';
 export * from './po-group';
+export * from './pepims-sync';
 export * from './po-review';
 export * from './po-uniware-sync';
 export * from './uniware-create';
