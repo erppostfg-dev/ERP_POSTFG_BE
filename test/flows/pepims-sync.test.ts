@@ -1,10 +1,14 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { OTHERS_CHANNEL, PEPIMS_SYNC_STATE_KEY, PO_GROUP } from '../../src/constants';
+import { OTHERS_CHANNEL, PEPIMS_FIELD_KIND, PEPIMS_LINE_FIELDS, PEPIMS_PO_FIELDS, PEPIMS_SYNC_STATE_KEY, PO_GROUP } from '../../src/constants';
+import { env } from '../../src/config/env';
 import { runPepimsSync } from '../../src/modules/pepims-sync/import.service';
 import { api, loginAs, type TestLogin } from '../helpers/auth';
 import { closeDb, count, insert, resetDb, rows } from '../helpers/db';
 import { bigBasketPo, seedMasters, type Masters } from '../helpers/fixtures';
 import { runPo } from '../helpers/po-flow';
+import { covers } from '../helpers/routes';
+
+covers(['GET /po-overview/pepims-sync', 'POST /po-overview/pepims-sync']);
 
 /*
  * PEPIMS -> POST_FG import + sync (2026-11-16, step 2a). PEPIMS here = a small copy of its tables in the test MySQL
@@ -48,10 +52,17 @@ beforeAll(async () => {
   await root.end();
   pep = await connect(PEP);
   // PEPIMS's own shapes (dates as text, floats), only the columns these tests fill
-  await pep.query("CREATE TABLE shipment_orders (uid int NOT NULL PRIMARY KEY, entryDate varchar(255) NOT NULL, poDate varchar(255) NOT NULL, facility varchar(255), channel varchar(255), location varchar(255), poNumber varchar(255) NOT NULL UNIQUE, totalUnits int, statusActive varchar(255), statusPlanning varchar(255), statusWarehouse varchar(255), statusLogistics varchar(255), dispatchDate varchar(255), currentAppointmentDate varchar(255), appointmentRequestedDate varchar(255), firstTransporter varchar(255), orderNo1 varchar(255), deliveryType varchar(255), invoiceValue float, allAppointmentDate json, createdAt datetime NOT NULL, updatedAt datetime NOT NULL)");
-  await pep.query("CREATE TABLE sku_orders (id int NOT NULL PRIMARY KEY, srNo varchar(255), skuName varchar(255), skuCode varchar(255), channelSkuCode varchar(255), qty int, gmv float, poValue float, updatedQty int, updatedGmv float, updatedPoValue float, brandName varchar(255) NOT NULL DEFAULT 'Unknown', poNumber varchar(255), shipmentOrderId int, createdAt datetime NOT NULL, updatedAt datetime NOT NULL)");
-  await pep.query('CREATE TABLE logs (id int NOT NULL PRIMARY KEY, messages json NOT NULL, createdBy int, shipmentOrderId int NOT NULL, createdAt datetime NOT NULL, updatedAt datetime NOT NULL)');
+  await pep.query("CREATE TABLE shipment_orders (uid int NOT NULL AUTO_INCREMENT PRIMARY KEY, entryDate varchar(255) NOT NULL, poDate varchar(255) NOT NULL, facility varchar(255), channel varchar(255), location varchar(255), poNumber varchar(255) NOT NULL UNIQUE, totalUnits int, statusActive varchar(255), statusPlanning varchar(255), statusWarehouse varchar(255), statusLogistics varchar(255), dispatchDate varchar(255), currentAppointmentDate varchar(255), appointmentRequestedDate varchar(255), firstTransporter varchar(255), orderNo1 varchar(255), deliveryType varchar(255), invoiceValue float, allAppointmentDate json, createdAt datetime NOT NULL, updatedAt datetime NOT NULL)");
+  await pep.query("CREATE TABLE sku_orders (id int NOT NULL AUTO_INCREMENT PRIMARY KEY, srNo varchar(255), skuName varchar(255), skuCode varchar(255), channelSkuCode varchar(255), qty int, gmv float, poValue float, updatedQty int, updatedGmv float, updatedPoValue float, brandName varchar(255) NOT NULL DEFAULT 'Unknown', poNumber varchar(255), shipmentOrderId int, createdAt datetime NOT NULL, updatedAt datetime NOT NULL)");
+  await pep.query('CREATE TABLE logs (id int NOT NULL AUTO_INCREMENT PRIMARY KEY, messages json NOT NULL, createdBy int, shipmentOrderId int NOT NULL, createdAt datetime NOT NULL, updatedAt datetime NOT NULL)');
   await pep.query('CREATE TABLE users (id int NOT NULL PRIMARY KEY, name varchar(255), email varchar(255))');
+  // every other column PEPIMS has, in PEPIMS's own types (dates as text, floats)
+  const typeOf: Record<string, string> = { [PEPIMS_FIELD_KIND.DATE]: 'varchar(255)', [PEPIMS_FIELD_KIND.INT]: 'int', [PEPIMS_FIELD_KIND.DEC2]: 'float', [PEPIMS_FIELD_KIND.DEC3]: 'float', [PEPIMS_FIELD_KIND.JSON]: 'json', [PEPIMS_FIELD_KIND.TEXT]: 'text' };
+  for (const [table, fields] of [['shipment_orders', PEPIMS_PO_FIELDS], ['sku_orders', PEPIMS_LINE_FIELDS]] as const) {
+    const [have] = (await pep.query('SELECT COLUMN_NAME c FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?', [PEP, table])) as [{ c: string }[]];
+    const missing = Object.entries(fields).filter(([f]) => !have.some((h) => h.c === f));
+    if (missing.length) await pep.query(`ALTER TABLE ${table} ${missing.map(([f, k]) => `ADD \`${f}\` ${typeOf[k]} NULL`).join(', ')}`);
+  }
 });
 afterAll(async () => {
   await pep.query(`DROP DATABASE IF EXISTS \`${PEP}\``);
@@ -171,5 +182,64 @@ describe('PEPIMS sync (later runs)', () => {
     expect(row).toMatchObject({ orderNo1: 'sf_20261101001', statusWarehouse: 'Dispatched', importedFrom: null });
     expect(await count('pepims_sync_links', 'po_uid = ? AND pepims_uid = 101', [ours.po_uid])).toBe(1);
     expect(await count('shipment_logs', "shipment_uid = ? AND remark = 'linked to PEPIMS uid 101'", [ours.po_uid])).toBe(1);
+  });
+});
+
+describe('Sync from PEPIMS (PO Overview button, GET / POST /po-overview/pepims-sync)', () => {
+  it('a page viewer sees the last run; only admin / developer may start one; a run imports and is recorded', async () => {
+    const viewer = await loginAs('viewer');
+    const before = await api().get('/api/v1/po-overview/pepims-sync').set('Cookie', viewer.cookie).expect(200);
+    expect(before.body.data).toMatchObject({ running: false, ok: null, everyMinutes: 0, timerOn: false });
+    const manager = await loginAs('operations-manager'); // editor on PO Overview, not admin / developer
+    const refused = await api().post('/api/v1/po-overview/pepims-sync').set('Cookie', manager.cookie).send({});
+    expect(refused.status).toBe(403);
+    expect(refused.body.error.code).toBe('NOT_A_USER_ADMIN');
+    expect((await api().post('/api/v1/po-overview/pepims-sync').set('Cookie', viewer.cookie).send({})).status).toBe(403);
+
+    const started = await api().post('/api/v1/po-overview/pepims-sync').set('Cookie', admin.cookie).send({}).expect(202);
+    expect(started.body.data.state).toBe('started');
+    let status: Record<string, unknown> = {};
+    for (let i = 0; i < 100; i++) {
+      status = (await api().get('/api/v1/po-overview/pepims-sync').set('Cookie', admin.cookie).expect(200)).body.data as Record<string, unknown>;
+      if (!status.running && status.finishedAt) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(status).toMatchObject({ ok: true, error: null, summary: { read: 5, inserted: 4 } });
+    expect(await count('master_purchase_orders', "importedFrom = 'pepims'")).toBe(4);
+  });
+});
+
+describe('POST_FG -> PEPIMS (switch PEPIMS_SYNC_WRITE_BACK)', () => {
+  const pepRow = async (sql: string, p: unknown[] = []) => ((await pep.query(sql, p)) as [Record<string, unknown>[]])[0];
+  it('off (default): nothing is written to PEPIMS', async () => {
+    await sync();
+    await rows("UPDATE master_purchase_orders SET statusLogistics = 'Dispatched', updatedAt = '2030-01-01 00:00:00' WHERE uid = 101");
+    const r = await sync();
+    expect(r.writeBack).toBeNull();
+    expect((await pepRow('SELECT statusLogistics FROM shipment_orders WHERE uid = 101'))[0].statusLogistics).toBe('Delivered');
+  });
+
+  it('on: our change goes to PEPIMS with a log line; a PO made in POST_FG is added to PEPIMS and linked; nothing twice', async () => {
+    await sync();
+    await rows("UPDATE master_purchase_orders SET statusLogistics = 'Dispatched', updatedAt = '2030-01-01 00:00:00' WHERE uid = 101");
+    const own = await runPo(bigBasketPo(m, { po_number: 'OWN-1' }));
+    env.pepimsSync.writeBack = true;
+    try {
+      const r = await sync();
+      expect(r.writeBack).toMatchObject({ posUpdated: 1, fieldsWritten: 1, posAdded: 1, linesAdded: 1 });
+      expect((await pepRow('SELECT statusLogistics FROM shipment_orders WHERE uid = 101'))[0].statusLogistics).toBe('Dispatched');
+      const log = await pepRow('SELECT messages, createdBy FROM logs WHERE shipmentOrderId = 101 ORDER BY id DESC LIMIT 1');
+      expect(JSON.stringify(log[0].messages)).toContain('statusLogistics changed from Delivered to Dispatched (POST_FG)');
+      expect(log[0].createdBy).toBeNull();
+      const [added] = await pepRow("SELECT uid, channel FROM shipment_orders WHERE poNumber = 'OWN-1'");
+      expect(added.channel).toBe('BigBasket');
+      expect(await count('pepims_sync_links', 'po_uid = ? AND pepims_uid = ?', [own.po_uid, added.uid])).toBe(1);
+      // a second run writes nothing again
+      const again = await sync();
+      expect(again.writeBack).toMatchObject({ posUpdated: 0, posAdded: 0 });
+      expect((await pepRow("SELECT COUNT(*) n FROM shipment_orders WHERE poNumber = 'OWN-1'"))[0].n).toBe(1);
+    } finally {
+      env.pepimsSync.writeBack = false;
+    }
   });
 });

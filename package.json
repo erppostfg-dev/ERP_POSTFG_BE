@@ -43,6 +43,7 @@
     "auth:seed": "ts-node --transpile-only src/scripts/auth-seed.ts",
     "masters:load": "ts-node --transpile-only src/scripts/masters-load.ts",
     "pepims:sync": "ts-node --transpile-only src/scripts/pepims-sync.ts",
+    "dev:copy": "ts-node --transpile-only src/scripts/dev-copy.ts",
     "masters:replace": "ts-node --transpile-only src/scripts/masters-replace.ts",
     "po:brand-fill": "ts-node --transpile-only src/scripts/brand-fill.ts",
     "po:po-date-fill": "ts-node --transpile-only src/scripts/po-date-fill.ts",

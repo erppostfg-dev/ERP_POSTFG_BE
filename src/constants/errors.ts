@@ -109,6 +109,7 @@ export const ERRORS = {
   BULK_PROCESS_TYPE_LATER: define(409, (type: string) => `${type} orders cannot be processed in POST_FG yet`),
   BULK_UPLOAD_NOT_REOPENABLE: define(409, (po: string) => `${po} came from a bulk order: process it again in PO Processing & Review > Bulk Orders`),
   BULK_LOCATION_LABEL_TAKEN: define(409, (label: string) => `A saved location is already called "${label}": pick it, or use another name`),
+  PEPIMS_SYNC_RUNNING: define(409, () => 'A sync from PEPIMS is running now: wait for it to finish (see the last run on PO Overview)'),
   UNIWARE_SYNC_TOO_SOON: define(409, (ago: number, by: string, left: number) => `Sync from Uniware was run ${ago} min ago by ${by}: available again in ${left} min (the server also syncs every 30 min by itself)`),
   // --- Notices (2026-11-10) ---
   NOTICES_OFF: define(409, () => 'Notices are switched off (Users & Roles -> Settings)'),

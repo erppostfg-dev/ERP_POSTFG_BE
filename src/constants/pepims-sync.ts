@@ -14,6 +14,8 @@ export const PEPIMS_SYNC_BATCH = 500;
 
 /** app_state key of the watermarks (PEPIMS updatedAt / log id already taken), so a re-run reads only what changed. */
 export const PEPIMS_SYNC_STATE_KEY = 'pepims-sync:state';
+/** app_state key of the last server run (timer / button): when, by whom, result. */
+export const PEPIMS_SYNC_RUN_KEY = 'pepims-sync:last-run';
 
 /** A date outside this range is junk in PEPIMS (1900-01-03, 2152-11-25 ...): saved empty and listed. */
 export const PEPIMS_DATE_RANGE = { MIN: '2025-01-01', MAX: '2027-12-31' } as const;
@@ -135,3 +137,20 @@ export const pepimsCleanName = (v: string | null | undefined): string | null => 
   const s = (v ?? '').replace(ODD_SPACE, ' ').replace(/\s+/g, ' ').trim();
   return s || null;
 };
+
+/*
+ * Dev -> prod copy (2026-11-16, step 2b; modules/pepims-sync/dev-copy.service.ts): the team processed POs in dev, so
+ * prod gets dev's work. Read from SOURCE_DB on the same server (target = the app's database); order = FK order.
+ */
+export const DEV_COPY = {
+  /** app_state key: the last dev shipment_logs id copied (History rows get new ids, so a re-run copies only newer ones). */
+  STATE_KEY: 'dev-copy:state',
+  /** Masters the masters team edits on dev: upserted by id (prod's are a copy of dev's with the same ids). */
+  MASTER_TABLES: ['master_facilities', 'master_channels', 'master_skus', 'master_channel_skus', 'master_sku_components', 'details_channels'] as readonly string[],
+  BULK_TABLES: ['bulk_locations', 'bulk_type_settings', 'bulk_customers', 'bulk_orders', 'bulk_order_lines', 'bulk_order_events', 'bulk_order_documents'] as readonly string[],
+  FEEDBACK_TABLES: ['feedback_items', 'feedback_members', 'feedback_comments', 'feedback_images', 'feedback_notifications', 'notices', 'notice_seen'] as readonly string[],
+  /** dev's Uniware sync text for a PO marked uploaded whose code Uniware never had. */
+  MARKED_NOT_IN_UNIWARE: 'Marked uploaded, not in Uniware',
+  /** Start of the History note on a PO whose dev sale order code was not the one used. */
+  SALE_CODE_NOTE: 'dev (POST_FG) gave sale order code',
+} as const;

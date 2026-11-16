@@ -17,6 +17,8 @@ import {
   UPLOAD_ID_PATTERN,
 } from '../constants';
 import { poSyncStatus, startPoSync } from '../modules/po-uniware-sync/sync.service';
+import { pepimsSyncStatus, startPepimsSync } from '../modules/pepims-sync/sync-runner';
+import { USER_ADMIN_ROLES } from '../constants/users';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
 import { Paging, PoOverviewFilters } from '../modules/po-overview/po-overview.queries';
 import { accessFor } from '../modules/po-overview/po-overview.access';
@@ -229,6 +231,25 @@ router.get(PO_OVERVIEW_ROUTES.UNIWARE_SYNC, ...viewer, async (_req, res, next) =
 router.post(PO_OVERVIEW_ROUTES.UNIWARE_SYNC, ...editor, async (req, res, next) => {
   try {
     res.status(202).json({ data: await startPoSync(req.body, req.auth!.user.email) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PEPIMS -> POST_FG sync (2026-11-16, modules/pepims-sync): the last run; Sync now = admin / developer only.
+router.get(PO_OVERVIEW_ROUTES.PEPIMS_SYNC, ...viewer, async (_req, res, next) => {
+  try {
+    res.json({ data: await pepimsSyncStatus() });
+  } catch (err) {
+    next(err);
+  }
+});
+router.post(PO_OVERVIEW_ROUTES.PEPIMS_SYNC, ...editor, async (req, res, next) => {
+  try {
+    if (!req.auth?.roles.some((r) => (USER_ADMIN_ROLES as readonly string[]).includes(r))) {
+      throw appError(ERROR_CODES.NOT_A_USER_ADMIN, USER_ADMIN_ROLES.join(' / '));
+    }
+    res.status(202).json({ data: await startPepimsSync(req.auth.user.email) });
   } catch (err) {
     next(err);
   }

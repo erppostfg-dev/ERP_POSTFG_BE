@@ -19,6 +19,8 @@ export const PO_OVERVIEW_ROUTES = {
   CHANGES: '/changes',
   /** Uniware sale order status (2026-11-06): GET = last run, POST { uids? } = Sync now. */
   UNIWARE_SYNC: '/uniware-sync',
+  /** PEPIMS -> POST_FG sync (2026-11-16): GET last run, POST start now (admin / developer). */
+  PEPIMS_SYNC: '/pepims-sync',
 } as const;
 
 /*

@@ -17,6 +17,7 @@ import { startRobotSchedule } from './modules/channel-api/flipkart/consignments.
 import { startD2cSync } from './modules/d2c-transfers/sync.service';
 import { startPoUniwareSync } from './modules/po-uniware-sync/sync.service';
 import { startUniwareCreate } from './modules/uniware-create/create.service';
+import { startPepimsSyncTimer } from './modules/pepims-sync/sync-runner';
 import { resumeManualQueue } from './modules/manual-upload/manual-upload.service';
 import { recheckInReview } from './modules/po-review/recheck.service';
 import { holdForIntake, kickRelease } from './modules/po-intake-control/intake-release.service';
@@ -124,6 +125,8 @@ const start = async (): Promise<void> => {
   const poUniwareSync = AppDataSource.isInitialized && !env.laptopMode ? startPoUniwareSync() : undefined;
   // Create in Uniware (2026-11-09): the queued requests, only with UNIWARE_CREATE_ENABLED=true (never on a laptop).
   const uniwareCreate = AppDataSource.isInitialized && !env.laptopMode ? startUniwareCreate() : undefined;
+  // PEPIMS -> POST_FG sync (2026-11-16): every PEPIMS_SYNC_MINUTES (unset / 0 = no timer; never on a laptop).
+  if (AppDataSource.isInitialized && !env.laptopMode) startPepimsSyncTimer();
 
   // PO jobs worker (2026-10-26): with QUEUE_MODE=sqs + WORKER_IN_SERVER=true this process also takes the queued jobs;
   // otherwise the separate `npm run worker` does (EC2: its own pm2 process).
