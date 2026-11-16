@@ -22,10 +22,19 @@ const laptopMode = process.env.LAPTOP_MODE === 'true';
 export const LAPTOP_MODE_OFF = {
   PUBSUB_ENABLED: 'false', OCR_ENABLED: 'false', OCR_BACKLOG: 'false', PIPELINE_RESUME: 'false', CHANNEL_API_ENABLED: 'false',
   LOCAL_CLEANUP_ENABLED: 'false', WORKER_IN_SERVER: 'false', QUEUE_MODE: 'local', RECHECK_MINUTES: '0', D2C_SYNC_ENABLED: 'false', PO_UNIWARE_SYNC_ENABLED: 'false', UNIWARE_CREATE_ENABLED: 'false',
-  // not an off switch: laptop mode is ALWAYS D2C local test mode (env.d2c.testOnly), whatever .env says
+  // not an off switch: laptop mode is D2C local test mode (env.d2c.testOnly), whatever .env says, unless
+  // D2C_ALL_FACILITIES=true (d2cAllFacilities)
   D2C_TEST_ONLY: 'true',
 } as const;
-if (laptopMode) Object.assign(process.env, LAPTOP_MODE_OFF);
+
+/**
+ * D2C_ALL_FACILITIES=true (user, 2026-11-16: "allow in the d2c transfers to use all live facilities even in the dev branch
+ * for testing"): D2C transfers of every facility on the dev server and the laptop, Uniware writes (sale orders, inward
+ * POs) included, whatever D2C_TEST_ONLY, D2C_UNIWARE_WRITES and d2c:settings.live say. Never on the prod database.
+ */
+const PROD_DATABASE = 'mcaff_postfg_prod';
+const d2cAllFacilities = process.env.D2C_ALL_FACILITIES === 'true' && (process.env.DB_NAME ?? '').trim() !== PROD_DATABASE;
+if (laptopMode) Object.assign(process.env, LAPTOP_MODE_OFF, d2cAllFacilities ? { D2C_TEST_ONLY: 'false' } : {});
 
 /**
  * A list setting: "A,B,C" or "[A, B, C]". A bracketed list may also run over several lines of .env, as the Python
@@ -291,11 +300,13 @@ export const env = {
   // UNIWARE_CREATE_ENABLED=true; always off on a laptop. orderPhone = the phone on the sale order address (required by the API).
   uniwareCreate: { enabled: flag('UNIWARE_CREATE_ENABLED'), orderPhone: (process.env.UNIWARE_ORDER_PHONE ?? '').trim() },
   d2c: {
-    uniwareWrites: flag('D2C_UNIWARE_WRITES'),
+    uniwareWrites: d2cAllFacilities || flag('D2C_UNIWARE_WRITES'),
     syncEnabled: flag('D2C_SYNC_ENABLED', 'true'),
-    testOnly: (process.env.D2C_TEST_ONLY ?? '').trim()
+    testOnly: d2cAllFacilities ? false : (process.env.D2C_TEST_ONLY ?? '').trim()
       ? (process.env.D2C_TEST_ONLY ?? '').trim().toLowerCase() !== 'false'
       : laptopMode || (process.env.NODE_ENV ?? 'development') !== 'production',
+    /** D2C_ALL_FACILITIES (see d2cAllFacilities): the Uniware write gate is open for every facility, d2c:settings.live ignored. */
+    allFacilities: d2cAllFacilities,
   },
   // Re-check of POs in review after a master fix (2026-10-22, constants/po-review REVIEW_RECHECK): minutes between
   // automatic runs; 0 = only after masters:load and on the button.
