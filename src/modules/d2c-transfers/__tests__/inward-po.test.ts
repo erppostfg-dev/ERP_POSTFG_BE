@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { D2C_STAGE, D2C_TAB, SHIPMENT_LOG_ACTION } from '../../../constants';
 import { HttpError } from '../../intransit/sources/http';
 import {
-  decideAfterPoCreate, decideAfterPoGet, inwardCodeOf, inwardExpiryOf, inwardItemsOf, inwardReconcileCheck, InwardReserveFacts, inwardReserveBlock,
+  decideAfterPoCreate, decideAfterPoGet, inwardCodeOf, inwardDatesOf, inwardItemsOf, inwardReconcileCheck, InwardReserveFacts, inwardReserveBlock,
   invoiceReceivingOf, nextInwardNumber, receivingOfRemark, receivingRemark, varianceBlock, varianceBodyOf, varianceRemark,
 } from '../inward-po.service';
 import { deriveStage, tabsOf } from '../stage';
@@ -93,11 +93,11 @@ describe('reserve rules (plan 5.5)', () => {
 describe('create payload (contract proven on TEST_FACILITY)', () => {
   const input: InwardPoInput = {
     code: 'erp_it_20261103001-2', vendorCode: 'Test_Vendor', facility: 'TEST_RECV', soCode: 'erp_it_20261103001', reference: 'TEST_RECV|03Nov2026|1',
-    expiry: '2026-11-18', items: inwardItemsOf({ B: { dispatched: 3, inward: 0, received: 0 }, A: { dispatched: 7, inward: 0, received: 0 }, C: { dispatched: 0, inward: 0, received: 0 } }),
+    receiveBy: '2026-11-10', expiry: '2026-11-18', items: inwardItemsOf({ B: { dispatched: 3, inward: 0, received: 0 }, A: { dispatched: 7, inward: 0, received: 0 }, C: { dispatched: 0, inward: 0, received: 0 } }),
   };
-  it('qty per SKU = dispatched on that invoice (0 left out), unit price 1, custom fields, expiry = delivery', () => {
+  it('qty per SKU = dispatched on that invoice (0 left out), unit price 1, custom fields, deliveryDate = receive by, expiryDate = PO date + 15', () => {
     expect(buildInwardPoPayload(input)).toEqual({
-      purchaseOrderCode: 'erp_it_20261103001-2', vendorCode: 'Test_Vendor', expiryDate: '2026-11-18', deliveryDate: '2026-11-18',
+      purchaseOrderCode: 'erp_it_20261103001-2', vendorCode: 'Test_Vendor', expiryDate: '2026-11-18', deliveryDate: '2026-11-10',
       purchaseOrderItems: [{ itemSKU: 'A', quantity: 7, unitPrice: 1 }, { itemSKU: 'B', quantity: 3, unitPrice: 1 }],
       customFieldValues: [{ name: 'ReferenceNo', value: 'erp_it_20261103001' }, { name: 'ReferenceOrder', value: 'TEST_RECV|03Nov2026|1' }],
     });
@@ -107,11 +107,16 @@ describe('create payload (contract proven on TEST_FACILITY)', () => {
     await createPurchaseOrder(api, input);
     expect(calls).toEqual([{ path: '/services/rest/v1/purchase/purchaseOrder/create', body: buildInwardPoPayload(input), facility: 'TEST_RECV' }]);
   });
-  it('expiry: the transfer expiry when today or later, else today + 15', () => {
-    expect(inwardExpiryOf('2026-11-20', '2026-11-03', 15)).toBe('2026-11-20');
-    expect(inwardExpiryOf('2026-11-03', '2026-11-03', 15)).toBe('2026-11-03');
-    expect(inwardExpiryOf('2026-11-01', '2026-11-03', 15)).toBe('2026-11-18');
-    expect(inwardExpiryOf(null, '2026-11-03', 15)).toBe('2026-11-18');
+  it('dates: PO date = today, receive by from the dialog (today .. expiry), expiry = PO date + 15 (user, 2026-11-12)', () => {
+    expect(inwardDatesOf('2026-11-10', '2026-11-03')).toEqual({ receiveBy: '2026-11-10', expiry: '2026-11-18' });
+    expect(inwardDatesOf('10-11-2026', '2026-11-03')).toEqual({ receiveBy: '2026-11-10', expiry: '2026-11-18' });
+    expect(inwardDatesOf('2026-11-03', '2026-11-03')).toEqual({ receiveBy: '2026-11-03', expiry: '2026-11-18' });
+    expect(inwardDatesOf('2026-11-18', '2026-11-03')).toEqual({ receiveBy: '2026-11-18', expiry: '2026-11-18' });
+    expect(inwardDatesOf('2026-11-19', '2026-11-03')).toHaveProperty('error');
+    expect(inwardDatesOf('2026-11-02', '2026-11-03')).toHaveProperty('error');
+    expect(inwardDatesOf('', '2026-11-03')).toHaveProperty('error');
+    expect(inwardDatesOf(undefined, '2026-11-03')).toHaveProperty('error');
+    expect(inwardDatesOf('next week', '2026-11-03')).toHaveProperty('error');
   });
 });
 

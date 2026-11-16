@@ -277,7 +277,9 @@ export interface InwardPoInput {
   soCode: string;
   /** Reference ID -> custom field ReferenceOrder. */
   reference: string;
-  /** 'YYYY-MM-DD' (expiry = delivery). */
+  /** 'YYYY-MM-DD': "Receive by", picked in the dialog -> Uniware deliveryDate. */
+  receiveBy: string;
+  /** 'YYYY-MM-DD': PO date (the day it is created) + D2C_INWARD_PO.EXPIRY_DAYS -> Uniware expiryDate. */
   expiry: string;
   items: InwardPoItem[];
 }
@@ -287,7 +289,7 @@ export const buildInwardPoPayload = (o: InwardPoInput) => ({
   purchaseOrderCode: o.code,
   vendorCode: o.vendorCode,
   expiryDate: o.expiry,
-  deliveryDate: o.expiry,
+  deliveryDate: o.receiveBy,
   purchaseOrderItems: o.items.filter((i) => i.qty > 0).map((i) => ({ itemSKU: i.sku, quantity: i.qty, unitPrice: D2C_PRICE.INWARD_PO_UNIT_PRICE })),
   customFieldValues: [
     { name: D2C_UNIWARE.PO_FIELD_SO, value: o.soCode },
