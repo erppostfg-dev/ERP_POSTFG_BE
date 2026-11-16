@@ -17,8 +17,6 @@ import { canEditShipment, PoOverviewAccess } from './po-overview.access';
 import { DetailsPurchaseOrder, MasterCourierRate, MasterPurchaseOrder } from '../../entities';
 import { appError } from '../../utils/AppError';
 import { matchKey } from '../masters/master-match';
-import { emailSources } from '../appointments/appointment.service';
-import { APPOINTMENT_SOURCE, AppointmentSource } from '../../constants/appointments';
 import {
   facilitiesByIds,
   filterOptions,
@@ -78,8 +76,6 @@ export interface ShipmentComputed {
   updatedGmv: number;
   updatedPoValue: number;
   currentAppointmentDate: string | null;
-  /** Where the appointment date came from (2026-11-16): email / typed / cancelled (by email) / none. */
-  appointmentSource: AppointmentSource;
   statusFinal: string | null;
   tatDays: number | null;
   criticalDispatchDate: string | null;
@@ -94,18 +90,16 @@ export type ShipmentItem = Omit<Record<string, unknown>, keyof ShipmentComputed>
 const contextFor = async (pos: MasterPurchaseOrder[]) => {
   const ids = <T>(values: (T | null | undefined)[]) => [...new Set(values.filter((v): v is T => v !== null && v !== undefined))];
   const partnerIds = ids(pos.map((p) => p.firstTransporterId));
-  const [totals, finals, facilities, partners, rates, locations, appointments] = await Promise.all([
+  const [totals, finals, facilities, partners, rates, locations] = await Promise.all([
     lineTotals(pos.map((p) => p.uid)),
     finalStatusRows(),
     facilitiesByIds(ids(pos.map((p) => p.facilityId))),
     partnersByIds(partnerIds),
     ratesOfPartners(partnerIds),
     locationsByIds(ids(pos.map((p) => p.locationId))),
-    emailSources(pos.map((p) => p.uid)),
   ]);
   return {
     totals,
-    appointments,
     finalOf: finalStatusLookup(finals),
     facilities: new Map(facilities.map((f) => [f.id, f])),
     partners: new Map(partners.map((p) => [p.id, p])),
@@ -119,10 +113,7 @@ const toShipmentItem = (po: MasterPurchaseOrder, c: Context): ShipmentItem => {
   const plain: Record<string, unknown> = { ...po };
   for (const k of DATE_FIELDS) plain[k] = day(plain[k]);
   const t = c.totals.get(po.uid) ?? { lines: 0, updatedQty: 0, updatedGmv: 0, updatedPoValue: 0 };
-  const fromEmail = c.appointments.get(po.uid);
-  // cancelled by an appointment email = no date, even with a First Appointment Date (COPT)
-  const currentAppointmentDate = fromEmail === APPOINTMENT_SOURCE.CANCELLED ? null : day(po.currentAppointmentDate) ?? day(po.firstAppointmentDateCOPT);
-  const appointmentSource = fromEmail ?? (currentAppointmentDate ? APPOINTMENT_SOURCE.TYPED : APPOINTMENT_SOURCE.NONE);
+  const currentAppointmentDate = day(po.currentAppointmentDate) ?? day(po.firstAppointmentDateCOPT);
   const facility = po.facilityId !== null ? c.facilities.get(po.facilityId) : undefined;
   const location = po.locationId !== null ? c.locations.get(String(po.locationId)) : undefined;
   const partner = po.firstTransporterId !== null ? c.partners.get(po.firstTransporterId) : undefined;
@@ -135,7 +126,6 @@ const toShipmentItem = (po: MasterPurchaseOrder, c: Context): ShipmentItem => {
     uid: po.uid,
     ...t,
     currentAppointmentDate,
-    appointmentSource,
     statusFinal: c.finalOf(po),
     tatDays,
     criticalDispatchDate: currentAppointmentDate && tatDays !== null ? minusDays(currentAppointmentDate, tatDays) : null,
@@ -205,7 +195,6 @@ const toLineItems = async (lines: DetailsPurchaseOrder[], shipmentOf: (l: Detail
     finalStatusRows(),
   ]);
   const finalOf = finalStatusLookup(finals);
-  const appointments = await emailSources([...new Set(lines.map((l) => shipmentOf(l).uid))]);
   return lines.map((l) => {
     const po = shipmentOf(l);
     return {
@@ -234,7 +223,7 @@ const toLineItems = async (lines: DetailsPurchaseOrder[], shipmentOf: (l: Detail
       facility: po.facility,
       workingDatePlanner: day(po.workingDatePlanner),
       dispatchDate: day(po.dispatchDate),
-      currentAppointmentDate: appointments.get(po.uid) === APPOINTMENT_SOURCE.CANCELLED ? null : day(po.currentAppointmentDate) ?? day(po.firstAppointmentDateCOPT),
+      currentAppointmentDate: day(po.currentAppointmentDate) ?? day(po.firstAppointmentDateCOPT),
       statusPlanning: po.statusPlanning,
       statusWarehouse: po.statusWarehouse,
       statusLogistics: po.statusLogistics,

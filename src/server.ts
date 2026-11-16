@@ -31,7 +31,6 @@ import { log, logEvent } from './utils/logger';
 import { startCache, stopCache } from './modules/cache/cache.service';
 import { logCrashes, startProcessMonitor } from './utils/process-monitor';
 import { startStrRetry } from './modules/channel-api/myntra/str.service';
-import { startAppointmentReader } from './modules/appointments/appointment-gmail';
 import { startDiskCheck } from './modules/admin/server-health.service';
 
 const start = async (): Promise<void> => {
@@ -117,8 +116,6 @@ const start = async (): Promise<void> => {
   const diskCheck = !env.laptopMode ? startDiskCheck() : undefined;
   // Myntra STRs waiting (a failed run, a restart) are tried again by themselves (2026-11-03); same rule.
   const strRetry = AppDataSource.isInitialized && !env.laptopMode ? startStrRetry() : undefined;
-  // Appointment dates from email (2026-11-16): the Gmail label "Appointment Date" every 10 min; same rules.
-  const appointmentReader = AppDataSource.isInitialized && !env.laptopMode ? startAppointmentReader() : undefined;
 
   // D2C internal transfers (2026-11-03, phase 6): the Uniware SO status sync every d2c:settings.syncMinutes (read-only on
   // Uniware; one server at a time through a MySQL lock). Not on a laptop, not without a DB, not with D2C_SYNC_ENABLED=false.
@@ -196,7 +193,6 @@ const start = async (): Promise<void> => {
     uniwareCreate?.stop();
     d2cSync?.stop();
     strRetry?.stop();
-    appointmentReader?.stop();
     diskCheck?.stop();
     await worker?.stop();
     if (recheckTimer) clearInterval(recheckTimer);

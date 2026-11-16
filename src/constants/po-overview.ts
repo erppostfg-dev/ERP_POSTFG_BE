@@ -13,8 +13,6 @@ export const PO_OVERVIEW_ROUTES = {
   COLUMNS: '/columns',
   /** Editing (2026-10-14): save changed fields, the change history, the dropdown lists. */
   SHIPMENT_HISTORY: '/shipments/:uid/history',
-  /** Appointment dates from email (2026-11-16): one shipment's appointment history (emails + changes). */
-  SHIPMENT_APPOINTMENTS: '/shipments/:uid/appointments',
   EDIT_OPTIONS: '/edit-options',
   /** Live updates: Server-Sent Events, and the "changes since" fallback the screen polls when SSE is down. */
   EVENTS: '/events',
@@ -86,8 +84,6 @@ export const PO_OVERVIEW_QUERY = {
   DISPATCH_DATE_TO: 'dispatchDateTo',
   APPOINTMENT_DATE_FROM: 'appointmentDateFrom',
   APPOINTMENT_DATE_TO: 'appointmentDateTo',
-  /** Appointment dates from email (2026-11-16): email / typed / cancelled / none (constants/appointments.ts). */
-  APPOINTMENT_SOURCE: 'appointmentSource',
   PAGE: 'page',
   PAGE_SIZE: 'pageSize',
 } as const;

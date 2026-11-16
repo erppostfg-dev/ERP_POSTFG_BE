@@ -37,7 +37,6 @@ export * from './price-differences';
 export * from './notices';
 export * from './cache';
 export * from './bulk-orders';
-export * from './appointments';
 export * from './sale-order';
 export * from './statuses';
 export * from './users';
