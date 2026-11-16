@@ -32,7 +32,7 @@ const zepto = (gmailId: string, kind: 'Scheduled' | 'ReScheduled' | 'Un-Schedule
 });
 
 /** A PO on PO Overview, saved under a Scootsy / Zepto channel with this PO number. */
-const onOverview = async (channel: 'Scootsy Logistics' | 'Zepto', poNumber: string): Promise<string> => {
+const onOverview = async (channel: 'Scootsy Logistics' | 'Zepto' | 'Blinkit', poNumber: string): Promise<string> => {
   const u = await runPo(bigBasketPo(m, { po_number: `IRA${Date.now() % 100000000}` }));
   await api().post(`${V}/po-verify/${u.id}/verify`).set('Cookie', admin.cookie).send({}).expect(200);
   await api().get(`${V}/po-review/${u.id}/uniware-csv`).set('Cookie', admin.cookie).expect(200);
@@ -51,6 +51,7 @@ beforeEach(async () => {
   admin = await loginAs('admin');
   await insert('master_channels', { id: 20, slug: 'scootsy', display_name: 'Scootsy Logistics', db_aliases: ['Scootsy Logistics'], has_processor: 1, is_active: 1 });
   await insert('master_channels', { id: 2, slug: 'zepto', display_name: 'Zepto', db_aliases: ['Zepto'], has_processor: 1, is_active: 1 });
+  await insert('master_channels', { id: 1, slug: 'blinkit', display_name: 'Blinkit', db_aliases: ['Blinkit'], has_processor: 1, is_active: 1 });
 });
 afterAll(closeDb);
 
@@ -79,6 +80,23 @@ describe('reading the emails', () => {
     expect(parseAppointmentEmail('Purchase Order Un-Scheduled, P5937946', bodyText(u, undefined))).toMatchObject({
       action: 'cancelled', appointmentDate: '2026-11-19', hub: 'COI-DRY-MH-SULUR',
     });
+  });
+
+  it('Blinkit scheduled / rescheduled (in the PO thread) and cancellation', () => {
+    const sub = 'PO_BCPL - Noida N1 Feeder Warehouse_NOIDA_Noida N1 - Feeder Warehouse_PEP TECHNOLOGIES PVT LTD-2867410129977 : 2026-11-16';
+    const sch = 'Dear Supply Partner, The appointment for PO number 2867410129977 has been scheduled on 2026-11-23 for 08:00:00. You are required to report to HOT Noida N1 - Feeder at least 30 minutes prior to the 08:00:00. Your appointment ID required for the gate-in is: Appointment ID: 641727614468 Please quote';
+    expect(parseAppointmentEmail(sub, bodyText(sch, undefined))).toEqual({
+      channel: 'blinkit', poNumber: '2867410129977', action: 'created', appointmentDate: '2026-11-23', previousDate: null,
+      slot: '08:00', appointmentRef: '641727614468', hub: 'Noida N1 - Feeder', quantity: null, remarks: null,
+    });
+    const res = 'Dear Supply Partner, Appointment for PO number 50033210085592 has been rescheduled to 2026-11-10 for 08:30:00. You are required to report to HOT Mumbai M12 - Feeder at least 30 minutes prior. Appointment ID: 101770698400';
+    expect(parseAppointmentEmail('PO_BCPL - Mumbai M12 - Feeder_MUMBAI_x-50033210085592 : 2026-11-02', bodyText(res, undefined))).toMatchObject({ action: 'rescheduled', appointmentDate: '2026-11-10', slot: '08:30', poNumber: '50033210085592' });
+    const html = '<html><head><style>.es-p5t { padding-top:5px;}</style></head><body><h2>Appointment Pass</h2><p>Hi PEP TECHNOLOGIES PVT. LTD, We’d like to inform you that your scheduled appointment at Blinkit Warehouse with PO Numbers 1723710080609 has been cancelled as mentioned below:</p><table><tr><td>Appointment ID</td><td>415017211292</td></tr><tr><td>Appointment Date</td><td>2026-11-14</td></tr><tr><td>Facility Name</td><td>Pune P2 - Feeder Warehouse</td></tr></table><p>We understand this may cause inconvenience</p></body></html>';
+    expect(parseAppointmentEmail('[2026-11-14] Pune P2 - Feeder Warehouse | Appointment Cancellation | - PEP TECHNOLOGIES PVT. LTD', bodyText(undefined, html))).toMatchObject({
+      channel: 'blinkit', poNumber: '1723710080609', action: 'cancelled', appointmentDate: '2026-11-14', appointmentRef: '415017211292', hub: 'Pune P2 - Feeder Warehouse',
+    });
+    // the PO email itself (same subject, no appointment words) is not an appointment
+    expect(parseAppointmentEmail(sub, 'Dear Supply Partner, please find attached the purchase order')).toBeNull();
   });
 
   it('anything else (reply, no date, impossible date) is not read', () => {
@@ -156,6 +174,27 @@ describe('applying them to the PO', () => {
     // another channel's PO with the same number is never touched
     expect(await ingestAppointmentEmail(scootsy('g3', 'P5937946', 'CREATED', '30-11-2026', new Date(Date.now() + 60_000).toISOString()))).toBe('waiting');
     expect((await po(uid)).cur).toBe('2026-11-19');
+  });
+});
+
+describe('Blinkit', () => {
+  it('scheduled -> date; the same email again = applied, no second History row; cancelled clears it', async () => {
+    const uid = await onOverview('Blinkit', '2867410129977');
+    const sub = 'PO_BCPL - Noida N1 Feeder Warehouse_NOIDA_x-2867410129977 : 2026-11-16';
+    const sch = 'The appointment for PO number 2867410129977 has been scheduled on 2026-11-23 for 08:00:00. You are required to report to HOT Noida N1 - Feeder at least 30 minutes prior. Appointment ID: 641727614468';
+    const mail = (gmailId: string, at: string, subject = sub, text = sch) => ({ gmailId, subject, receivedAt: new Date(at), text });
+    expect(await ingestAppointmentEmail(mail('b1', '2026-11-16T10:43:01Z'))).toBe('applied');
+    expect(await ingestAppointmentEmail(mail('b2', '2026-11-16T10:43:02Z'))).toBe('applied');
+    expect(await count('shipment_logs', "field_name = 'currentAppointmentDate' AND user_id IS NULL")).toBe(1);
+    expect((await listed()).data[0]).toMatchObject({ currentAppointmentDate: '2026-11-23', appointmentSource: 'email' });
+    const h = (await history(uid).expect(200)).body.data as { by: string; current: boolean; slot: string }[];
+    expect(h).toHaveLength(2);
+    expect(h.filter((x) => x.current)).toHaveLength(1);
+    expect(h[0]).toMatchObject({ by: 'Blinkit', slot: '08:00' });
+
+    const cancel = 'Hi, We’d like to inform you that your scheduled appointment at Blinkit Warehouse with PO Numbers 2867410129977 has been cancelled as mentioned below: Appointment ID 641727614468 Appointment Date 2026-11-23 Facility Name Noida N1 - Feeder Warehouse We understand';
+    expect(await ingestAppointmentEmail(mail('b3', '2026-11-17T05:00:00Z', '[2026-11-23] Noida N1 - Feeder Warehouse | Appointment Cancellation | - PEP', cancel))).toBe('applied');
+    expect((await listed()).data[0]).toMatchObject({ currentAppointmentDate: null, appointmentSource: 'cancelled' });
   });
 });
 

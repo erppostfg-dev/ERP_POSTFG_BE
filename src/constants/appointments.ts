@@ -8,6 +8,11 @@ import { CHANNELS } from './channels';
  * Gmail filters (made by the user) put the label APPOINTMENT_LABEL on:
  *   Scootsy (Swiggy Instamart vendor portal): "Appointment CREATED|CANCELLED - dd-mm-yyyy | PurchaseOrder - <PO>"
  *   Zepto: "Purchase Order Scheduled|ReScheduled|Un-Scheduled, <PO>"
+ *   Blinkit (2026-11-16, PartnersBiz): replies in the PO's own thread (subject PO_BCPL / PO_BLINK ..., no attachment)
+ *     "The appointment for PO number <PO> has been scheduled on <yyyy-mm-dd> for <hh:mm:ss> ... Appointment ID: <n>" /
+ *     "... has been rescheduled to ..."; "[<date>] <facility> | Appointment Cancellation |" ("PO Numbers <PO> has
+ *     been cancelled ... Appointment ID / Appointment Date / Facility Name"). Blinkit often sends the same email 2-7
+ *     times: a repeat of the PO's last email (same status, date, slot, ID) is kept, applied, with no new History row.
  * The server reads that label every POLL_MINUTES (own reader, not the PO intake), keeps every email as a row of
  * po_appointment_emails and applies it to the saved PO: the newest change wins (an email or a person's edit),
  * cancelled / un-scheduled clears the date.
@@ -32,7 +37,10 @@ export const APPOINTMENTS = {
 export const APPOINTMENT_CHANNELS = {
   [CHANNELS.SCOOTSY]: { label: 'Scootsy', search: 'subject:("PurchaseOrder" ("Appointment CREATED" OR "Appointment CANCELLED")) -subject:(re OR fw OR fwd)' },
   [CHANNELS.ZEPTO]: { label: 'Zepto', search: 'subject:("Purchase Order Scheduled" OR "Purchase Order ReScheduled" OR "Purchase Order Un-Scheduled") zeptonow.com -subject:(re OR fw OR fwd)' },
+  [CHANNELS.BLINKIT]: { label: 'Blinkit', search: '((subject:(PO_BCPL OR PO_BLINK) ("has been scheduled on" OR "has been rescheduled to")) OR (subject:"Appointment Cancellation" "Blinkit Warehouse")) -subject:(re OR fw OR fwd)' },
 } as const;
+/** Channels read in the first run before Blinkit was added (state.backfilledAt of 2026-11-16): not read again. */
+export const APPOINTMENT_FIRST_CHANNELS: readonly string[] = [CHANNELS.SCOOTSY, CHANNELS.ZEPTO];
 export type AppointmentChannel = keyof typeof APPOINTMENT_CHANNELS;
 
 /** What the email says. */

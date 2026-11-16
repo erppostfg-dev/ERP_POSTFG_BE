@@ -121,6 +121,34 @@ const parseZepto = (subject: string, body: string): ParsedAppointment | null => 
   };
 };
 
+const BLINKIT_SUBJECT = /\bPO_(?:BCPL|BLINK)\b/i;
+const BLINKIT_CANCEL_SUBJECT = /\|\s*Appointment Cancellation\s*\|/i;
+
+/** Blinkit (PartnersBiz): scheduled / rescheduled (in the PO's thread) and cancellation. */
+const parseBlinkit = (subject: string, body: string): ParsedAppointment | null => {
+  const ref = clip(body.match(/Appointment ID[\s:|]*(\d+)/i)?.[1], 100);
+  if (BLINKIT_CANCEL_SUBJECT.test(subject)) {
+    const po = body.match(/PO Numbers?\s+(\d+)[\s,]*has been cancelled/i)?.[1];
+    const day = validDay(body.match(/Appointment Date[\s:|]*(\d{4}-\d{2}-\d{2})/i)?.[1] ?? subject.match(/^\s*\[(\d{4}-\d{2}-\d{2})\]/)?.[1]);
+    if (!po || !day) return null;
+    return {
+      channel: CHANNELS.BLINKIT, poNumber: po, action: APPOINTMENT_ACTION.CANCELLED, appointmentDate: day, previousDate: null,
+      slot: null, appointmentRef: ref, hub: clip(body.match(/Facility Name[\s:|]*(.+?)[\s|]*(?=We understand|Please confirm|Thank|$)/i)?.[1], 150),
+      quantity: null, remarks: null,
+    };
+  }
+  if (!BLINKIT_SUBJECT.test(subject)) return null;
+  const m = body.match(/PO number\s+(\d+)\s+has been (scheduled on|rescheduled to)\s+(\d{4}-\d{2}-\d{2})(?:\s+for\s+(\d{1,2}:\d{2})(?::\d{2})?)?/i);
+  const day = validDay(m?.[3]);
+  if (!m || !day) return null;
+  return {
+    channel: CHANNELS.BLINKIT, poNumber: m[1],
+    action: /rescheduled/i.test(m[2]) ? APPOINTMENT_ACTION.RESCHEDULED : APPOINTMENT_ACTION.CREATED,
+    appointmentDate: day, previousDate: null, slot: clip(m[4], 100), appointmentRef: ref,
+    hub: clip(body.match(/report to\s+(?:HOT\s+)?(.+?)\s+at least/i)?.[1], 150), quantity: null, remarks: null,
+  };
+};
+
 /** One email -> what it says, or null when it is in none of the known formats. */
 export const parseAppointmentEmail = (subject: string, body: string): ParsedAppointment | null =>
-  parseScootsy(subject, body) ?? parseZepto(subject, body);
+  parseScootsy(subject, body) ?? parseZepto(subject, body) ?? parseBlinkit(subject, body);

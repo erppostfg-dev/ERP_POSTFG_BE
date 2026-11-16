@@ -2,7 +2,7 @@ import { gmail_v1 } from 'googleapis';
 import { In } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
 import { env } from '../../config/env';
-import { APPOINTMENT_CHANNELS, APPOINTMENTS, GMAIL_UNITS } from '../../constants';
+import { APPOINTMENT_CHANNELS, APPOINTMENT_FIRST_CHANNELS, APPOINTMENTS, GMAIL_UNITS } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
 import { AppState, PoAppointmentEmail } from '../../entities';
 import { logError } from '../../utils/classify-error';
@@ -55,11 +55,15 @@ export const readAppointmentEmails = async (): Promise<{ read: number; applied: 
   try {
     const gmail = getGmail();
     const state = (await stateRepo().findOneBy({ key: APPOINTMENTS.STATE_KEY }))?.value ?? {};
-    const backfill = !state.backfilledAt;
+    // channels whose last BACKFILL_DAYS were read once (the first run of 2026-11-16 = Scootsy + Zepto; Blinkit added later)
+    const done = new Set<string>(Array.isArray(state.backfilledChannels) ? (state.backfilledChannels as string[]) : state.backfilledAt ? APPOINTMENT_FIRST_CHANNELS : []);
+    const todo = Object.keys(APPOINTMENT_CHANNELS).filter((c) => !done.has(c)) as (keyof typeof APPOINTMENT_CHANNELS)[];
+    const backfill = todo.length > 0;
     const label = `label:"${APPOINTMENTS.LABEL}"`;
-    const queries = backfill
-      ? [`${label} ${day(APPOINTMENTS.BACKFILL_DAYS)}`, ...Object.values(APPOINTMENT_CHANNELS).map((c) => `${c.search} ${day(APPOINTMENTS.BACKFILL_DAYS)}`)]
-      : [`${label} ${day(APPOINTMENTS.POLL_LOOKBACK_DAYS)}`];
+    const queries = [
+      `${label} ${day(backfill ? APPOINTMENTS.BACKFILL_DAYS : APPOINTMENTS.POLL_LOOKBACK_DAYS)}`,
+      ...todo.map((c) => `${APPOINTMENT_CHANNELS[c].search} ${day(APPOINTMENTS.BACKFILL_DAYS)}`),
+    ];
     const ids = [...new Set((await Promise.all(queries.map((q) => listIds(gmail, q)))).flat())];
 
     const known = new Set<string>();
@@ -82,11 +86,11 @@ export const readAppointmentEmails = async (): Promise<{ read: number; applied: 
 
     await stateRepo().save({
       key: APPOINTMENTS.STATE_KEY,
-      value: { ...state, ...(backfill ? { backfilledAt: new Date().toISOString() } : {}), lastRunAt: new Date().toISOString(), lastCounts: counts },
+      value: { ...state, ...(backfill ? { backfilledAt: new Date().toISOString(), backfilledChannels: [...done, ...todo] } : {}), lastRunAt: new Date().toISOString(), lastCounts: counts },
       updatedAt: new Date(),
     });
     if (counts.read || counts.retried) {
-      log.info(LOG_SOURCE.APP, `[appointments] ${backfill ? 'first run (last ' + APPOINTMENTS.BACKFILL_DAYS + ' days)' : 'run'}: ${counts.read} new email(s): ${counts.applied} applied, ${counts.waiting} waiting for their PO, ${counts.older} older than the PO's last change, ${counts.unreadable} unreadable; ${counts.retried} waiting one(s) applied`, counts);
+      log.info(LOG_SOURCE.APP, `[appointments] ${backfill ? `first run for ${todo.join(', ')} (last ${APPOINTMENTS.BACKFILL_DAYS} days)` : 'run'}: ${counts.read} new email(s): ${counts.applied} applied, ${counts.waiting} waiting for their PO, ${counts.older} older than the PO's last change, ${counts.unreadable} unreadable; ${counts.retried} waiting one(s) applied`, counts);
     }
     return counts;
   } finally {

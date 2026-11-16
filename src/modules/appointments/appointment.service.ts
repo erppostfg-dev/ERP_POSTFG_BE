@@ -92,9 +92,10 @@ const applyToPo = async (row: PoAppointmentEmail, uid: string): Promise<Appointm
     const po = await m.getRepository(MasterPurchaseOrder).findOne({ where: { uid }, lock: { mode: 'pessimistic_write' } });
     if (!po) return APPOINTMENT_OUTCOME.WAITING;
     // newest wins: when did the PO's last appointment change happen (an email's received time, else the save time)
-    type Last = { id: string | number; at: Date; email_at: Date | null };
+    type Last = { id: string | number; at: Date; email_at: Date | null; action: string | null; day: string | null; slot: string | null; ref: string | null };
     const [last] = await m.query<Last[]>(
-      `SELECT l.id, l.created_at at, e.received_at email_at FROM ${TABLES.SHIPMENT_LOGS} l
+      `SELECT l.id, l.created_at at, e.received_at email_at, e.action, DATE_FORMAT(e.appointment_date, '%Y-%m-%d') day, e.slot, e.appointment_ref ref
+        FROM ${TABLES.SHIPMENT_LOGS} l
         LEFT JOIN ${TABLES.PO_APPOINTMENT_EMAILS} e ON e.log_id = l.id
         WHERE l.shipment_uid = ? AND l.field_name = ? ORDER BY l.id DESC LIMIT 1`,
       [uid, APPOINTMENT_FIELD],
@@ -103,6 +104,11 @@ const applyToPo = async (row: PoAppointmentEmail, uid: string): Promise<Appointm
     if (lastAt !== null && new Date(row.receivedAt).getTime() < lastAt) {
       await m.getRepository(PoAppointmentEmail).update(row.id, { outcome: APPOINTMENT_OUTCOME.OLDER, poUid: uid });
       return APPOINTMENT_OUTCOME.OLDER;
+    }
+    // the same email again (Blinkit sends it 2-7 times): kept and applied, no second History row
+    if (last?.email_at && last.action === row.action && last.day === dayOf(row.appointmentDate) && (last.slot ?? null) === (row.slot ?? null) && (last.ref ?? null) === (row.appointmentRef ?? null)) {
+      await m.getRepository(PoAppointmentEmail).update(row.id, { outcome: APPOINTMENT_OUTCOME.APPLIED, poUid: uid, appliedAt: new Date() });
+      return APPOINTMENT_OUTCOME.APPLIED;
     }
 
     const cancelled = row.action === APPOINTMENT_ACTION.CANCELLED;
