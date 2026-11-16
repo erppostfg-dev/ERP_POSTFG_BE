@@ -4,7 +4,7 @@ import { ACCESS_LEVEL, BULK_DOCS, BULK_ORDERS_TEAM, PAGE } from '../constants';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
 import { teamBulkOrder, teamBulkOrders } from '../modules/bulk-orders/bulk-orders.service';
 import { teamOpenBulkDocument, teamSetBulkPayment, teamUploadBulkDocument } from '../modules/bulk-orders/bulk-documents.service';
-import { bulkProcessOptions, processBulkOrder } from '../modules/bulk-orders/bulk-process.service';
+import { bulkProcessOptions, hideBulkCustomer, processBulkOrder } from '../modules/bulk-orders/bulk-process.service';
 import { sendDocument } from './bulk-documents.send';
 
 /*
@@ -22,6 +22,7 @@ import { sendDocument } from './bulk-documents.send';
  *   POST /po-review/bulk-orders/:id/payment                        { action: verify | refuse | not_needed, note? } (PO review
  *                                                                  VIEWER + special permission "Bulk Orders: verify payments":
  *                                                                  admin / developer, or a role it is on for; 2026-11-13)
+ *   POST /po-review/bulk-orders/customers/:customerId/hide         "Don't suggest again" on a saved address (EDITOR; 2026-11-13)
  * Mounted BEFORE the PO review routes (routes/index.ts), so "bulk-orders" is never read as an upload id.
  */
 const router = Router();
@@ -71,6 +72,13 @@ router.post(BULK_ORDERS_TEAM.ROUTES.PROCESS, ...editor, async (req, res, next) =
   try {
     const u = req.auth!.user;
     res.json({ data: await processBulkOrder({ id: u.id, email: u.email }, String(req.params.id), (req.body ?? {}) as Record<string, unknown>) });
+  } catch (err) {
+    next(err);
+  }
+});
+router.post(BULK_ORDERS_TEAM.ROUTES.CUSTOMER_HIDE, ...editor, async (req, res, next) => {
+  try {
+    res.json({ data: await hideBulkCustomer(req.auth!.user.id, String(req.params.customerId)) });
   } catch (err) {
     next(err);
   }

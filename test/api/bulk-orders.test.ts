@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { BulkCustomerAddresses1795300000000 } from '../../src/migrations/1795300000000-BulkCustomerAddresses';
 import { api, loginAs, type TestLogin } from '../helpers/auth';
-import { closeDb, count, insert, resetDb, rows } from '../helpers/db';
+import { closeDb, count, db, insert, resetDb, rows } from '../helpers/db';
 import { s3Objects } from '../helpers/fake-s3';
 import { covers } from '../helpers/routes';
 
@@ -14,7 +15,8 @@ covers(['GET /bulk-orders', 'POST /bulk-orders', 'GET /bulk-orders/skus', 'GET /
   'GET /po-review/bulk-orders', 'GET /po-review/bulk-orders/:id',
   'POST /bulk-orders/:id/documents', 'GET /bulk-orders/:id/documents/:docId', 'POST /bulk-orders/:id/payment', 'GET /bulk-orders/settings',
   'PUT /bulk-orders/settings/:type', 'POST /po-review/bulk-orders/:id/documents', 'GET /po-review/bulk-orders/:id/documents/:docId',
-  'GET /po-review/bulk-orders/:id/process-options', 'POST /po-review/bulk-orders/:id/process', 'POST /po-review/bulk-orders/:id/payment']);
+  'GET /po-review/bulk-orders/:id/process-options', 'POST /po-review/bulk-orders/:id/process', 'POST /po-review/bulk-orders/:id/payment',
+  'POST /po-review/bulk-orders/customers/:customerId/hide']);
 
 const V = '/api/v1/bulk-orders';
 const YEAR = new Date(Date.now() + 5.5 * 3600_000).getUTCFullYear();
@@ -561,20 +563,92 @@ describe('bulk orders step 3b: Institutional requester details + our team create
     expect(await count('master_purchase_orders')).toBe(1);
   });
 
-  it('customer book: the next order of the same GSTIN (or name + pincode) gets the channel + code suggested; one row, used twice', async () => {
+  const optsOf = async (id: string) => (await api().get(`${T}/${id}/process-options`).set('Cookie', opsExec.cookie).expect(200)).body.data as {
+    customers: { id: string; matchedBy: string; customerCode: string; usedCount: number; deliveryAddress: unknown }[]
+  };
+  const OTHER = { line: 'Block C, 7 Lake View Road', city: 'Pune', state: 'Maharashtra', pincode: '411014' };
+
+  it('customer book = address book: the same delivery address comes first (the panel fills it), then same GSTIN, then name + pincode', async () => {
     const a = await approvedInst();
     await processIt(opsExec, a.id).expect(200);
-    const b = await approvedInst({ receiverName: 'Asha' });
-    const opts = (await api().get(`${T}/${b.id}/process-options`).set('Cookie', opsExec.cookie).expect(200)).body.data;
-    expect(opts.customers).toEqual([expect.objectContaining({ name: 'Sunrise Public School', uniwareChannel: 'INSTITUTIONAL_B2B', customerCode: 'CUST_SUNRISE_01', usedCount: 1, matchedBy: 'gstin' })]);
-    const c = await approvedInst({ gstin: '', institutionName: 'sunrise public school.' });
-    expect((await api().get(`${T}/${c.id}/process-options`).set('Cookie', opsExec.cookie).expect(200)).body.data.customers[0].matchedBy).toBe('name');
-    await processIt(opsExec, b.id, { ...SALE, customerCode: 'CUST_SUNRISE_02' }).expect(200);
-    const book = await rows<{ used_count: number; customer_code: string }>('SELECT used_count, customer_code FROM bulk_customers');
-    expect(book).toEqual([{ used_count: 2, customer_code: 'CUST_SUNRISE_02' }]);
+    // same address written differently (case, punctuation, spaces) = same address
+    const b = await approvedInst({ receiverName: 'Asha', address: { ...ADDRESS, line: '12 mg road,  ANDHERI east.' } });
+    expect((await optsOf(b.id)).customers).toEqual([expect.objectContaining({
+      name: 'Sunrise Public School', uniwareChannel: 'INSTITUTIONAL_B2B', customerCode: 'CUST_SUNRISE_01', usedCount: 1, matchedBy: 'address',
+      receiverName: 'Ravi Kumar', deliveryAddress: ADDRESS,
+    })]);
+    // same institution (GSTIN) at another address: suggested as "same GSTIN", not filled
+    const c = await approvedInst({ address: OTHER });
+    expect((await optsOf(c.id)).customers.map((x) => x.matchedBy)).toEqual(['gstin']);
+    // no GSTIN, same name + pincode
+    const d = await approvedInst({ gstin: '', institutionName: 'sunrise public school.', address: { ...ADDRESS, line: 'Gate 2, MG Road' } });
+    expect((await optsOf(d.id)).customers.map((x) => x.matchedBy)).toEqual(['name']);
+    // another type never gets them (other Uniware channel)
+    const m = (await create(mkt, order()).expect(201)).body.data as { id: string };
+    await approve(m.id);
+    expect((await optsOf(m.id)).customers).toEqual([]);
   });
 
-  it('Marketing (2026-11-13): processed the same way (channel + customer code typed, e.g. Jiva), CSV at ₹1 a unit, no customer book row', async () => {
+  it('nothing is overwritten: same address + same code = one more use; a NEW code for the address = a new row, newest first', async () => {
+    await processIt(opsExec, (await approvedInst()).id).expect(200);
+    await processIt(opsExec, (await approvedInst({ receiverName: 'Asha' })).id).expect(200); // same address + code
+    expect(await rows('SELECT used_count, customer_code FROM bulk_customers')).toEqual([{ used_count: 2, customer_code: 'CUST_SUNRISE_01' }]);
+    await processIt(opsExec, (await approvedInst()).id, { ...SALE, customerCode: 'CUST_SUNRISE_02' }).expect(200);
+    expect(await rows('SELECT used_count, customer_code FROM bulk_customers ORDER BY id')).toEqual([
+      { used_count: 2, customer_code: 'CUST_SUNRISE_01' }, { used_count: 1, customer_code: 'CUST_SUNRISE_02' }]);
+    const next = await approvedInst();
+    expect((await optsOf(next.id)).customers.map((x) => [x.customerCode, x.matchedBy])).toEqual([['CUST_SUNRISE_02', 'address'], ['CUST_SUNRISE_01', 'address']]);
+    const [ord] = await rows<{ customer_id: string }>('SELECT customer_id FROM bulk_orders WHERE customer_code = ? ORDER BY id DESC LIMIT 1', ['CUST_SUNRISE_02']);
+    const [row] = await rows<{ id: string }>('SELECT id FROM bulk_customers WHERE customer_code = ?', ['CUST_SUNRISE_02']);
+    expect(String(ord.customer_id)).toBe(String(row.id));
+  });
+
+  it("Don't suggest again: editors only, hidden (never deleted), shown again when that code is typed for the address again", async () => {
+    await processIt(opsExec, (await approvedInst()).id).expect(200);
+    const next = await approvedInst();
+    const [saved] = (await optsOf(next.id)).customers;
+    const hide = (who: TestLogin, id: string) => api().post(`${T}/customers/${id}/hide`).set('Cookie', who.cookie).send({});
+    await hide(await loginAs('viewer'), saved.id).expect(403);
+    await hide(inst, saved.id).expect(403);
+    expect((await hide(opsExec, '999999').expect(404)).body.error.code).toBe('BULK_CUSTOMER_NOT_FOUND');
+    expect((await hide(opsExec, saved.id).expect(200)).body.data).toEqual({ id: saved.id, hidden: true });
+    await hide(opsExec, saved.id).expect(200); // twice = fine
+    expect((await optsOf(next.id)).customers).toEqual([]);
+    const [h] = await rows<{ hidden_by: number }>('SELECT hidden_by FROM bulk_customers');
+    expect(h.hidden_by).toBe(opsExec.userId);
+    await processIt(opsExec, next.id).expect(200); // typed again for this address
+    expect(await rows('SELECT used_count, hidden_at FROM bulk_customers')).toEqual([{ used_count: 2, hidden_at: null }]);
+  });
+
+  it('migration BulkCustomerAddresses fills the book from the orders processed before it (Marketing too, one row per address + code)', async () => {
+    await processIt(opsExec, (await approvedInst()).id).expect(200);
+    await processIt(opsExec, (await approvedInst({ address: OTHER })).id, { ...SALE, customerCode: 'CUST_SUNRISE_PUNE' }).expect(200);
+    const m = (await create(mkt, order()).expect(201)).body.data as { id: string };
+    await approve(m.id);
+    await processIt(opsExec, m.id, { facilityCode: WH, uniwareChannel: 'JIVA', customerCode: 'CUST_JIVA_01' }).expect(200);
+    // as on dev before this change: one Institutional row (the first order's customer), no Marketing row
+    const [first] = await rows<{ id: string }>('SELECT id FROM bulk_customers ORDER BY id LIMIT 1');
+    await rows('DELETE FROM bulk_customers WHERE id <> ?', [first.id]);
+    await rows("UPDATE bulk_orders SET customer_id = NULL WHERE order_type = 'marketing'");
+    const qr = (await db()).createQueryRunner();
+    try {
+      const mig = new BulkCustomerAddresses1795300000000();
+      await mig.down(qr);
+      await mig.up(qr);
+    } finally {
+      await qr.release();
+    }
+    const book = await rows<{ order_type: string; customer_code: string; ship_pincode: string; address_key: string | null }>(
+      'SELECT order_type, customer_code, ship_pincode, address_key FROM bulk_customers ORDER BY id');
+    expect(book.map((b) => [b.order_type, b.customer_code, b.ship_pincode])).toEqual([
+      ['institutional', 'CUST_SUNRISE_01', ADDRESS.pincode], ['institutional', 'CUST_SUNRISE_PUNE', OTHER.pincode], ['marketing', 'CUST_JIVA_01', ADDRESS.pincode]]);
+    // the migration's key = the app's key: the next Marketing order at that address gets JIVA filled
+    const m2 = (await create(mkt, order()).expect(201)).body.data as { id: string };
+    await approve(m2.id);
+    expect((await optsOf(m2.id)).customers.map((x) => [x.customerCode, x.matchedBy])).toEqual([['CUST_JIVA_01', 'address']]);
+  });
+
+  it('Marketing (2026-11-13): processed the same way (channel + customer code typed, e.g. Jiva), CSV at ₹1 a unit, address saved in the book', async () => {
     const m = (await create(mkt, order()).expect(201)).body.data as { id: string; poNumber: string };
     await approve(m.id);
     expect((await api().get(`${T}/${m.id}/process-options`).set('Cookie', opsExec.cookie).expect(200)).body.data.customers).toEqual([]);
@@ -589,7 +663,11 @@ describe('bulk orders step 3b: Institutional requester details + our team create
     const csv = [...s3Objects(`bulk-orders/${m.poNumber}/sale-order-1/`).entries()].find(([k]) => k.endsWith('.csv'))![1];
     expect(csv).toContain(`${code},${m.poNumber},0,JIVA,SKU_A,STD,SKU_A,SKU_A,1.00,FALSE,10,CUST_JIVA_01,${WH},`);
     expect(csv).toContain(',1.00,FALSE,3,');
-    expect(await count('bulk_customers')).toBe(0);
+    expect(await rows('SELECT order_type, name, gstin, uniware_channel, customer_code, used_count FROM bulk_customers')).toEqual([
+      { order_type: 'marketing', name: 'Ravi Kumar', gstin: null, uniware_channel: 'JIVA', customer_code: 'CUST_JIVA_01', used_count: 1 }]);
+    const m2 = (await create(mkt, order()).expect(201)).body.data as { id: string };
+    await approve(m2.id);
+    expect((await optsOf(m2.id)).customers).toEqual([expect.objectContaining({ uniwareChannel: 'JIVA', customerCode: 'CUST_JIVA_01', matchedBy: 'address' })]);
   });
 
   it('a Marketing order approved with discounts before the ₹1 rule is punched at ₹1 (lines set, on the timeline)', async () => {

@@ -103,6 +103,7 @@ export const ERRORS = {
   BULK_NOT_PAYMENT_VERIFIER: define(403, () => 'Only people with "Bulk Orders: verify payments" (admin, developer, or a role it is switched on for) can verify payments'),
   BULK_PAYMENT_NO_PROOF: define(409, (po: string) => `${po} has no new proof of payment to check: verify / refuse needs an uploaded proof`),
   BULK_DOCUMENT_NOT_FOUND: define(404, (id: string) => `Document ${id} not found on this order`),
+  BULK_CUSTOMER_NOT_FOUND: define(404, (id: string) => `Saved customer ${id} not found`),
   BULK_NOT_SETTINGS_ADMIN: define(403, () => 'Only an admin can change the Bulk Orders settings'),
   BULK_ORDER_NOT_APPROVED: define(409, (po: string, status: string) => `${po} is ${status.replace(/_/g, ' ')}: only an approved order can be processed (reload it)`),
   BULK_PROCESS_TYPE_LATER: define(409, (type: string) => `${type} orders cannot be processed in POST_FG yet`),

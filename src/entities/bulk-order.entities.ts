@@ -339,16 +339,49 @@ export class BulkOrderDocument {
 }
 
 /**
- * A customer our team processed (2026-11-12, Bulk Orders step 3b): the requester's institution details + the Uniware
- * channel / customer code typed for it. Suggested on a later order with the same GSTIN, or the same name + billing
- * pincode. Updated (not duplicated) when it is used again; never deleted.
+ * The customer book = address book (2026-11-12, step 3b; addresses 2026-11-13): one row per order type + delivery
+ * address + Uniware channel + customer code our team typed. name / gstin / address_line .. pincode = the customer
+ * (Institutional: institution + billing address; Marketing: receiver + delivery address); ship_* = the delivery address,
+ * address_key = sha1 of its pincode + cleaned line (bulk-process.service addressKey). Used again = used_count + 1;
+ * never deleted ("Don't suggest again" = hidden_at).
  */
 @Entity({ name: TABLES.BULK_CUSTOMERS })
 @Index('idx_bulk_customers_gstin', ['gstin'])
 @Index('idx_bulk_customers_pincode', ['pincode'])
+@Index('idx_bulk_customers_address_key', ['addressKey'])
+@Index('idx_bulk_customers_ship_pincode', ['shipPincode'])
 export class BulkCustomer {
   @PrimaryGeneratedColumn({ name: 'id', type: 'bigint' })
   id: string;
+
+  /** marketing | institutional: suggestions stay within the type (different Uniware channels). */
+  @Column({ name: 'order_type', type: 'varchar', length: 20, default: 'institutional' })
+  orderType: string;
+
+  @Column({ name: 'receiver_name', type: 'varchar', length: 150, nullable: true })
+  receiverName: string | null;
+
+  @Column({ name: 'ship_address_line', type: 'varchar', length: 500, nullable: true })
+  shipAddressLine: string | null;
+
+  @Column({ name: 'ship_city', type: 'varchar', length: 100, nullable: true })
+  shipCity: string | null;
+
+  @Column({ name: 'ship_state', type: 'varchar', length: 100, nullable: true })
+  shipState: string | null;
+
+  @Column({ name: 'ship_pincode', type: 'varchar', length: 10, nullable: true })
+  shipPincode: string | null;
+
+  @Column({ name: 'address_key', type: 'char', length: 40, nullable: true })
+  addressKey: string | null;
+
+  /** "Don't suggest again" (PO review editor); cleared when the same address + code is used again. */
+  @Column({ name: 'hidden_at', type: 'datetime', precision: 6, nullable: true })
+  hiddenAt: Date | null;
+
+  @Column({ name: 'hidden_by', type: 'int', nullable: true })
+  hiddenBy: number | null;
 
   @Column({ name: 'name', type: 'varchar', length: 200 })
   name: string;

@@ -1,4 +1,5 @@
-import { Brackets } from 'typeorm';
+import { createHash } from 'crypto';
+import { Brackets, IsNull } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
 import {
   BULK_BODY as F,
@@ -67,25 +68,57 @@ const loadOrder = async (id: string): Promise<BulkOrder> => {
   return o;
 };
 
-const customerOut = (c: BulkCustomer, matchedBy: 'gstin' | 'name') => ({
-  id: String(c.id), name: c.name, gstin: c.gstin,
+/**
+ * The delivery address as a key of the customer book: sha1 of the pincode + the line in lower case without punctuation /
+ * extra spaces ("Flat 12, MG Road" = "flat 12 mg road"). The migration BulkCustomerAddresses keeps a copy: change both.
+ */
+export const addressKey = (pincode: string, line: string): string =>
+  createHash('sha1').update(`${pincode.trim()}|${normName(line)}`).digest('hex');
+
+type MatchedBy = 'address' | 'gstin' | 'name';
+const customerOut = (c: BulkCustomer, matchedBy: MatchedBy) => ({
+  id: String(c.id), name: c.name, gstin: c.gstin, receiverName: c.receiverName,
   address: { line: c.addressLine, city: c.city, state: c.state, pincode: c.pincode },
+  deliveryAddress: c.shipAddressLine ? { line: c.shipAddressLine, city: c.shipCity, state: c.shipState, pincode: c.shipPincode } : null,
   uniwareChannel: c.uniwareChannel, customerCode: c.customerCode, usedCount: c.usedCount, lastUsedAt: c.updatedAt, matchedBy,
 });
 
-/** Saved customers that match the order: same GSTIN first, then same name + billing pincode; most used first. 1 query. */
+/**
+ * Saved addresses / customers of the same order type that match the order (not hidden), best first: same delivery address
+ * (newest first: the panel FILLS the first one), then same GSTIN, then same name (institution or receiver) + pincode
+ * (delivery or billing); most used first inside the last two. 1 query.
+ */
 const matchesFor = async (o: BulkOrder) => {
-  if (!o.institutionName) return [];
-  const qb = AppDataSource.getRepository(BulkCustomer).createQueryBuilder('c').where(new Brackets((w) => {
-    if (o.gstin) w.where('c.gstin = :gstin', { gstin: o.gstin });
-    if (o.billingPincode) w.orWhere('c.pincode = :pin', { pin: o.billingPincode });
-  }));
-  if (!o.gstin && !o.billingPincode) return [];
-  const found = await qb.orderBy('c.usedCount', 'DESC').addOrderBy('c.updatedAt', 'DESC').take(50).getMany();
-  const name = normName(o.institutionName);
-  const byGstin = found.filter((c) => o.gstin && c.gstin === o.gstin);
-  const byName = found.filter((c) => !byGstin.includes(c) && normName(c.name) === name);
-  return [...byGstin.map((c) => customerOut(c, 'gstin')), ...byName.map((c) => customerOut(c, 'name'))].slice(0, BULK_SALE.CUSTOMERS_MAX);
+  const key = addressKey(o.pincode, o.addressLine);
+  const pins = [...new Set([o.pincode, o.billingPincode].filter((p): p is string => !!p))];
+  const found = await AppDataSource.getRepository(BulkCustomer).createQueryBuilder('c')
+    .where('c.orderType = :type AND c.hiddenAt IS NULL', { type: o.orderType })
+    .andWhere(new Brackets((w) => {
+      w.where('c.addressKey = :key', { key }).orWhere('c.shipPincode IN (:...pins)', { pins }).orWhere('c.pincode IN (:...pins)', { pins });
+      if (o.gstin) w.orWhere('c.gstin = :gstin', { gstin: o.gstin });
+    }))
+    .orderBy('c.usedCount', 'DESC').addOrderBy('c.updatedAt', 'DESC').take(50).getMany();
+  const names = new Set([o.institutionName, o.receiverName].filter((n): n is string => !!n).map(normName));
+  const byAddress = found.filter((c) => c.addressKey === key).sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+  const byGstin = found.filter((c) => !byAddress.includes(c) && !!o.gstin && c.gstin === o.gstin);
+  const byName = found.filter((c) => !byAddress.includes(c) && !byGstin.includes(c)
+    && (names.has(normName(c.name)) || (!!c.receiverName && names.has(normName(c.receiverName))))
+    && pins.some((p) => p === c.pincode || p === c.shipPincode));
+  return [
+    ...byAddress.map((c) => customerOut(c, 'address')), ...byGstin.map((c) => customerOut(c, 'gstin')), ...byName.map((c) => customerOut(c, 'name')),
+  ].slice(0, BULK_SALE.CUSTOMERS_MAX);
+};
+
+/**
+ * "Don't suggest again" on a saved address (PO review EDITOR; route checks): hidden, never deleted; typing the same code
+ * for that address again shows it again. 200 { id, hidden: true } (also when already hidden); 404 unknown id.
+ */
+export const hideBulkCustomer = async (actorId: number, customerId: string) => {
+  const repo = AppDataSource.getRepository(BulkCustomer);
+  const c = isId(customerId) ? await repo.findOne({ select: { id: true, hiddenAt: true }, where: { id: customerId } }) : null;
+  if (!c) throw appError(ERROR_CODES.BULK_CUSTOMER_NOT_FOUND, String(customerId));
+  if (!c.hiddenAt) await repo.update({ id: String(c.id), hiddenAt: IsNull() }, { hiddenAt: new Date(), hiddenBy: actorId });
+  return { id: String(c.id), hidden: true };
 };
 
 /**
@@ -243,20 +276,23 @@ export const processBulkOrder = async (actor: ProcessActor, id: string, body: Re
     await details.save(rows.details.map((d) => details.create({ ...d, shipmentOrderId: master.uid })));
     await m.getRepository(ShipmentLog).insert({ shipmentUid: poUid, userId: actor.id, action: SHIPMENT_LOG_ACTION.CREATED, source: SHIPMENT_LOG_SOURCE.REVIEW, remark: code });
 
-    // customer book (Institutional): the same GSTIN, else the same name + billing pincode -> updated; else a new row
+    // customer book = address book (both types, 2026-11-13): the same type + delivery address + channel + code -> one
+    // more use (shown again if it was hidden); else a new row. Nothing is overwritten: a new code for an address = a new row.
     const name = o.institutionName ?? o.receiverName;
     let customerId: string | null = null;
     if (BULK_SALE.CUSTOMER_BOOK_TYPES.includes(type)) {
       const customers = m.getRepository(BulkCustomer);
-      const pin = o.billingPincode ?? o.pincode;
-      const same = (o.gstin ? await customers.findOne({ where: { gstin: o.gstin }, order: { usedCount: 'DESC' } }) : null)
-        ?? (await customers.find({ where: { pincode: pin } })).find((x) => normName(x.name) === normName(name)) ?? null;
+      const key = addressKey(o.pincode, o.addressLine);
+      // MySQL compares channel / code without case, as Uniware codes are typed
+      const same = await customers.findOne({ select: { id: true, usedCount: true }, where: { orderType: type, addressKey: key, uniwareChannel, customerCode } });
       const cust = {
-        name, gstin: o.gstin, addressLine: o.billingAddressLine ?? o.addressLine, city: o.billingCity ?? o.city, state: o.billingState ?? o.state, pincode: pin,
-        phone: o.receiverPhone, email: o.contactEmail, uniwareChannel, customerCode, lastOrderId: String(o.id), updatedBy: actor.id, updatedAt: now,
+        orderType: type, name, gstin: o.gstin, addressLine: o.billingAddressLine ?? o.addressLine, city: o.billingCity ?? o.city, state: o.billingState ?? o.state,
+        pincode: o.billingPincode ?? o.pincode, phone: o.receiverPhone, email: o.contactEmail, uniwareChannel, customerCode,
+        receiverName: o.receiverName, shipAddressLine: o.addressLine, shipCity: o.city, shipState: o.state, shipPincode: o.pincode, addressKey: key,
+        lastOrderId: String(o.id), updatedBy: actor.id, updatedAt: now, hiddenAt: null, hiddenBy: null,
       };
       if (same) {
-        await customers.update({ id: same.id }, { ...cust, usedCount: same.usedCount + 1 });
+        await customers.update({ id: String(same.id) }, { ...cust, usedCount: same.usedCount + 1 });
         customerId = String(same.id);
       } else {
         const res = await customers.insert({ ...cust, usedCount: 1, createdBy: actor.id });

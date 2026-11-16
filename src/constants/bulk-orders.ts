@@ -184,6 +184,8 @@ export const BULK_ORDERS_TEAM = {
     PROCESS_OPTIONS: '/:id/process-options', PROCESS: '/:id/process',
     /** Payment check by our team (2026-11-13; CAPABILITY.BULK_PAYMENT_VERIFY). */
     PAYMENT: '/:id/payment',
+    /** "Don't suggest again" on a saved address of the customer book (2026-11-13). */
+    CUSTOMER_HIDE: '/customers/:customerId/hide',
   },
 } as const;
 
@@ -193,9 +195,13 @@ export const BULK_ORDERS_TEAM = {
  * (BULK_ORDERS.FIXED_UNIT_PRICE).
  *   - Our team member types the warehouse (facility), the Uniware channel and the Uniware customer code (both change
  *     often: he creates the customer in Uniware himself and types the code; POST_FG never creates customers).
- *   - Customer book (bulk_customers): every processed order saves / updates its customer (the requester's institution
- *     name, GSTIN, billing address + the typed channel / code); a later order with the same GSTIN, or the same name +
- *     billing pincode, gets them suggested.
+ *   - Customer book = ADDRESS BOOK (bulk_customers; 2026-11-13, user: "save the addresses so we can suggest the customer
+ *     code if the same address came before"): one row per order type + delivery address + Uniware channel + customer
+ *     code (a Uniware customer code holds one address). Every processed order (Marketing + Institutional) adds its row or
+ *     counts one more use of it; nothing is overwritten (same address + a NEW code = a new row, newest suggested first).
+ *     Suggested on a later order of the same type: same delivery address first (the panel FILLS channel + code, the
+ *     person ticks "checked" before creating), then same GSTIN, then same name + pincode. "Don't suggest again" hides a
+ *     row (hidden_at; never deleted); typing that code for that address again shows it again.
  *   - The sale order is a normal saved PO: master / details_purchase_orders + erp_ code + Uniware CSV (Selling Price =
  *     the approved price, MRP less discount %, with GST) + a po_uploads row (source bulk) -> Processed tab, Uniware
  *     hand-off, PO Overview. NO Verify step (user: typed by hand, no OCR): the CSV is unlocked at once. Payment never
@@ -206,8 +212,8 @@ export const BULK_ORDERS_TEAM = {
 export const BULK_SALE = {
   /** Order types our team can process now (Institutional 2026-11-12, Marketing 2026-11-13). */
   TYPES: [BULK_ORDER_TYPE.INSTITUTIONAL, BULK_ORDER_TYPE.MARKETING] as BulkOrderType[],
-  /** Types whose processed customer goes into the customer book (bulk_customers). Marketing has no institution (auto-fill later, user). */
-  CUSTOMER_BOOK_TYPES: [BULK_ORDER_TYPE.INSTITUTIONAL] as BulkOrderType[],
+  /** Types whose processed address + code goes into the customer book (bulk_customers): both since 2026-11-13 (user). */
+  CUSTOMER_BOOK_TYPES: [BULK_ORDER_TYPE.INSTITUTIONAL, BULK_ORDER_TYPE.MARKETING] as BulkOrderType[],
   /** po_uploads.source_system; external_id = the saved PO's number (SALE_PO). */
   SOURCE_SYSTEM: 'bulk_orders',
   /**

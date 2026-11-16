@@ -207,6 +207,7 @@
   "POST /po-review/bulk-orders/:id/documents",
   "POST /po-review/bulk-orders/:id/payment",
   "POST /po-review/bulk-orders/:id/process",
+  "POST /po-review/bulk-orders/customers/:customerId/hide",
   "POST /po-review/bulk-reopen",
   "POST /po-review/bulk-reread",
   "POST /po-review/bulk-retry",
