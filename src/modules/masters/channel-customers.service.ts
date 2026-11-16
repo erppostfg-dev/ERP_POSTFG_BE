@@ -1,4 +1,5 @@
 import { AppDataSource } from '../../config/data-source';
+import { BULK_SALE } from '../../constants';
 import { DetailsChannel, MasterChannel } from '../../entities';
 
 /*
@@ -39,7 +40,8 @@ export async function listChannelCustomers(): Promise<ChannelCustomerItem[]> {
     AppDataSource.getRepository(MasterChannel).find({ order: { id: 'ASC' } }),
     AppDataSource.getRepository(DetailsChannel).find({ select: { channelId: true, channelCode: true, facilityCode: true } }),
   ]);
-  return channels.map((c) => {
+  // the Bulk Orders rows (OFF, only for the saved PO's channel FK) are not shown on the Masters page
+  return channels.filter((c) => !BULK_SALE.CHANNEL_IDS.includes(c.id)).map((c) => {
     const own = locations.filter((l) => l.channelId === c.id);
     return {
       id: c.id,

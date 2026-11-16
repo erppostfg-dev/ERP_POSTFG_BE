@@ -34,6 +34,16 @@ export const MARGIN_APPROVAL = {
   APPROVALS_NEEDED: { add: 1, edit: 2 } as Readonly<Record<MarginRequestKind, 1 | 2>>,
   /** The Masters edit form keys that need the approvals (master_channel_skus margin / rate_after_margin). */
   FIELDS: ['marginPercent', 'rateAfterMargin'] as readonly string[],
+  /** Why a person can't decide (shown on the card + in the 403), in plain words: no "layer" on screen (user 2026-11-12). */
+  WHY: {
+    ASKED: 'you asked for this change',
+    ADD_ROLE: 'a new channel SKU is approved by Operations Manager or Admin',
+    STEP1_ROLE: 'step 1 is for Operations Manager',
+    STEP2_ROLE: 'the final approval is for Admin',
+    SAME: 'you approved step 1: the final approval must be someone else',
+  },
+  /** Names in the 403 "Only <roles> can give <step>". */
+  STEP_NAME: { ADD: 'this approval', STEP1: 'step 1', STEP2: 'the final approval' },
   REMARK_MAX: 500,
   LIST_MAX: 500,
   ROUTES: { LIST: '/margin-changes', APPROVE: '/margin-changes/:id/approve', REJECT: '/margin-changes/:id/reject' },

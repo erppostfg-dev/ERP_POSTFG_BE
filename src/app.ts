@@ -16,7 +16,9 @@ app.use(requestLog);
 app.use(helmet());
 // Only the frontend may call the API from a browser, with its session cookie.
 // ETag / X-File-Size: the in-transit table viewer keeps files in the browser by ETag (readable cross-origin too)
-app.use(cors({ origin: env.auth.frontendOrigin, credentials: true, exposedHeaders: ['ETag', 'X-File-Size', 'Content-Disposition'] }));
+// Bulk Orders portal (2026-11-11): its origin too (the same as the frontend's when both are on one domain).
+const corsOrigins = [...new Set([env.auth.frontendOrigin, new URL(env.auth.bulkPortalUrl).origin])];
+app.use(cors({ origin: corsOrigins, credentials: true, exposedHeaders: ['ETag', 'X-File-Size', 'Content-Disposition'] }));
 app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));

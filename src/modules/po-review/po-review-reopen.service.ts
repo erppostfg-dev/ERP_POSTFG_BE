@@ -1,7 +1,7 @@
 import { In } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
 import {
-  ChannelName, ERROR_CODES, ISSUE_FIELDS, ISSUE_STATUS, ISSUE_TYPE, LOG_SOURCE, REOPEN, REVIEW_SUBMISSION_STATUS, REVIEW_SUBMISSION_TYPE, UPLOAD_STATUS,
+  ChannelName, ERROR_CODES, ISSUE_FIELDS, ISSUE_STATUS, ISSUE_TYPE, LOG_SOURCE, REOPEN, REVIEW_SUBMISSION_STATUS, REVIEW_SUBMISSION_TYPE, UPLOAD_SOURCE, UPLOAD_STATUS,
 } from '../../constants';
 import { PoIssue, PoReopen, PoReviewSubmission, PoUpload, User } from '../../entities';
 import { appError } from '../../utils/AppError';
@@ -75,6 +75,8 @@ export const reopenRejected = async (uploadId: string, remark: string, by: Actor
   const upload = await AppDataSource.getRepository(PoUpload).findOneBy({ id: uploadId });
   if (!upload) throw appError(ERROR_CODES.UPLOAD_NOT_FOUND, uploadId);
   if (upload.status !== UPLOAD_STATUS.REJECTED) throw appError(ERROR_CODES.UPLOAD_NOT_REJECTED, uploadId, upload.status);
+  // a bulk order's sent-back sale order is processed again from its order, never reopened here (2026-11-12)
+  if (upload.source === UPLOAD_SOURCE.BULK) throw appError(ERROR_CODES.BULK_UPLOAD_NOT_REOPENABLE, upload.poNumber ?? uploadId);
   // the checks again, against today's masters (processed.json from S3 only)
   const url = upload.ocrResult?.processed_json;
   const po = typeof url === 'string' ? await readS3Json<ProcessedPo>(url) : undefined;

@@ -22,6 +22,7 @@ const laptopMode = process.env.LAPTOP_MODE === 'true';
 export const LAPTOP_MODE_OFF = {
   PUBSUB_ENABLED: 'false', OCR_ENABLED: 'false', OCR_BACKLOG: 'false', PIPELINE_RESUME: 'false', CHANNEL_API_ENABLED: 'false',
   LOCAL_CLEANUP_ENABLED: 'false', WORKER_IN_SERVER: 'false', QUEUE_MODE: 'local', RECHECK_MINUTES: '0', D2C_SYNC_ENABLED: 'false', PO_UNIWARE_SYNC_ENABLED: 'false', UNIWARE_CREATE_ENABLED: 'false',
+  APPOINTMENT_EMAILS_ENABLED: 'false',
   // not an off switch: laptop mode is D2C local test mode (env.d2c.testOnly), whatever .env says, unless
   // D2C_ALL_FACILITIES=true (d2cAllFacilities)
   D2C_TEST_ONLY: 'true',
@@ -174,6 +175,9 @@ export const env = {
     redirectUrl: process.env.AUTH_REDIRECT_URL ?? `http://localhost:${port}${apiPrefix}/auth/me`,
     // The frontend's origin: CORS with credentials is allowed only for it.
     frontendOrigin: process.env.FRONTEND_ORIGIN ?? 'http://localhost:5173',
+    // Bulk Orders portal (2026-11-11): its own frontend. A sign-in started there (/auth/google?app=bulk) comes back here;
+    // its origin is allowed by CORS too (deployed on the same domain as POST_FG: <domain>/bulk-orders/).
+    bulkPortalUrl: process.env.BULK_PORTAL_URL || 'http://localhost:5174',
     allowedEmailDomain: (process.env.ALLOWED_EMAIL_DOMAIN ?? 'mcaffeine.com').toLowerCase(),
     sessionDays: Number(process.env.SESSION_DAYS ?? 7),
     // Seconds a session check and a person's page access are kept in memory (2026-10-27; 0 = always read the DB).
@@ -298,6 +302,8 @@ export const env = {
   poUniwareSync: { enabled: flag('PO_UNIWARE_SYNC_ENABLED', 'true') },
   // Create in Uniware (2026-11-09, constants/uniware-create.ts): the ONE write to Uniware (sale order create). OFF unless
   // UNIWARE_CREATE_ENABLED=true; always off on a laptop. orderPhone = the phone on the sale order address (required by the API).
+  // Appointment dates from email (2026-11-16, modules/appointments): the label reader; on by default on a server, off on a laptop.
+  appointments: { enabled: flag('APPOINTMENT_EMAILS_ENABLED', 'true') },
   uniwareCreate: { enabled: flag('UNIWARE_CREATE_ENABLED'), orderPhone: (process.env.UNIWARE_ORDER_PHONE ?? '').trim() },
   d2c: {
     uniwareWrites: d2cAllFacilities || flag('D2C_UNIWARE_WRITES'),

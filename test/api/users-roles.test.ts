@@ -127,7 +127,7 @@ describe('users', () => {
 describe('roles', () => {
   it('lists the fixed roles with their page access and the pages', async () => {
     const res = await api().get(`${V}/roles`).set('Cookie', admin.cookie).expect(200);
-    expect(res.body.data.map((r: { key: string }) => r.key).sort()).toEqual(['admin', 'demand-planner', 'developer', 'operations-executive', 'operations-manager', 'viewer']);
+    expect(res.body.data.map((r: { key: string }) => r.key).sort()).toEqual(['admin', 'bulk-approver', 'bulk-institutional', 'bulk-marketing', 'demand-planner', 'developer', 'operations-executive', 'operations-manager', 'viewer']);
     const pages = await api().get(`${V}/roles/pages`).set('Cookie', admin.cookie).expect(200);
     expect(JSON.stringify(pages.body.data)).toContain('/masters/pep-skus');
   });
