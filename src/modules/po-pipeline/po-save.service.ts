@@ -8,6 +8,7 @@ import {
   FILES,
   NEW_PO_STATUS,
   PIPELINE_STEP,
+  poGroupOf,
   SHIPMENT_LOG_ACTION,
   SHIPMENT_LOG_SOURCE,
   NO_BRAND,
@@ -94,6 +95,8 @@ export const poRows = (
     // Links next to the text (2026-10-14); a result validated before then has no ids (masters:link fills them).
     facilityId: v.location?.facilityId ?? null,
     channel: v.channelDisplayName,
+    // Channel / Marketing / Institutional ... from the channel (2026-11-16; bulk orders come through here too)
+    poGroup: poGroupOf(v.channelDisplayName),
     location: v.location?.locationCode ?? null,
     locationId: v.location?.locationId ?? null,
     poNumber: v.poNumber,

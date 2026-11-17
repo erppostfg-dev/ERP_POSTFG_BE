@@ -70,13 +70,14 @@ const hasRole = (a: MarginActor, roles: readonly string[]) => a.roles.some((r) =
 /** null = the actor may decide this request now; else why not. */
 const whyNot = (r: MarginChangeRequest, a: MarginActor): string | null => {
   if (!(MARGIN_REQUEST_OPEN as readonly string[]).includes(r.status)) return `it is ${r.status}`;
-  if (r.requestedBy === a.id) return 'you asked for this change';
+  if (r.requestedBy === a.id) return MARGIN_APPROVAL.WHY.ASKED;
   // a new channel SKU: one approval by a layer 1 person (also one asked before 2026-11-10, now waiting at layer 2)
-  if (r.kind === MARGIN_REQUEST_KIND.ADD) return hasRole(a, MARGIN_APPROVAL.L1_ROLES) ? null : 'layer 1 is for Operations Manager';
-  if (r.status === MARGIN_REQUEST_STATUS.PENDING_L1) return hasRole(a, MARGIN_APPROVAL.L1_ROLES) ? null : 'layer 1 is for Operations Manager';
-  if (!hasRole(a, MARGIN_APPROVAL.L2_ROLES)) return 'layer 2 is for Admin';
-  return r.l1By === a.id ? 'you approved layer 1: layer 2 must be someone else' : null;
+  if (r.kind === MARGIN_REQUEST_KIND.ADD) return hasRole(a, MARGIN_APPROVAL.L1_ROLES) ? null : MARGIN_APPROVAL.WHY.ADD_ROLE;
+  if (r.status === MARGIN_REQUEST_STATUS.PENDING_L1) return hasRole(a, MARGIN_APPROVAL.L1_ROLES) ? null : MARGIN_APPROVAL.WHY.STEP1_ROLE;
+  if (!hasRole(a, MARGIN_APPROVAL.L2_ROLES)) return MARGIN_APPROVAL.WHY.STEP2_ROLE;
+  return r.l1By === a.id ? MARGIN_APPROVAL.WHY.SAME : null;
 };
+const ROLE_PROBLEMS: readonly string[] = [MARGIN_APPROVAL.WHY.ADD_ROLE, MARGIN_APPROVAL.WHY.STEP1_ROLE, MARGIN_APPROVAL.WHY.STEP2_ROLE];
 
 const peopleOf = async (ids: (number | null)[]): Promise<Map<number, MarginPerson>> => {
   const unique = [...new Set(ids.filter((x): x is number => x !== null))];
@@ -135,10 +136,11 @@ const lockForDecision = async (m: import('typeorm').EntityManager, id: string, a
   if (!(MARGIN_REQUEST_OPEN as readonly string[]).includes(r.status)) throw appError(ERROR_CODES.MARGIN_REQUEST_NOT_OPEN, id, r.status);
   const why = whyNot(r, a);
   if (why) {
-    const roleProblem = why.startsWith('layer');
-    if (roleProblem) {
-      const layer2 = r.status === MARGIN_REQUEST_STATUS.PENDING_L2 && r.kind !== MARGIN_REQUEST_KIND.ADD;
-      throw appError(ERROR_CODES.MARGIN_APPROVER_ROLE, layer2 ? 'layer 2' : 'layer 1', (layer2 ? MARGIN_APPROVAL.L2_ROLES : MARGIN_APPROVAL.L1_ROLES).join(' / '));
+    if (ROLE_PROBLEMS.includes(why)) {
+      const add = r.kind === MARGIN_REQUEST_KIND.ADD;
+      const layer2 = !add && r.status === MARGIN_REQUEST_STATUS.PENDING_L2;
+      const step = add ? MARGIN_APPROVAL.STEP_NAME.ADD : layer2 ? MARGIN_APPROVAL.STEP_NAME.STEP2 : MARGIN_APPROVAL.STEP_NAME.STEP1;
+      throw appError(ERROR_CODES.MARGIN_APPROVER_ROLE, step, (layer2 ? MARGIN_APPROVAL.L2_ROLES : MARGIN_APPROVAL.L1_ROLES).join(' / '));
     }
     throw appError(ERROR_CODES.MARGIN_APPROVER_SAME_PERSON, why);
   }
@@ -163,7 +165,7 @@ export const approveMarginRequest = async (rawId: string, body: Record<string, u
     // apply (layer 2 of a change, or the one approval of a new channel SKU). The History says who asked and who approved.
     const people = await peopleOf([r.requestedBy, r.l1By]);
     const nameOf = (uid: number | null) => (uid === null ? '-' : people.get(uid)?.email ?? `user ${uid}`);
-    const approvedBy = single ? `approved by ${a.email}` : `layer 1 ${nameOf(r.l1By)}, layer 2 ${a.email}`;
+    const approvedBy = single ? `approved by ${a.email}` : `step 1 approved by ${nameOf(r.l1By)}, final approval by ${a.email}`;
     const why = `${single ? 'New channel SKU' : 'Margin change'} #${id}: asked by ${nameOf(r.requestedBy)}, ${approvedBy}${r.remark ? `. ${r.remark}` : ''}`.slice(0, 500);
     let channelSkuId = r.channelSkuId;
     try {

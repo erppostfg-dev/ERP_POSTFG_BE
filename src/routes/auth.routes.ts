@@ -14,7 +14,7 @@ import { logError } from '../utils/classify-error';
 
 /*
  * Login routes (API contract, 2026-10-09; prefg's flow):
- *   GET  /auth/google            redirect to Google sign-in
+ *   GET  /auth/google            redirect to Google sign-in (?app=bulk: back to the Bulk Orders portal, BULK_PORTAL_URL)
  *   GET  /auth/google/callback   Google returns here -> session cookie -> redirect to AUTH_REDIRECT_URL
  *                                 (refused: AUTH_REDIRECT_URL?error=<CODE>)
  *   GET  /auth/me                the signed-in user, roles, PO Overview team and every page's access
@@ -32,16 +32,21 @@ const cookieOptions = (maxAgeMs: number): CookieOptions => ({
   maxAge: maxAgeMs,
 });
 
-const redirectWithError = (code: string): string => {
-  const url = new URL(env.auth.redirectUrl);
+/** Where the browser goes after sign-in: the frontend that started it (Bulk Orders portal or POST_FG). */
+const backTo = (app: unknown): string => (app === AUTH.APP_BULK ? env.auth.bulkPortalUrl : env.auth.redirectUrl);
+
+const redirectWithError = (code: string, app: unknown): string => {
+  const url = new URL(backTo(app));
   url.searchParams.set('error', code);
   return url.toString();
 };
 
-router.get('/google', (_req, res, next) => {
+router.get('/google', (req, res, next) => {
   try {
     const state = newState();
     res.cookie(AUTH.STATE_COOKIE, state, cookieOptions(AUTH.STATE_COOKIE_MINUTES * 60 * 1000));
+    if (req.query.app === AUTH.APP_BULK) res.cookie(AUTH.APP_COOKIE, AUTH.APP_BULK, cookieOptions(AUTH.STATE_COOKIE_MINUTES * 60 * 1000));
+    else res.clearCookie(AUTH.APP_COOKIE, { path: '/' });
     res.redirect(googleSignInUrl(state));
   } catch (err) {
     next(err);
@@ -50,7 +55,9 @@ router.get('/google', (_req, res, next) => {
 
 router.get('/google/callback', async (req, res) => {
   const expected = req.cookies?.[AUTH.STATE_COOKIE];
+  const app: unknown = req.cookies?.[AUTH.APP_COOKIE];
   res.clearCookie(AUTH.STATE_COOKIE, { path: '/' });
+  res.clearCookie(AUTH.APP_COOKIE, { path: '/' });
   try {
     if (!expected || req.query.state !== expected) throw appError(ERROR_CODES.OAUTH_STATE_INVALID);
     if (typeof req.query.code !== 'string') throw appError(ERROR_CODES.GOOGLE_TOKEN_INVALID);
@@ -59,12 +66,12 @@ router.get('/google/callback', async (req, res) => {
     const { token, expiresAt } = await startSession(user, profile, clientInfo(req));
     res.cookie(AUTH.SESSION_COOKIE, token, cookieOptions(expiresAt.getTime() - Date.now()));
     log.info(LOG_SOURCE.GOOGLE_LOGIN, `[auth] login ${user.email} (user ${user.id})`);
-    res.redirect(env.auth.redirectUrl);
+    res.redirect(backTo(app));
   } catch (err) {
     const code = err instanceof AppError ? err.code : ERROR_CODES.INTERNAL;
     log.info(LOG_SOURCE.GOOGLE_LOGIN, `[auth] login refused: ${code}${err instanceof AppError ? ` (${err.message})` : ''}`);
     if (!(err instanceof AppError)) logError(LOG_SOURCE.GOOGLE_LOGIN, '[auth] login failed unexpectedly', err);
-    res.redirect(redirectWithError(code));
+    res.redirect(redirectWithError(code, app));
   }
 });
 

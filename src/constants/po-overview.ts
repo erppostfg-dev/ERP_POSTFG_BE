@@ -68,6 +68,7 @@ export const PO_OVERVIEW_QUERY = {
   DOCKET_NO: 'docketNo',
   BRAND: 'brand',
   CHANNEL: 'channel',
+  PO_GROUP: 'poGroup',
   FACILITY: 'facility',
   LOCATION: 'location',
   STATUS_PLANNING: 'statusPlanning',

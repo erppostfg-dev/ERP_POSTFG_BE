@@ -12,7 +12,7 @@ import { DetailsPurchaseOrder, MasterPurchaseOrder, PoInvoice, PoInvoiceSkuQty }
 import { AppError, appError } from '../../utils/AppError';
 import { log } from '../../utils/logger';
 import { flushChanges } from '../po-overview/po-overview.live';
-import { addDays, todayIst } from './reference';
+import { addDays, parseDay, todayIst } from './reference';
 import { readSettings } from './settings';
 import { gateError, isGateCode, routeOf, runPool, uniwareWritesAllowed } from './so.service';
 import { assertTestTransfer, laneText, receivingOfLocation } from './test-mode';
@@ -28,7 +28,9 @@ import {
  * 2026-11-03: one inward PO per DISPATCHED invoice, code <SO code>-<n>, unit price 1, vendor = the route's vendor_code,
  * the warehouse approves the PO in Uniware, the tool only creates it; nothing automatic).
  *
- *   POST /create-inward-po { invoiceIds }   202 + job: per invoice, independently, 2 at a time:
+ *   POST /create-inward-po { invoiceIds, receiveBy }   202 + job: per invoice, independently, 2 at a time
+ *                                             (PO date = the day it is created, deliveryDate = receiveBy, expiry =
+ *                                             PO date + 15 days; user, 2026-11-12):
  *       reserve (locked txn on its transfer)  SO created, invoice dispatched, inward_po_state NULL / failed, receiving
  *                                             facility known, route with a vendor code, SKUs with dispatched > 0, gate
  *                                             (the SENDER facility, as for the SO); code taken once (kept on retries);
@@ -70,9 +72,21 @@ export const inwardItemsOf = (skuQty: PoInvoiceSkuQty | null | undefined): Inwar
   Object.entries(skuQty ?? {}).map(([sku, v]) => ({ sku, qty: Math.max(0, Math.round(Number(v?.dispatched ?? 0))) }))
     .filter((i) => i.qty > 0).sort((a, b) => a.sku.localeCompare(b.sku));
 
-/** Expiry / delivery date of the PO: the transfer's expiry when it is today or later, else today + days. */
-export const inwardExpiryOf = (labelsLink: string | null, today: string, days: number): string =>
-  (labelsLink && /^\d{4}-\d{2}-\d{2}$/.test(labelsLink) && labelsLink >= today ? labelsLink : addDays(today, days));
+/**
+ * The inward PO's dates (user, 2026-11-12): PO date = the day it is created (Uniware stamps it); "Receive by" is picked
+ * in the dialog (-> deliveryDate), from today up to the expiry; expiry = PO date + EXPIRY_DAYS. Returns an error text
+ * instead when the receive-by date is missing, not a date, or outside that window.
+ */
+export const inwardDatesOf = (raw: unknown, today: string): { receiveBy: string; expiry: string } | { error: string } => {
+  const expiry = addDays(today, D2C_INWARD_PO.EXPIRY_DAYS);
+  const text = typeof raw === 'string' || typeof raw === 'number' ? String(raw).trim() : '';
+  if (!text) return { error: 'receiveBy is required (the date the receiving warehouse should get the goods)' };
+  const receiveBy = parseDay(text);
+  if (!receiveBy) return { error: `receiveBy ${text} is not a date (YYYY-MM-DD or DD-MM-YYYY)` };
+  if (receiveBy < today) return { error: `receiveBy ${receiveBy} is before today (${today})` };
+  if (receiveBy > expiry) return { error: `receiveBy ${receiveBy} is after the PO expiry (${expiry} = PO date + ${D2C_INWARD_PO.EXPIRY_DAYS} days)` };
+  return { receiveBy, expiry };
+};
 
 export interface InwardReserveFacts {
   soState: string | null;
@@ -240,7 +254,7 @@ const resultOfError = (invoiceId: string, err: unknown): InwardResult => {
 
 interface Reserved { input: InwardPoInput; uid: string; transferCode: string; invoiceNo: string }
 
-const reserve = async (invoiceId: string, by: Actor): Promise<Reserved> => {
+const reserve = async (invoiceId: string, by: Actor, dates: { receiveBy: string; expiry: string }): Promise<Reserved> => {
   const uid = await uidOfInvoice(invoiceId);
   return AppDataSource.transaction(async (m) => {
     const po = await lockTransfer(m, uid);
@@ -264,7 +278,7 @@ const reserve = async (invoiceId: string, by: Actor): Promise<Reserved> => {
     const items = inwardItemsOf(inv.skuQty);
     const input: InwardPoInput = {
       code, vendorCode: route!.vendorCode as string, facility: receiving as string, soCode: po.orderNo1 as string, reference: po.poNumber as string,
-      expiry: inwardExpiryOf(po.labelsLink, todayIst(), settings.defaultExpiryDays), items,
+      receiveBy: dates.receiveBy, expiry: dates.expiry, items,
     };
     const skuQty: PoInvoiceSkuQty = Object.fromEntries(Object.entries(inv.skuQty ?? {}).map(([k, v]) => [k, { ...v, inward: items.find((x) => x.sku === k)?.qty ?? 0 }]));
     await m.getRepository(PoInvoice).update({ id: invoiceId }, {
@@ -373,10 +387,10 @@ export const reconcileInwardPo = async (
 };
 
 /** One invoice: reserve -> call -> confirm (-> reconcile). Never throws: the result says what happened. */
-const createInwardFor = async (invoiceId: string, by: Actor, api?: UniwarePoster): Promise<InwardResult> => {
+const createInwardFor = async (invoiceId: string, by: Actor, dates: { receiveBy: string; expiry: string }, api?: UniwarePoster): Promise<InwardResult> => {
   let r: Reserved;
   try {
-    r = await reserve(invoiceId, by);
+    r = await reserve(invoiceId, by, dates);
   } catch (err) {
     return resultOfError(invoiceId, err);
   }
@@ -429,12 +443,15 @@ const invoiceIdsOf = (body: unknown): string[] => {
 };
 
 /**
- * POST /create-inward-po { invoiceIds } -> 202 { id, kind, total, done, results } (results so far: ids not found / the
- * gate refuses at once). The rest runs in the background, CONCURRENCY at a time. 409 D2C_NOT_LIVE when the gate
- * refuses every id. GET /jobs/:jobId reads it (inwardJob).
+ * POST /create-inward-po { invoiceIds, receiveBy } -> 202 { id, kind, total, done, results } (results so far: ids not
+ * found / the gate refuses at once). receiveBy (one date for every selected invoice) -> Uniware deliveryDate; the PO
+ * date is the day it is created and its expiry PO date + EXPIRY_DAYS (inwardDatesOf). The rest runs in the background,
+ * CONCURRENCY at a time. 409 D2C_NOT_LIVE when the gate refuses every id. GET /jobs/:jobId reads it (inwardJob).
  */
 export const startCreateInwardPo = async (body: unknown, by: Actor, api?: UniwarePoster): Promise<InwardJob> => {
   const ids = invoiceIdsOf(body);
+  const dates = inwardDatesOf(body && typeof body === 'object' ? (body as Record<string, unknown>).receiveBy : undefined, todayIst());
+  if ('error' in dates) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails([{ field: 'receiveBy', code: ERROR_CODES.FIELD_NOT_DAY, message: dates.error }]);
   const settings = await readSettings();
   const valid = ids.filter((id) => /^\d{1,19}$/.test(id));
   const heads = valid.length
@@ -471,7 +488,7 @@ export const startCreateInwardPo = async (body: unknown, by: Actor, api?: Uniwar
   if (!todo.length) finish();
   else {
     void runPool(todo, D2C_INWARD_PO.CONCURRENCY, async (id) => {
-      job.results.push(await createInwardFor(id, by, api));
+      job.results.push(await createInwardFor(id, by, dates, api));
       job.done += 1;
     }).catch((err) => log.error(LOG_SOURCE.APP, `${LOG} job failed`, { job: job.id, error: errorText(err) })).finally(finish);
   }

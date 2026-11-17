@@ -57,13 +57,13 @@ export type WriteAt = 'sender' | 'receiving';
 /**
  * The Uniware write gate (plan 2.11 + local test mode, test-mode.ts):
  *   test only (env.d2c.testOnly)  sender AND receiving facility both test facilities (settings.live / env ignored);
- *   open (settings.live AND env D2C_UNIWARE_WRITES)  the facility the write happens at (`at`) must be known;
+ *   open (settings.live AND env D2C_UNIWARE_WRITES, or env D2C_ALL_FACILITIES)  the facility the write happens at (`at`) must be known;
  *   closed                        sender AND receiving facility both test facilities.
  */
 export const uniwareWritesAllowed = (
   s: Pick<D2cSettings, 'live' | 'testFacilities'>, envWrites: boolean, lane: WriteLane, at: WriteAt, testOnly = env.d2c.testOnly,
 ): boolean => {
-  if (!testOnly && s.live === true && envWrites) return !!(at === 'sender' ? lane.sender : lane.receiving);
+  if (!testOnly && (s.live === true || env.d2c.allFacilities) && envWrites) return !!(at === 'sender' ? lane.sender : lane.receiving);
   return isTestLane(s, lane.sender, lane.receiving);
 };
 
@@ -76,7 +76,7 @@ export const isGateCode = (code: string | undefined): boolean => code === ERROR_
 
 export const gateOf = (s: Pick<D2cSettings, 'live' | 'testFacilities'>) => ({
   live: s.live === true, envWrites: env.d2c.uniwareWrites, testOnly: env.d2c.testOnly,
-  open: !env.d2c.testOnly && s.live === true && env.d2c.uniwareWrites, testFacilities: testCodesOf(s),
+  open: !env.d2c.testOnly && (s.live === true || env.d2c.allFacilities) && env.d2c.uniwareWrites, testFacilities: testCodesOf(s),
 });
 
 const assertWritable = (s: D2cSettings, lane: WriteLane, at: WriteAt) => {

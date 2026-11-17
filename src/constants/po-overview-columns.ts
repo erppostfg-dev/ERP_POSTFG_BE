@@ -59,6 +59,9 @@ export const PO_KEY_COLUMNS: readonly ColumnDef[] = [
 /** Set when the PO is saved or computed: nobody edits them; shown on the Overview tab. */
 export const PO_SYSTEM_COLUMNS: readonly ColumnDef[] = [
   c('uid', 'UID', K.MONO),
+  // PEPIMS -> prod migration (2026-11-16): the kind of order and, for bucket channels, the buyer's own name
+  c('poGroup', 'Group'),
+  c('partyName', 'Party Name'),
   c('entryDate', 'Entry Date', K.DATE),
   c('poDate', 'PO Date', K.DATE),
   c('brandName', 'Brand'),

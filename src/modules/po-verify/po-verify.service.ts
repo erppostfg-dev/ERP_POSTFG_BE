@@ -25,6 +25,7 @@ import { appError } from '../../utils/AppError';
 import { openS3File, readS3Json, readS3JsonCached } from '../email-intake/s3-mirror.service';
 import { issueKey, originalValues } from '../po-pipeline/po-uploads.service';
 import { ProcessedPo } from '../po-processing/common/processed-po';
+import { bulkSendBack, isBulkChannel, isBulkUpload } from '../bulk-orders/bulk-process.service';
 import { bumpReview } from '../po-review/po-review.live';
 import { MasterDataReader, panelMasterFor } from '../po-validation/master-data';
 import { validatePo } from '../po-validation/validate-po';
@@ -73,7 +74,11 @@ const switches = async (): Promise<(channel: string | null) => boolean> => {
     throw err;
   });
   const byChannel = new Map(rows.map((r) => [channelKey(r.channel), r.required]));
-  return (channel) => (channel !== null && byChannel.has(channelKey(channel)) ? byChannel.get(channelKey(channel))! : env.poVerify.required);
+  // Bulk orders' sale orders need no Verify step (user 2026-11-12: typed by hand, no OCR): always OFF (optional).
+  return (channel) => {
+    if (isBulkChannel(channel)) return false;
+    return channel !== null && byChannel.has(channelKey(channel)) ? byChannel.get(channelKey(channel))! : env.poVerify.required;
+  };
 };
 
 export interface VerifyChannelSetting {
@@ -302,8 +307,9 @@ export const verifyDetail = async (uploadId: string): Promise<VerifyDetail> => {
   const master = await AppDataSource.getRepository(MasterPurchaseOrder).findOneBy({ uid: u.poUid });
   const verified = (await verifiedRows([u])).get(String(u.id));
   // The PO with GST as the checks see it (a PO priced before GST gets the GST added here, line by line)
-  const checked = await validatePo(po, await panelMasterFor(AppDataSource, po.channel_name as ChannelName));
-  const withGst = new Map(checked.lines.map((l) => [String(l.lineNo), l.poUnitPrice]));
+  // A bulk order (2026-11-12) has no channel masters: its processed.json already has the price with GST (landing_rate)
+  const checked = isBulkUpload(u) ? null : await validatePo(po, await panelMasterFor(AppDataSource, po.channel_name as ChannelName));
+  const withGst = new Map((checked?.lines ?? []).map((l) => [String(l.lineNo), l.poUnitPrice]));
   const beforeGst = /before GST/i.test(String(po.field_sources?.po_value ?? '')) || (po.line_items.length > 0 && po.line_items.every((l) => l.landing_rate === '' && l.unit_cost !== ''));
 
   // CSV rows follow the PO's lines in order (csvOf); by channel SKU when the counts differ.
@@ -362,7 +368,7 @@ export const verifyDetail = async (uploadId: string): Promise<VerifyDetail> => {
       po: {
         lines: poLines.length, units: poLines.reduce((s, l) => s + n(l.qty), 0), value: n(po.po_value),
         valueBasis: beforeGst ? 'before_gst' : 'with_gst',
-        valueWithGst: beforeGst ? (typeof checked.totals.poValue === 'number' ? checked.totals.poValue : null) : n(po.po_value),
+        valueWithGst: beforeGst ? (typeof checked?.totals.poValue === 'number' ? checked.totals.poValue : null) : n(po.po_value),
       },
       saved: { lines: lines.length, units: lines.reduce((s, l) => s + l.qty, 0), value: Math.round(lines.reduce((s, l) => s + l.value, 0) * 100) / 100 },
       channelPrice: OUR_PRICE_ONLY_CHANNELS.includes(po.channel_name as ChannelName)
@@ -472,6 +478,12 @@ export const verifyMany = async (ids: string[], remark: string | undefined, by: 
  */
 export const sendBack = async (uploadId: string, remark: string, by: Actor): Promise<{ status: string; issues: number }> => {
   const before = checkable(await AppDataSource.getRepository(PoUpload).findOneBy({ id: uploadId }), uploadId);
+  // a bulk order's sale order goes back to PO Processing & Review > Bulk Orders (approved again), not to In Review
+  if (isBulkUpload(before)) {
+    const r = await bulkSendBack(uploadId, remark, by);
+    await audit(by, `po verify: sent back bulk order upload ${uploadId} (PO uid ${before.poUid} cancelled)`);
+    return r;
+  }
   if (before.uniwareUploadedAt) throw appError(ERROR_CODES.ALREADY_IN_UNIWARE, uploadId);
   const oldUid = before.poUid;
 

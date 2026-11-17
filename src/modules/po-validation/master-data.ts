@@ -3,6 +3,7 @@ import { CHANNEL_MASTER_IDS, ChannelName, PO_VERIFY_ACTION, TABLES } from '../..
 import { DetailsChannel, MasterChannel, MasterChannelSku, MasterFacility, MasterPurchaseOrder, MasterSku } from '../../entities';
 import { CACHE_NS } from '../../constants/cache';
 import { cached } from '../cache/cache.service';
+import { cachedPepSkus } from '../masters/masters.cache';
 import { CodeIndex, codeIndex, EXACT_MATCH, matchKey } from '../masters/master-match';
 
 export { matchKey };
@@ -98,7 +99,7 @@ export const panelMasterFor = async (db: DataSource, name: ChannelName): Promise
   });
   if (!rows.channel) return null;
   const [skus, facilities] = await Promise.all([
-    cached(CACHE_NS.MASTERS, 'panel:skus', () => db.getRepository(MasterSku).find()),
+    cachedPepSkus(),
     cached(CACHE_NS.MASTERS, 'panel:facilities', () => db.getRepository(MasterFacility).find()),
   ]);
   return build(db, rows.channel, rows.channelSkus, rows.locations, codeIndex(facilities, EXACT_MATCH), new Map(skus.map((s) => [matchKey(s.pepCode), s])));

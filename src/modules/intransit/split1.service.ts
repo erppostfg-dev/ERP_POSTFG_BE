@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import { AppDataSource } from '../../config/data-source';
+import { forgetMasters } from '../masters/masters.cache';
 import { env } from '../../config/env';
 import { ERROR_CODES, FINAL_SKU_MAP, MASTER_CHANGE_SOURCE, SKU_COMPONENT_STAGE, SPLIT1 } from '../../constants';
 import { appError } from '../../utils/AppError';
@@ -158,7 +159,10 @@ export const addToSplit1 = async (items: ComboRows[], who: Who = { id: null, nam
     if (parents.has(it.combo.trim().toLowerCase())) result.skipped.push({ combo: it.combo.trim(), reason: 'already in Split1' });
     else todo.push(it);
   }
-  if (todo.length) result.added = await AppDataSource.transaction((m) => addCombos(m, todo, who, MASTER_CHANGE_SOURCE.SPLIT1_ADD));
+  if (todo.length) {
+    result.added = await AppDataSource.transaction((m) => addCombos(m, todo, who, MASTER_CHANGE_SOURCE.SPLIT1_ADD));
+    void forgetMasters(); // the shared cached masters (PEP SKU list etc.) are dropped after the commit (2026-11-11, POST_FG Bulk Orders / PO panels)
+  }
   return result;
 };
 
@@ -203,6 +207,7 @@ export const mapVariants = async (items: VariantMap[], who: Who = { id: null, na
       result.mapped = await mapToBases(m, todo.map((it) => ({ variant: it.variant.trim(), base: it.base.trim() })), who);
       if (newBases.length) result.split1.added = await addCombos(m, newBases, who, MASTER_CHANGE_SOURCE.VARIANT_MAP);
     });
+    void forgetMasters(); // the shared cached masters (PEP SKU list etc.) are dropped after the commit (2026-11-11, POST_FG Bulk Orders / PO panels)
     return result;
   }
   const unknown = await unknownInUniware([...todo.map((it) => it.base.trim()), ...withBases.flatMap((b) => b.components.map((c) => c.sku.trim()))]);

@@ -392,6 +392,10 @@ export const D2C_INWARD_PO = {
   RECONCILE_GRACE_MS: 15 * 60_000,
   /** Variance reason note: at most this many characters (required for "other"). */
   NOTE_MAX: 1000,
+  /** The PO's expiry in Uniware = PO date (the day it is created) + this many days (user, 2026-11-12). */
+  EXPIRY_DAYS: 15,
+  /** "Receive by" picked in the Create inward PO dialog: offered as today + this many days. */
+  RECEIVE_BY_DEFAULT_DAYS: 7,
 } as const;
 
 /** Sale order item statuses after which the item can no longer be cancelled from the tool (shipped, or already gone). */

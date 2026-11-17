@@ -1,6 +1,8 @@
 import { NextFunction, Request, Response, Router } from 'express';
 import {
   ACCESS_LEVEL,
+  DATA_SYNC,
+  DATA_SYNC_JOB,
   ERROR_CODES,
   errorMessage,
   MONITOR,
@@ -22,6 +24,7 @@ import { appError } from '../utils/AppError';
 import { Problem } from './po-review.routes';
 import { runCleanupNow, serverView } from '../modules/admin/server-health.service';
 import { monitorAccess, monitorOverview, monitorPeak } from '../modules/monitor/monitor.service';
+import { dataSyncStatus, setNightlySync, startDataSync } from '../modules/pepims-sync/sync-runner';
 
 /*
  * Users & Roles (2026-10-15, user). Admin / developer only (USER_ADMIN_ROLES) and editor on /admin.
@@ -124,6 +127,28 @@ router.get(MONITOR.ROUTES.PEAK, ...devGuard, wrap(async (req) => {
     throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails([{ field: 'at', code: ERROR_CODES.VALIDATION_FAILED, message: 'at: an ISO date-time' }]);
   }
   return monitorPeak(at);
+}));
+
+// ---- Data sync: PEPIMS -> prod + dev -> prod, ONE WAY (2026-11-17; developers only) ----
+
+/** GET /admin/data-sync: both jobs' last runs, which one runs now, the nightly switch, this server's database. */
+router.get(DATA_SYNC.ROUTES.STATUS, ...devGuard, wrap(() => dataSyncStatus()));
+
+/** POST /admin/data-sync/pepims | /dev-copy: start that job now (202; 409 busy / not the prod database). */
+router.post(DATA_SYNC.ROUTES.PEPIMS, ...devGuard, (req, res, next) => {
+  startDataSync(DATA_SYNC_JOB.PEPIMS, req.auth!.user.email).then((data) => res.status(202).json({ data })).catch(next);
+});
+router.post(DATA_SYNC.ROUTES.DEV_COPY, ...devGuard, (req, res, next) => {
+  startDataSync(DATA_SYNC_JOB.DEV_COPY, req.auth!.user.email).then((data) => res.status(202).json({ data })).catch(next);
+});
+
+/** PUT /admin/data-sync/nightly { enabled: boolean }: the 01:00 IST run ON / OFF. */
+router.put(DATA_SYNC.ROUTES.NIGHTLY, ...devGuard, wrap(async (req) => {
+  const enabled = (req.body as Record<string, unknown> | undefined)?.[DATA_SYNC.BODY.ENABLED];
+  if (typeof enabled !== 'boolean') {
+    throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails([{ field: DATA_SYNC.BODY.ENABLED, code: ERROR_CODES.FIELD_NOT_BOOLEAN, message: 'enabled: true or false' }]);
+  }
+  return setNightlySync(enabled, req.auth!.user.email);
 }));
 
 // ---- Users ----

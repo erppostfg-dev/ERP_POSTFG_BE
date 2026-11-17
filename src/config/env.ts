@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { CACHE } from '../constants/cache';
+import { PEPIMS_DATABASE } from '../constants/db';
 import { ERROR_CODES } from '../constants/errors';
 import { GMAIL_PACE } from '../constants/gmail-intake';
 import { LOG_DEFAULTS, LOG_FORMAT, LOG_LEVEL_RANK, type LogFormat, type LogLevel } from '../constants/logging';
@@ -22,10 +23,19 @@ const laptopMode = process.env.LAPTOP_MODE === 'true';
 export const LAPTOP_MODE_OFF = {
   PUBSUB_ENABLED: 'false', OCR_ENABLED: 'false', OCR_BACKLOG: 'false', PIPELINE_RESUME: 'false', CHANNEL_API_ENABLED: 'false',
   LOCAL_CLEANUP_ENABLED: 'false', WORKER_IN_SERVER: 'false', QUEUE_MODE: 'local', RECHECK_MINUTES: '0', D2C_SYNC_ENABLED: 'false', PO_UNIWARE_SYNC_ENABLED: 'false', UNIWARE_CREATE_ENABLED: 'false',
-  // not an off switch: laptop mode is ALWAYS D2C local test mode (env.d2c.testOnly), whatever .env says
+  // not an off switch: laptop mode is D2C local test mode (env.d2c.testOnly), whatever .env says, unless
+  // D2C_ALL_FACILITIES=true (d2cAllFacilities)
   D2C_TEST_ONLY: 'true',
 } as const;
-if (laptopMode) Object.assign(process.env, LAPTOP_MODE_OFF);
+
+/**
+ * D2C_ALL_FACILITIES=true (user, 2026-11-16: "allow in the d2c transfers to use all live facilities even in the dev branch
+ * for testing"): D2C transfers of every facility on the dev server and the laptop, Uniware writes (sale orders, inward
+ * POs) included, whatever D2C_TEST_ONLY, D2C_UNIWARE_WRITES and d2c:settings.live say. Never on the prod database.
+ */
+const PROD_DATABASE = 'mcaff_postfg_prod';
+const d2cAllFacilities = process.env.D2C_ALL_FACILITIES === 'true' && (process.env.DB_NAME ?? '').trim() !== PROD_DATABASE;
+if (laptopMode) Object.assign(process.env, LAPTOP_MODE_OFF, d2cAllFacilities ? { D2C_TEST_ONLY: 'false' } : {});
 
 /**
  * A list setting: "A,B,C" or "[A, B, C]". A bracketed list may also run over several lines of .env, as the Python
@@ -165,6 +175,9 @@ export const env = {
     redirectUrl: process.env.AUTH_REDIRECT_URL ?? `http://localhost:${port}${apiPrefix}/auth/me`,
     // The frontend's origin: CORS with credentials is allowed only for it.
     frontendOrigin: process.env.FRONTEND_ORIGIN ?? 'http://localhost:5173',
+    // Bulk Orders portal (2026-11-11): its own frontend. A sign-in started there (/auth/google?app=bulk) comes back here;
+    // its origin is allowed by CORS too (deployed on the same domain as POST_FG: <domain>/bulk-orders/).
+    bulkPortalUrl: process.env.BULK_PORTAL_URL || 'http://localhost:5174',
     allowedEmailDomain: (process.env.ALLOWED_EMAIL_DOMAIN ?? 'mcaffeine.com').toLowerCase(),
     sessionDays: Number(process.env.SESSION_DAYS ?? 7),
     // Seconds a session check and a person's page access are kept in memory (2026-10-27; 0 = always read the DB).
@@ -291,16 +304,29 @@ export const env = {
   // UNIWARE_CREATE_ENABLED=true; always off on a laptop. orderPhone = the phone on the sale order address (required by the API).
   uniwareCreate: { enabled: flag('UNIWARE_CREATE_ENABLED'), orderPhone: (process.env.UNIWARE_ORDER_PHONE ?? '').trim() },
   d2c: {
-    uniwareWrites: flag('D2C_UNIWARE_WRITES'),
+    uniwareWrites: d2cAllFacilities || flag('D2C_UNIWARE_WRITES'),
     syncEnabled: flag('D2C_SYNC_ENABLED', 'true'),
-    testOnly: (process.env.D2C_TEST_ONLY ?? '').trim()
+    testOnly: d2cAllFacilities ? false : (process.env.D2C_TEST_ONLY ?? '').trim()
       ? (process.env.D2C_TEST_ONLY ?? '').trim().toLowerCase() !== 'false'
       : laptopMode || (process.env.NODE_ENV ?? 'development') !== 'production',
+    /** D2C_ALL_FACILITIES (see d2cAllFacilities): the Uniware write gate is open for every facility, d2c:settings.live ignored. */
+    allFacilities: d2cAllFacilities,
   },
   // Re-check of POs in review after a master fix (2026-10-22, constants/po-review REVIEW_RECHECK): minutes between
   // automatic runs; 0 = only after masters:load and on the button.
   recheck: {
     minutes: Number(process.env.RECHECK_MINUTES ?? REVIEW_RECHECK.DEFAULT_MINUTES),
+  },
+  // PEPIMS -> POST_FG import + sync (2026-11-16, constants/pepims-sync.ts): the database PEPIMS's POs are READ from
+  // (read-only connection, same DB login). Tests point it at their own copy (postfg_test_pepims).
+  pepimsSync: {
+    sourceDb: (process.env.PEPIMS_SYNC_SOURCE_DB ?? '').trim() || PEPIMS_DATABASE,
+    // ONE WAY only (user 2026-11-17): PEPIMS -> this database and dev -> this database; nothing is ever written into
+    // PEPIMS or dev. Both jobs run only when the app's own database is this one (prod), so the dev server / the laptop
+    // (database mcaff_postfg_dev) can never import into dev. Tests: their own database.
+    targetDb: (process.env.DATA_SYNC_TARGET_DB ?? '').trim() || 'mcaff_postfg_prod',
+    // dev -> prod copy (step 2b): the database dev's work is read from (tests: their own copy)
+    devCopySourceDb: (process.env.DEV_COPY_SOURCE_DB ?? '').trim() || 'mcaff_postfg_dev',
   },
   // Channel API connectors (2026-10-16): POs pulled from channel APIs into the same chain. Off by default, like the
   // email listener; each connector also needs its own keys. Poll minutes: the connector's env value, else the constant.

@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { addDays, todayIst } from '../../src/modules/d2c-transfers/reference';
 import { setUniwareClient } from '../../src/modules/d2c-transfers/uniware-transfers';
 import type { UniwareApi } from '../../src/modules/intransit/sources/uniware';
 import { api, loginAs, type TestLogin } from '../helpers/auth';
@@ -105,12 +106,13 @@ describe('invoice list', () => {
 describe('create inward PO', () => {
   it('created: code <SO>-1 at the receiving facility, unit price 1, header + stage inward_po_created', async () => {
     const { uid, invoiceId } = await dispatched();
-    const res = await api().post(`${P}/create-inward-po`).set('Cookie', admin.cookie).send({ invoiceIds: [invoiceId] }).expect(202);
+    const res = await api().post(`${P}/create-inward-po`).set('Cookie', admin.cookie).send({ invoiceIds: [invoiceId], receiveBy: todayIst() }).expect(202);
     const job = await waitJob(res.body.data.id);
     expect(job.results[0]).toMatchObject({ invoiceId, outcome: 'created', inwardPoCode: 'erp_it_20261103001-1' });
     const sent = calls.find((c) => c.path.endsWith('/purchaseOrder/create'))!;
     expect(sent.facility).toBe('TEST_RECV');
     expect(sent.body).toMatchObject({
+      expiryDate: addDays(todayIst(), 15), deliveryDate: todayIst(),
       purchaseOrderCode: 'erp_it_20261103001-1', vendorCode: 'Test_Vendor', purchaseOrderItems: [{ itemSKU: m.pepCode, quantity: 10, unitPrice: 1 }],
       customFieldValues: [{ name: 'ReferenceNo', value: 'erp_it_20261103001' }, { name: 'ReferenceOrder', value: expect.any(String) }],
     });
@@ -123,10 +125,10 @@ describe('create inward PO', () => {
   it('refused: failed + reason; a retry keeps the same code', async () => {
     const { invoiceId } = await dispatched();
     answer = () => refuse('INVALID_VENDOR');
-    await waitJob((await api().post(`${P}/create-inward-po`).set('Cookie', admin.cookie).send({ invoiceIds: [invoiceId] }).expect(202)).body.data.id);
+    await waitJob((await api().post(`${P}/create-inward-po`).set('Cookie', admin.cookie).send({ invoiceIds: [invoiceId], receiveBy: todayIst() }).expect(202)).body.data.id);
     expect(await invoice(invoiceId)).toMatchObject({ inward_po_state: 'failed', inward_po_code: 'erp_it_20261103001-1' });
     answer = () => ({ successful: true });
-    await waitJob((await api().post(`${P}/create-inward-po`).set('Cookie', admin.cookie).send({ invoiceIds: [invoiceId] }).expect(202)).body.data.id);
+    await waitJob((await api().post(`${P}/create-inward-po`).set('Cookie', admin.cookie).send({ invoiceIds: [invoiceId], receiveBy: todayIst() }).expect(202)).body.data.id);
     expect(await invoice(invoiceId)).toMatchObject({ inward_po_state: 'created', inward_po_code: 'erp_it_20261103001-1' });
   });
 
@@ -135,22 +137,30 @@ describe('create inward PO', () => {
     answer = (c) => (c.path.endsWith('/create')
       ? refuse('DUPLICATE_CODE', 30002)
       : { successful: true, code: 'erp_it_20261103001-1', statusCode: 'CREATED', customFieldValues: [{ fieldName: 'ReferenceNo', fieldValue: 'erp_it_20261103001' }], purchaseOrderItems: [] });
-    const job = await waitJob((await api().post(`${P}/create-inward-po`).set('Cookie', admin.cookie).send({ invoiceIds: [invoiceId] }).expect(202)).body.data.id);
+    const job = await waitJob((await api().post(`${P}/create-inward-po`).set('Cookie', admin.cookie).send({ invoiceIds: [invoiceId], receiveBy: todayIst() }).expect(202)).body.data.id);
     expect(job.results[0].outcome).toBe('created');
     expect(await invoice(invoiceId)).toMatchObject({ inward_po_state: 'created', inward_po_status: 'CREATED' });
   });
 
   it('already created: skipped with the reason; no second call', async () => {
     const { invoiceId } = await dispatched();
-    await waitJob((await api().post(`${P}/create-inward-po`).set('Cookie', admin.cookie).send({ invoiceIds: [invoiceId] }).expect(202)).body.data.id);
+    await waitJob((await api().post(`${P}/create-inward-po`).set('Cookie', admin.cookie).send({ invoiceIds: [invoiceId], receiveBy: todayIst() }).expect(202)).body.data.id);
     calls = [];
-    const job = await waitJob((await api().post(`${P}/create-inward-po`).set('Cookie', admin.cookie).send({ invoiceIds: [invoiceId] }).expect(202)).body.data.id);
+    const job = await waitJob((await api().post(`${P}/create-inward-po`).set('Cookie', admin.cookie).send({ invoiceIds: [invoiceId], receiveBy: todayIst() }).expect(202)).body.data.id);
     expect(job.results[0]).toMatchObject({ outcome: 'skipped', error: expect.stringContaining('already has inward PO') });
     expect(calls).toHaveLength(0);
   });
 
   it('validation: invoiceIds required', async () => {
     await api().post(`${P}/create-inward-po`).set('Cookie', admin.cookie).send({}).expect(400);
+  });
+
+  it('validation: receive by required, from today up to PO date + 15 days; nothing is sent to Uniware', async () => {
+    const { invoiceId } = await dispatched();
+    for (const receiveBy of [undefined, 'soon', addDays(todayIst(), -1), addDays(todayIst(), 16)]) {
+      await api().post(`${P}/create-inward-po`).set('Cookie', admin.cookie).send({ invoiceIds: [invoiceId], receiveBy }).expect(400);
+    }
+    expect(calls.filter((c) => c.path.endsWith('/purchaseOrder/create'))).toHaveLength(0);
   });
 });
 
@@ -200,7 +210,7 @@ describe('GRN sync', () => {
 
   it('PO cancelled in Uniware: back in Create inward PO, next create takes <SO>-2', async () => {
     const { uid, invoiceId } = await dispatched();
-    await waitJob((await api().post(`${P}/create-inward-po`).set('Cookie', admin.cookie).send({ invoiceIds: [invoiceId] }).expect(202)).body.data.id);
+    await waitJob((await api().post(`${P}/create-inward-po`).set('Cookie', admin.cookie).send({ invoiceIds: [invoiceId], receiveBy: todayIst() }).expect(202)).body.data.id);
     answer = (c) => {
       if (c.path.endsWith('/getPurchaseOrderDetails')) return { successful: true, code: 'erp_it_20261103001-1', statusCode: 'CANCELLED', customFieldValues: [], purchaseOrderItems: [] };
       if (c.path.endsWith('/getInflowReceipts')) return { successful: true, inflowReceiptCodes: [] };
@@ -211,7 +221,7 @@ describe('GRN sync', () => {
     expect(await invoice(invoiceId)).toMatchObject({ inward_po_state: 'failed', inward_po_code: null, inward_po_status: 'CANCELLED' });
     expect((await api().get(`${P}/invoices?tab=create_inward_po`).set('Cookie', admin.cookie).expect(200)).body.data[0]).toMatchObject({ id: invoiceId, canCreate: true });
     answer = () => ({ successful: true });
-    await waitJob((await api().post(`${P}/create-inward-po`).set('Cookie', admin.cookie).send({ invoiceIds: [invoiceId] }).expect(202)).body.data.id);
+    await waitJob((await api().post(`${P}/create-inward-po`).set('Cookie', admin.cookie).send({ invoiceIds: [invoiceId], receiveBy: todayIst() }).expect(202)).body.data.id);
     expect(await invoice(invoiceId)).toMatchObject({ inward_po_state: 'created', inward_po_code: 'erp_it_20261103001-2' });
   });
 });

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { CHANNEL_PULLS, FEEDBACK, INBOUND_ROUTES, MAIL_LISTS_ROUTES, MANUAL_UPLOAD, NOTICES, PO_INTAKE, PO_ISSUES, PO_VERIFY, PRICE_DIFFS } from '../constants';
+import { BULK_ORDERS, BULK_ORDERS_TEAM, CHANNEL_PULLS, FEEDBACK, INBOUND_ROUTES, MAIL_LISTS_ROUTES, MANUAL_UPLOAD, NOTICES, PO_INTAKE, PO_ISSUES, PO_VERIFY, PRICE_DIFFS } from '../constants';
 import poVerifyGate from '../modules/po-verify/po-verify.gate';
 import adminRoutes from './admin.routes';
 import amazonInboundRoutes from './amazon-inbound.routes';
@@ -8,6 +8,8 @@ import { D2C_ROUTES } from '../constants/d2c-transfers';
 import d2cTransfersRoutes from './d2c-transfers.routes';
 import approvalsRoutes from './approvals.routes';
 import authRoutes from './auth.routes';
+import bulkOrdersRoutes from './bulk-orders.routes';
+import poReviewBulkRoutes from './po-review-bulk.routes';
 import feedbackRoutes from './feedback.routes';
 import noticesRoutes from './notices.routes';
 import healthRoutes from './health.routes';
@@ -42,6 +44,8 @@ router.use(D2C_ROUTES.BASE, d2cTransfersRoutes);
 // PO issues (a PO review tab, 2026-10-29): before the review routes, so /po-review/issues is not an upload id.
 router.use(PO_ISSUES.BASE, poIssuesRoutes);
 router.use(PRICE_DIFFS.BASE, priceDifferencesRoutes);
+// Bulk Orders for our team (2026-11-11, step 3a): before the review routes, so "bulk-orders" is not an upload id.
+router.use(BULK_ORDERS_TEAM.BASE, poReviewBulkRoutes);
 // The verification gate runs first and only for the Uniware hand-off calls; the review routes are unchanged.
 router.use('/po-review', poVerifyGate);
 router.use('/po-review', poReviewRoutes);
@@ -49,5 +53,7 @@ router.use(PO_VERIFY.BASE, poVerifyRoutes);
 router.use(MANUAL_UPLOAD.BASE, manualUploadRoutes);
 router.use(FEEDBACK.BASE, feedbackRoutes);
 router.use(NOTICES.BASE, noticesRoutes);
+// Bulk Orders portal (2026-11-11): its own frontend; access = the /bulk-orders pages.
+router.use(BULK_ORDERS.BASE, bulkOrdersRoutes);
 
 export default router;

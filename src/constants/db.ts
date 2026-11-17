@@ -93,6 +93,18 @@ export const TABLES = {
   // Notices (2026-11-10, constants/notices.ts): one-way notes in the bell, kept 2 days; seen = newest notice id per person.
   NOTICES: 'notices',
   NOTICE_SEEN: 'notice_seen',
+  // Bulk Orders portal (2026-11-11, constants/bulk-orders.ts): Marketing / Institutional orders, their lines, saved
+  // delivery locations and the PO number counter (MKT-2026-0001 / INST-2026-0001).
+  BULK_ORDERS: 'bulk_orders',
+  BULK_ORDER_LINES: 'bulk_order_lines',
+  BULK_LOCATIONS: 'bulk_locations',
+  BULK_ORDER_COUNTERS: 'bulk_order_counters',
+  // Bulk Orders step 2 (2026-11-11): the timeline of an order (created, edited, cancelled, approved with changes, rejected).
+  BULK_ORDER_EVENTS: 'bulk_order_events',
+  BULK_ORDER_DOCUMENTS: 'bulk_order_documents',
+  BULK_TYPE_SETTINGS: 'bulk_type_settings',
+  // Bulk Orders step 3b (2026-11-12): customers our team processed (institution + Uniware channel / customer code).
+  BULK_CUSTOMERS: 'bulk_customers',
   // Gmail intake (2026-10-29, constants/gmail-intake.ts): each labelled email's channel once read; catch-ups as rows.
   GMAIL_MESSAGES: 'gmail_messages',
   INTAKE_CATCHUPS: 'intake_catchups',
@@ -122,6 +134,12 @@ export const TABLES = {
   PO_INVOICES: 'po_invoices',
   /** D2C internal transfers (2026-11-03): Uniware channel / customer / vendor codes per route (sending facility + transfer location). */
   D2C_TRANSFER_ROUTES: 'd2c_transfer_routes',
+  /**
+   * PEPIMS -> prod migration + sync (2026-11-16; constants/po-group.ts): which PEPIMS PO / line a row of ours is, and the
+   * values both sides had at the last sync (so the sync knows which side changed a field).
+   */
+  PEPIMS_SYNC_LINKS: 'pepims_sync_links',
+  PEPIMS_SYNC_LINE_LINKS: 'pepims_sync_line_links',
 } as const;
 
 /** master_sku_components.stage: which split file a combo's parts come from (the report splits in two stages). */
@@ -154,7 +172,8 @@ export const SESSION_EVENT = {
 export type SessionEvent = (typeof SESSION_EVENT)[keyof typeof SESSION_EVENT];
 
 /** po_uploads.source: by email, uploaded by a person on the frontend, or sent by another system through the API. */
-export const UPLOAD_SOURCE = { EMAIL: 'email', MANUAL: 'manual', API: 'api' } as const;
+/** bulk (2026-11-12): a Bulk Orders portal order our team processed into a sale order (constants/bulk-orders.ts BULK_SALE). */
+export const UPLOAD_SOURCE = { EMAIL: 'email', MANUAL: 'manual', API: 'api', BULK: 'bulk' } as const;
 export type UploadSource = (typeof UPLOAD_SOURCE)[keyof typeof UPLOAD_SOURCE];
 
 /** po_uploads.ocr_status */

@@ -55,7 +55,7 @@ describe('a margin edit', () => {
     expect(await sku()).toMatchObject({ margin: '0.2500', rate_after_margin: '374.25' });
     const logs = await rows<{ field_name: string; remark: string; user_id: number }>("SELECT field_name, remark, user_id FROM master_change_logs WHERE field_name IN ('marginPercent', 'rateAfterMargin') ORDER BY id");
     expect(logs.map((l) => l.field_name)).toEqual(['marginPercent', 'rateAfterMargin']);
-    expect(logs[0].remark).toContain(`Margin change #${id}: asked by ${requester.email}, layer 1 ${manager.email}, layer 2 ${admin2.email}`);
+    expect(logs[0].remark).toContain(`Margin change #${id}: asked by ${requester.email}, step 1 approved by ${manager.email}, final approval by ${admin2.email}`);
     expect((await list(manager, 'applied')).items.map((i: { id: string }) => i.id)).toEqual([id]);
   });
 
@@ -68,7 +68,7 @@ describe('a margin edit', () => {
 
     await approve(id, admin2).expect(200); // an admin may act as layer 1 too
     expect((await approve(id, manager).expect(403)).body.error.code).toBe('MARGIN_APPROVER_ROLE');
-    expect((await approve(id, admin2).expect(403)).body.error.message).toContain('layer 2 must be someone else');
+    expect((await approve(id, admin2).expect(403)).body.error.message).toContain('the final approval must be someone else');
     expect((await sku()).rate_after_margin).toBe('349.30');
     const admin3 = await loginAs('admin');
     await approve(id, admin3).expect(200);
