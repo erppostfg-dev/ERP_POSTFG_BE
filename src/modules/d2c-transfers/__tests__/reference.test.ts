@@ -2,8 +2,8 @@ import type { EntityManager } from 'typeorm';
 import { describe, expect, it } from 'vitest';
 import { D2C_DEFAULT_SETTINGS, D2C_STATE_KEY } from '../../../constants';
 import {
-  addDays, nextRefSerial, nextTransferSerial, parseDay, peekReferences, pepimsMaxSerial, pruneByDate, refDateToken, RefSerials, serialOfReference,
-  shouldReadPepims, takeTransferCodes, todayIst,
+  addDays, isGeneratedReference, nextRefSerial, nextTransferSerial, parseDay, peekReferences, pepimsMaxSerial, pruneByDate, refDateToken, RefSerials,
+  serialOfReference, shouldReadPepims, takeTransferCodes, todayIst,
 } from '../reference';
 
 /*
@@ -159,5 +159,32 @@ describe('counter takes (one transaction)', () => {
     );
     expect(refs).toEqual(['HYP_Nagpur|05Nov2026|Int4', 'Mcaff_Gurgaon3|05Nov2026|5', 'Okhla Hub-939|07Nov2026|Freebee1']);
     expect(db.state.get(D2C_STATE_KEY.REF_SERIAL)).toEqual({ byDate: { '2026-11-05': 1 } });
+  });
+
+  it('a PO number from the sheet is kept; generated ones of its day go above its serial', async () => {
+    const db = fakeDb();
+    const refs = await peekReferences(
+      [{ prefix: 'HYP_Nagpur', poDate: '2026-11-05', type: 'Regular' }, { prefix: 'X', poDate: '2026-11-05', type: 'Regular', fixed: 'PEP|05Nov2026|Int9' }, { prefix: 'X', poDate: '2026-11-05', type: 'Regular', fixed: 'IRA90001' }],
+      settings, '2026-11-03', db.m,
+    );
+    expect(refs).toEqual(['HYP_Nagpur|05Nov2026|10', 'PEP|05Nov2026|Int9', 'IRA90001']);
+  });
+
+  it('note(): the counter goes up to a sheet PO number of that day, never down', async () => {
+    const db = fakeDb();
+    db.state.set(D2C_STATE_KEY.REF_SERIAL, { byDate: { '2026-11-05': 3 } });
+    const refs = await RefSerials.open(db.m, settings, '2026-11-03');
+    refs.note('2026-11-05', 'A|05Nov2026|12');
+    refs.note('2026-11-05', 'A|05Nov2026|2');
+    refs.note('2026-11-05', 'IRA90001');
+    expect(await refs.take('2026-11-05')).toBe(13);
+  });
+
+  it('isGeneratedReference: only the reference the tool builds for that prefix, date and type', () => {
+    expect(isGeneratedReference('mCaff_Kolkata3|05Nov2026|Int13', 'mCaff_Kolkata3', '2026-11-05', 'Internal')).toBe(true);
+    expect(isGeneratedReference('mCaff_Kolkata3|05Nov2026|13', 'mCaff_Kolkata3', '2026-11-05', 'Regular')).toBe(true);
+    expect(isGeneratedReference('PEPIMS-PO-77', 'mCaff_Kolkata3', '2026-11-05', 'Regular')).toBe(false);
+    expect(isGeneratedReference('Other|05Nov2026|13', 'mCaff_Kolkata3', '2026-11-05', 'Regular')).toBe(false);
+    expect(isGeneratedReference('mCaff_Kolkata3|05Nov2026|13', null, '2026-11-05', 'Regular')).toBe(false);
   });
 });

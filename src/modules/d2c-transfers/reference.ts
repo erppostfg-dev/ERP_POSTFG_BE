@@ -54,6 +54,13 @@ export const serialOfReference = (poNumber: string, day: string): number | null 
   return m ? Number(m[1]) : null;
 };
 
+/** A reference ID the tool would generate for this location prefix, PO date and type (any serial). */
+export const isGeneratedReference = (ref: string | null, prefix: string | null, day: string | null, type: string | null): boolean => {
+  if (!ref || !prefix || !day || !type) return false;
+  const n = serialOfReference(ref, day);
+  return n !== null && ref === d2cReferenceId(prefix, day, type, n);
+};
+
 /** Is PEPIMS still read on every take? Before a cutover date is set, and until cutoverDate + PEPIMS_REREAD_DAYS. */
 export const shouldReadPepims = (cutoverDate: string | null, today: string): boolean =>
   !cutoverDate || today < addDays(cutoverDate, D2C_LIMITS.PEPIMS_REREAD_DAYS);
@@ -133,6 +140,14 @@ export class RefSerials {
     return next;
   }
 
+  /** A PO number from the sheet of that day: the counter goes up to its serial, so a generated one never repeats it. */
+  note(day: string, ref: string): void {
+    const n = serialOfReference(ref, day);
+    if (n === null) return;
+    this.state.byDate[day] = Math.max(Number(this.state.byDate[day] ?? 0), n);
+    this.taken.push(day);
+  }
+
   async save(): Promise<void> {
     await saveState(this.m, D2C_STATE_KEY.REF_SERIAL, { byDate: pruneByDate(this.state.byDate, this.today, this.taken) });
   }
@@ -156,7 +171,7 @@ export const takeTransferCodes = async (m: EntityManager, today: string, n: numb
  * serials of the same day follow each other.
  */
 export const peekReferences = async (
-  wanted: { prefix: string; poDate: string; type: string }[],
+  wanted: { prefix: string; poDate: string; type: string; fixed?: string | null }[],
   settings: D2cSettings,
   today: string,
   q: Q = AppDataSource.manager,
@@ -167,7 +182,16 @@ export const peekReferences = async (
   const read = shouldReadPepims(settings.cutoverDate, today);
   const pepims = new Map<string, number>();
   const out: string[] = [];
+  // a PO number from the sheet keeps its serial: generated ones of that day go above it
   for (const w of wanted) {
+    const n = w.fixed ? serialOfReference(w.fixed, w.poDate) : null;
+    if (n !== null) byDate[w.poDate] = Math.max(Number(byDate[w.poDate] ?? 0), n);
+  }
+  for (const w of wanted) {
+    if (w.fixed) {
+      out.push(w.fixed);
+      continue;
+    }
     if (read && !pepims.has(w.poDate)) pepims.set(w.poDate, await pepimsMaxSerial(q, w.poDate));
     const next = nextRefSerial(Number(byDate[w.poDate] ?? 0), pepims.get(w.poDate) ?? 0);
     byDate[w.poDate] = next;

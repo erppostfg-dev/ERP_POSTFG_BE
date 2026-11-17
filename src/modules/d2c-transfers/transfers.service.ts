@@ -4,12 +4,12 @@ import { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity
 import { AppDataSource } from '../../config/data-source';
 import {
   D2C_FINAL_STAGES, D2C_LIMITS, D2C_REQUEST_STATE, D2C_STAGE, d2cReferenceId, ERROR_CODES, NEW_PO_STATUS, poGroupOf, round2, SHIPMENT_LOG_ACTION,
-  SHIPMENT_LOG_SOURCE, ShipmentLogAction, ShipmentLogSource,
+  SHIPMENT_LOG_SOURCE, ShipmentLogAction, ShipmentLogSource, TABLES,
 } from '../../constants';
 import { DetailsPurchaseOrder, MasterPurchaseOrder, ShipmentLog } from '../../entities';
 import { AppError, appError } from '../../utils/AppError';
 import { flushChanges } from '../po-overview/po-overview.live';
-import { parseDay, RefSerials, takeTransferCodes, todayIst } from './reference';
+import { isGeneratedReference, parseDay, RefSerials, takeTransferCodes, todayIst } from './reference';
 import { readSettings } from './settings';
 import { createdRemark, editToken, EditableState, statusTextsOf } from './stage';
 import { assertTestTransfer } from './test-mode';
@@ -73,9 +73,11 @@ export const insertTransfers = async (
   const out: CreatedTransfer[] = [];
   const headers = m.getRepository(MasterPurchaseOrder);
   const details = m.getRepository(DetailsPurchaseOrder);
+  for (const t of transfers) if (t.poNumber) refs.note(t.poDate as string, t.poNumber);
   for (const [i, t] of transfers.entries()) {
     if (!t.valid) throw new Error(`insertTransfers: transfer ${t.key} is not valid`);
-    const reference = d2cReferenceId(t.prefix as string, t.poDate as string, t.type as string, await refs.take(t.poDate as string));
+    // the sheet's PO Number (2026-11-17), else a generated reference ID
+    const reference = t.poNumber ?? d2cReferenceId(t.prefix as string, t.poDate as string, t.type as string, await refs.take(t.poDate as string));
     const res = await headers.insert({
       poNumber: reference,
       channel: t.channel,
@@ -287,7 +289,10 @@ export const editDraft = async (rawId: string, body: unknown, by: Actor) => {
     set('specialRemarksCOPT', t.remarks);
 
     let reference = po.poNumber as string;
-    const retake = String(po.locationId) !== String(t.locationId) || po.poDate !== t.poDate || po.transferType !== t.type;
+    // a PO number from the sheet stays; a generated one is taken again when what it is built from changes
+    const [old] = await m.query<{ prefix: string | null }[]>(`SELECT transfer_po_prefix prefix FROM ${TABLES.DETAILS_CHANNELS} WHERE id = ?`, [po.locationId]);
+    const generated = isGeneratedReference(reference, old?.prefix?.trim() || null, po.poDate, po.transferType);
+    const retake = generated && (String(po.locationId) !== String(t.locationId) || po.poDate !== t.poDate || po.transferType !== t.type);
     if (retake) {
       const refs = await RefSerials.open(m, await readSettings(m), today);
       reference = d2cReferenceId(t.prefix as string, t.poDate as string, t.type as string, await refs.take(t.poDate as string));
