@@ -23,7 +23,10 @@ import { loadMasters, RawRow, validateRows, ValidationOutcome } from './validate
  *   POST /uploads/import    the same file again: re-checked (422 D2C_INVALID on any error), the file kept on S3
  *                           (d2c-transfers/uploads/<yyyy>/<mm>/<batchId>-<name>.csv; S3 off -> no file, a warning),
  *                           then ONE transaction inserts every transfer as a draft (source bulk_csv, one batch id)
- * Ignored columns: PO Number, Sr No, Channel SKU Code, GMV, PO Value (the tool computes them); SKU Name only warns.
+ * PO Number (user, 2026-11-17: "read from sheet for now"): filled = the transfer's PO number (rows with the same one are
+ * one transfer; refused when it is on another transfer of the file, already a transfer, or a PO of the same channel);
+ * empty = a generated reference ID.
+ * Ignored columns: Sr No, Channel SKU Code, GMV, PO Value (the tool computes them); SKU Name only warns.
  */
 
 export interface UploadFile { originalname: string; buffer: Buffer }
@@ -57,7 +60,7 @@ export const parseUpload = (file: UploadFile | undefined): RawRow[] => {
   return records.map((r, i) => ({
     row: i + 2,
     channel: cell(r, C.CHANNEL), location: cell(r, C.LOCATION), poDate: cell(r, C.PO_DATE), sender: cell(r, C.DISPATCH_LOCATION),
-    priority: cell(r, C.PRIORITY), group: cell(r, C.GROUP), type: cell(r, C.TYPE), expiry: cell(r, C.PO_EXPIRY_DATE), skuCode: cell(r, C.SKU_CODE),
+    priority: cell(r, C.PRIORITY), group: cell(r, C.GROUP), poNumber: cell(r, C.PO_NUMBER), type: cell(r, C.TYPE), expiry: cell(r, C.PO_EXPIRY_DATE), skuCode: cell(r, C.SKU_CODE),
     skuName: cell(r, C.SKU_NAME), qty: cell(r, C.QTY), uniwareChannel: cell(r, C.UNIWARE_CHANNEL),
   }));
 };
@@ -65,7 +68,7 @@ export const parseUpload = (file: UploadFile | undefined): RawRow[] => {
 const check = async (rows: RawRow[]): Promise<{ outcome: ValidationOutcome; today: string }> => {
   const today = todayIst();
   const settings = await readSettings();
-  const masters = await loadMasters(rows.map((r) => r.skuCode), settings, today);
+  const masters = await loadMasters(rows.map((r) => r.skuCode), settings, today, undefined, rows.map((r) => r.poNumber ?? ''));
   return { outcome: validateRows(rows, masters), today };
 };
 
@@ -75,7 +78,7 @@ export const previewUpload = async (file: UploadFile | undefined) => {
   const { outcome, today } = await check(rows);
   const settings = await readSettings();
   const ok = outcome.transfers.filter((t) => t.valid);
-  const refs = await peekReferences(ok.map((t) => ({ prefix: t.prefix as string, poDate: t.poDate as string, type: t.type as string })), settings, today);
+  const refs = await peekReferences(ok.map((t) => ({ prefix: t.prefix as string, poDate: t.poDate as string, type: t.type as string, fixed: t.poNumber })), settings, today);
   const refOf = new Map(ok.map((t, i) => [t.key, refs[i]]));
   return {
     fileName: file?.originalname ?? null,

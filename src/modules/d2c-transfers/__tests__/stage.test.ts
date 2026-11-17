@@ -95,13 +95,13 @@ describe('upload file', () => {
   });
 
   it('reads rows by header name (any case / punctuation, BOM, extra columns), row = file line', () => {
-    const rows = parseUpload(file(`${String.fromCharCode(0xfeff)}${HEAD},Extra\r\nMcaffeineB2C,Kolkata3,05-11-2026,IGNORED,1,"Scrub, 100g",MCAFF_A,X,10,1,1,MUM_WAREHOUSE2,P1,G1,Internal,2026-11-30,zz\r\n`));
+    const rows = parseUpload(file(`${String.fromCharCode(0xfeff)}${HEAD},Extra\r\nMcaffeineB2C,Kolkata3,05-11-2026,PEP-77,1,"Scrub, 100g",MCAFF_A,X,10,1,1,MUM_WAREHOUSE2,P1,G1,Internal,2026-11-30,zz\r\n`));
     expect(rows).toEqual([{
-      row: 2, channel: 'McaffeineB2C', location: 'Kolkata3', poDate: '05-11-2026', sender: 'MUM_WAREHOUSE2', priority: 'P1', group: 'G1', type: 'Internal',
+      row: 2, channel: 'McaffeineB2C', location: 'Kolkata3', poDate: '05-11-2026', sender: 'MUM_WAREHOUSE2', priority: 'P1', group: 'G1', poNumber: 'PEP-77', type: 'Internal',
       expiry: '2026-11-30', skuCode: 'MCAFF_A', skuName: 'Scrub, 100g', qty: '10', uniwareChannel: '',
     }]);
     const lower = parseUpload(file('channel,LOCATION,po date,sku code,QTY,dispatch location\nMcaffeineB2C,Kolkata3,2026-11-05,A,1,W\n'));
-    expect(lower[0]).toMatchObject({ priority: '', group: '', type: '', expiry: '', skuName: '' });
+    expect(lower[0]).toMatchObject({ priority: '', group: '', poNumber: '', type: '', expiry: '', skuName: '' });
     // the optional Uniware Channel column (a route with 2+ Uniware channels, 2026-11-03)
     expect(parseUpload(file('Channel,Location,PO Date,SKU Code,Qty,Dispatch Location,uniware channel\nM,K,2026-11-05,A,1,W,D2C_TRANSFER_HYP_L\n'))[0].uniwareChannel).toBe('D2C_TRANSFER_HYP_L');
   });

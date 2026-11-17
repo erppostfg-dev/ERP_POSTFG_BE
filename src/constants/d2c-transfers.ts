@@ -254,7 +254,10 @@ export const D2C_UPLOAD_COLUMN = {
   UNIWARE_CHANNEL: 'Uniware Channel',
 } as const;
 export const D2C_UPLOAD_COLUMNS: readonly string[] = Object.values(D2C_UPLOAD_COLUMN);
-/** Columns a file must have (Priority, Type, expiry have defaults; PO Number, Sr No, GMV, PO Value, Channel SKU Code are ignored). */
+/**
+ * Columns a file must have (Priority, Type, expiry have defaults; PO Number is optional: filled = the transfer's PO number,
+ * empty = generated; Sr No, GMV, PO Value, Channel SKU Code are ignored).
+ */
 export const D2C_UPLOAD_REQUIRED: readonly string[] = [
   D2C_UPLOAD_COLUMN.CHANNEL, D2C_UPLOAD_COLUMN.LOCATION, D2C_UPLOAD_COLUMN.PO_DATE, D2C_UPLOAD_COLUMN.SKU_CODE, D2C_UPLOAD_COLUMN.QTY,
   D2C_UPLOAD_COLUMN.DISPATCH_LOCATION,
@@ -269,6 +272,8 @@ export const D2C_LIMITS = {
   REMARKS_MAX: 1000,
   REASON_MAX: 500,
   GROUP_MAX: 100,
+  /** Upload: a PO Number from the sheet (master_purchase_orders.poNumber varchar(255)). */
+  PO_NUMBER_MAX: 255,
   /** Priority: any text up to this length (master_purchase_orders.transferPriority varchar(20)). */
   PRIORITY_MAX: 20,
   /** List paging, as PO Overview. */
