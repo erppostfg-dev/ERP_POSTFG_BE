@@ -105,8 +105,6 @@ export const TABLES = {
   BULK_TYPE_SETTINGS: 'bulk_type_settings',
   // Bulk Orders step 3b (2026-11-12): customers our team processed (institution + Uniware channel / customer code).
   BULK_CUSTOMERS: 'bulk_customers',
-  /** Appointment dates from email (2026-11-16, constants/appointments.ts). */
-  PO_APPOINTMENT_EMAILS: 'po_appointment_emails',
   // Gmail intake (2026-10-29, constants/gmail-intake.ts): each labelled email's channel once read; catch-ups as rows.
   GMAIL_MESSAGES: 'gmail_messages',
   INTAKE_CATCHUPS: 'intake_catchups',
@@ -136,6 +134,12 @@ export const TABLES = {
   PO_INVOICES: 'po_invoices',
   /** D2C internal transfers (2026-11-03): Uniware channel / customer / vendor codes per route (sending facility + transfer location). */
   D2C_TRANSFER_ROUTES: 'd2c_transfer_routes',
+  /**
+   * PEPIMS -> prod migration + sync (2026-11-16; constants/po-group.ts): which PEPIMS PO / line a row of ours is, and the
+   * values both sides had at the last sync (so the sync knows which side changed a field).
+   */
+  PEPIMS_SYNC_LINKS: 'pepims_sync_links',
+  PEPIMS_SYNC_LINE_LINKS: 'pepims_sync_line_links',
 } as const;
 
 /** master_sku_components.stage: which split file a combo's parts come from (the report splits in two stages). */

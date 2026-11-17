@@ -17,6 +17,7 @@ import { startRobotSchedule } from './modules/channel-api/flipkart/consignments.
 import { startD2cSync } from './modules/d2c-transfers/sync.service';
 import { startPoUniwareSync } from './modules/po-uniware-sync/sync.service';
 import { startUniwareCreate } from './modules/uniware-create/create.service';
+import { startDataSyncTimer } from './modules/pepims-sync/sync-runner';
 import { resumeManualQueue } from './modules/manual-upload/manual-upload.service';
 import { recheckInReview } from './modules/po-review/recheck.service';
 import { holdForIntake, kickRelease } from './modules/po-intake-control/intake-release.service';
@@ -31,7 +32,6 @@ import { log, logEvent } from './utils/logger';
 import { startCache, stopCache } from './modules/cache/cache.service';
 import { logCrashes, startProcessMonitor } from './utils/process-monitor';
 import { startStrRetry } from './modules/channel-api/myntra/str.service';
-import { startAppointmentReader } from './modules/appointments/appointment-gmail';
 import { startDiskCheck } from './modules/admin/server-health.service';
 
 const start = async (): Promise<void> => {
@@ -117,8 +117,6 @@ const start = async (): Promise<void> => {
   const diskCheck = !env.laptopMode ? startDiskCheck() : undefined;
   // Myntra STRs waiting (a failed run, a restart) are tried again by themselves (2026-11-03); same rule.
   const strRetry = AppDataSource.isInitialized && !env.laptopMode ? startStrRetry() : undefined;
-  // Appointment dates from email (2026-11-16): the Gmail label "Appointment Date" every 10 min; same rules.
-  const appointmentReader = AppDataSource.isInitialized && !env.laptopMode ? startAppointmentReader() : undefined;
 
   // D2C internal transfers (2026-11-03, phase 6): the Uniware SO status sync every d2c:settings.syncMinutes (read-only on
   // Uniware; one server at a time through a MySQL lock). Not on a laptop, not without a DB, not with D2C_SYNC_ENABLED=false.
@@ -127,6 +125,9 @@ const start = async (): Promise<void> => {
   const poUniwareSync = AppDataSource.isInitialized && !env.laptopMode ? startPoUniwareSync() : undefined;
   // Create in Uniware (2026-11-09): the queued requests, only with UNIWARE_CREATE_ENABLED=true (never on a laptop).
   const uniwareCreate = AppDataSource.isInitialized && !env.laptopMode ? startUniwareCreate() : undefined;
+  // Data sync (2026-11-17, Admin > Data sync): PEPIMS -> prod + dev -> prod every night 01:00 IST; only on the server
+  // whose database is the target (prod), never on a laptop.
+  if (AppDataSource.isInitialized && !env.laptopMode) startDataSyncTimer();
 
   // PO jobs worker (2026-10-26): with QUEUE_MODE=sqs + WORKER_IN_SERVER=true this process also takes the queued jobs;
   // otherwise the separate `npm run worker` does (EC2: its own pm2 process).
@@ -196,7 +197,6 @@ const start = async (): Promise<void> => {
     uniwareCreate?.stop();
     d2cSync?.stop();
     strRetry?.stop();
-    appointmentReader?.stop();
     diskCheck?.stop();
     await worker?.stop();
     if (recheckTimer) clearInterval(recheckTimer);

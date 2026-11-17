@@ -109,6 +109,8 @@ export const ERRORS = {
   BULK_PROCESS_TYPE_LATER: define(409, (type: string) => `${type} orders cannot be processed in POST_FG yet`),
   BULK_UPLOAD_NOT_REOPENABLE: define(409, (po: string) => `${po} came from a bulk order: process it again in PO Processing & Review > Bulk Orders`),
   BULK_LOCATION_LABEL_TAKEN: define(409, (label: string) => `A saved location is already called "${label}": pick it, or use another name`),
+  DATA_SYNC_RUNNING: define(409, (job: string) => `${job} is running now: wait for it to finish (Admin > Data sync shows it)`),
+  DATA_SYNC_NOT_HERE: define(409, (db: string, target: string) => `Data sync writes only into ${target}; this server's database is ${db}, so nothing was run (open it on prod)`),
   UNIWARE_SYNC_TOO_SOON: define(409, (ago: number, by: string, left: number) => `Sync from Uniware was run ${ago} min ago by ${by}: available again in ${left} min (the server also syncs every 30 min by itself)`),
   // --- Notices (2026-11-10) ---
   NOTICES_OFF: define(409, () => 'Notices are switched off (Users & Roles -> Settings)'),
@@ -202,8 +204,6 @@ export const ERRORS = {
   SHIPMENT_NOT_FOUND: define(404, (uid: string) => `No shipment ${uid}`),
   // --- PO Overview editing (2026-10-14) ---
   SHIPMENT_NOT_EDITABLE: define(403, (uid: string) => `You can't edit shipment ${uid} (not one of your facilities, or view-only access)`),
-  // Appointment dates from email (2026-11-16): the appointment history needs the Logistics columns
-  APPOINTMENTS_HIDDEN: define(403, () => "You can't see the appointment date (your team has no access to the Logistics columns)"),
   FIELDS_NOT_EDITABLE: define(403, (fields: string) => `You can't edit: ${fields}`),
   FIELDS_CHANGED_MEANWHILE: define(409, (count: number) => `${count} field(s) were changed by someone else since you opened the shipment`),
   APPOINTMENT_REMARK_REQUIRED: define(400, () => 'A changed appointment date needs a remark from the appointment remark list'),

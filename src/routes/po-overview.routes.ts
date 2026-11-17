@@ -1,9 +1,6 @@
 import { Request, Router } from 'express';
 import {
   ACCESS_LEVEL,
-  APPOINTMENT_FIELD,
-  APPOINTMENT_SOURCE,
-  AppointmentSource,
   LIVE,
   DAY_PATTERN,
   ERROR_CODES,
@@ -11,6 +8,8 @@ import {
   NOT_ASSIGNED_DATE,
   NotAssignedDate,
   PAGE,
+  PO_GROUPS,
+  PoGroup,
   PO_OVERVIEW_LIST,
   PO_OVERVIEW_QUERY,
   PO_OVERVIEW_ROUTES,
@@ -19,11 +18,10 @@ import {
 } from '../constants';
 import { poSyncStatus, startPoSync } from '../modules/po-uniware-sync/sync.service';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
-import { findShipment, Paging, PoOverviewFilters } from '../modules/po-overview/po-overview.queries';
+import { Paging, PoOverviewFilters } from '../modules/po-overview/po-overview.queries';
 import { accessFor } from '../modules/po-overview/po-overview.access';
 import { editOptions, FieldChanges, saveShipment, shipmentHistory } from '../modules/po-overview/po-overview.edit';
 import { changesSince, lastLogId, onShipmentChange, ShipmentChange, startLive } from '../modules/po-overview/po-overview.live';
-import { appointmentHistory } from '../modules/appointments/appointment.service';
 import { getColumns, getFilterOptions, getShipment, hiddenFields, listLines, listShipments } from '../modules/po-overview/po-overview.service';
 import { appError } from '../utils/AppError';
 import { cached } from '../modules/cache/cache.service';
@@ -100,10 +98,9 @@ const parseQuery = (req: Request): { filters: PoOverviewFilters; paging: Paging 
   if (badDate) {
     problems.push({ field: Q.NOT_ASSIGNED, code: ERROR_CODES.FIELD_NOT_ONE_OF, message: errorMessage(ERROR_CODES.FIELD_NOT_ONE_OF, Q.NOT_ASSIGNED, allowedDates.join(', ')) });
   }
-  const sources = Object.values(APPOINTMENT_SOURCE) as string[];
-  const appointmentSource = list(Q.APPOINTMENT_SOURCE);
-  if (appointmentSource.some((s) => !sources.includes(s))) {
-    problems.push({ field: Q.APPOINTMENT_SOURCE, code: ERROR_CODES.FIELD_NOT_ONE_OF, message: errorMessage(ERROR_CODES.FIELD_NOT_ONE_OF, Q.APPOINTMENT_SOURCE, sources.join(', ')) });
+  const poGroup = list(Q.PO_GROUP);
+  if (poGroup.some((g) => !(PO_GROUPS as readonly string[]).includes(g))) {
+    problems.push({ field: Q.PO_GROUP, code: ERROR_CODES.FIELD_NOT_ONE_OF, message: errorMessage(ERROR_CODES.FIELD_NOT_ONE_OF, Q.PO_GROUP, PO_GROUPS.join(', ')) });
   }
   const [poDateFrom, poDateTo] = dayRange(Q.PO_DATE_FROM, Q.PO_DATE_TO);
   const [workingDateFrom, workingDateTo] = dayRange(Q.WORKING_DATE_FROM, Q.WORKING_DATE_TO);
@@ -119,6 +116,7 @@ const parseQuery = (req: Request): { filters: PoOverviewFilters; paging: Paging 
       docketNo: text(Q.DOCKET_NO),
       brand: list(Q.BRAND),
       channel: list(Q.CHANNEL),
+      poGroup: poGroup as PoGroup[],
       facility: list(Q.FACILITY),
       location: list(Q.LOCATION),
       statusPlanning: list(Q.STATUS_PLANNING),
@@ -127,7 +125,6 @@ const parseQuery = (req: Request): { filters: PoOverviewFilters; paging: Paging 
       statusFinal: list(Q.STATUS_FINAL),
       transporter: list(Q.TRANSPORTER),
       notAssigned: notAssigned as NotAssignedDate[],
-      appointmentSource: appointmentSource as AppointmentSource[],
       poDateFrom,
       poDateTo,
       workingDateFrom,
@@ -216,20 +213,6 @@ router.get(PO_OVERVIEW_ROUTES.SHIPMENT_HISTORY, ...viewer, async (req, res, next
     const { uid } = req.params;
     if (!UPLOAD_ID_PATTERN.test(uid)) throw appError(ERROR_CODES.SHIPMENT_NOT_FOUND, uid);
     res.json({ data: await shipmentHistory(uid, hiddenFields(await accessFor(req.auth!.user, req.auth!.roles))) });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// Appointment dates from email (2026-11-16): one shipment's appointment history (emails applied or not + changes by
-// people), newest first. Same access as its History; a person without the Logistics column (hidden) gets 403.
-router.get(PO_OVERVIEW_ROUTES.SHIPMENT_APPOINTMENTS, ...viewer, async (req, res, next) => {
-  try {
-    const { uid } = req.params;
-    if (!UPLOAD_ID_PATTERN.test(uid)) throw appError(ERROR_CODES.SHIPMENT_NOT_FOUND, uid);
-    if (hiddenFields(await accessFor(req.auth!.user, req.auth!.roles)).has(APPOINTMENT_FIELD)) throw appError(ERROR_CODES.APPOINTMENTS_HIDDEN);
-    if (!(await findShipment(uid))) throw appError(ERROR_CODES.SHIPMENT_NOT_FOUND, uid);
-    res.json({ data: await appointmentHistory(uid) });
   } catch (err) {
     next(err);
   }

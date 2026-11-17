@@ -1,5 +1,6 @@
 import { Column, Entity, Index, JoinColumn, ManyToOne, OneToMany, PrimaryGeneratedColumn, Unique } from 'typeorm';
 import { PO_ACTIVE_STATUS, PoActiveStatus, TABLES } from '../constants/db';
+import { PO_GROUP, PO_GROUPS, PoGroup, PoImportedFrom } from '../constants/po-group';
 import { NEW_PO_STATUS } from '../constants/sale-order';
 import type { DetailsPurchaseOrder } from './details-purchase-order.entity';
 import { DetailsChannel } from './details-channel.entity';
@@ -26,6 +27,9 @@ import { decimal } from './transformers';
 @Index('idx_master_po_status_warehouse', ['statusWarehouse'])
 @Index('idx_master_po_status_logistics', ['statusLogistics'])
 @Index('idx_master_po_location', ['location'])
+// PEPIMS -> prod migration (2026-11-16): PO Overview's group filter + "imported" rule.
+@Index('idx_master_po_group', ['poGroup'])
+@Index('idx_master_po_imported_from', ['importedFrom'])
 // D2C internal transfers (2026-11-03): one transfer code per row; the transfer list sorts by stage, priority, PO date.
 @Index('uq_master_po_transfer_code', ['transferCode'], { unique: true })
 @Index('idx_master_po_transfer_stage', ['transferStage', 'transferPriority', 'poDate'])
@@ -393,6 +397,21 @@ export class MasterPurchaseOrder {
    */
   @Column({ name: 'uniwareDoneAt', type: 'datetime', precision: 6, nullable: true })
   uniwareDoneAt: Date | null;
+
+  /**
+   * What kind of order this is (2026-11-16, PEPIMS -> prod migration; constants/po-group.ts): Channel, D2C, Marketing,
+   * Institutional, Internal Transfer, Others. Set from the channel when the row is written (poGroupOf).
+   */
+  @Column({ name: 'poGroup', type: 'enum', enum: PO_GROUPS, default: PO_GROUP.CHANNEL })
+  poGroup: PoGroup;
+
+  /** The buyer's own name when the channel is only a bucket (PEPIMS's name for Marketing / Institutional / Others ...). */
+  @Column({ name: 'partyName', type: 'varchar', length: 255, nullable: true })
+  partyName: string | null;
+
+  /** Where an imported PO came from ('pepims'); null = made by POST_FG. PO Overview shows imported POs too. */
+  @Column({ name: 'importedFrom', type: 'varchar', length: 20, nullable: true })
+  importedFrom: PoImportedFrom | null;
 
   /** fk_master_po_channel: channel -> master_channels.display_name. */
   @ManyToOne(() => MasterChannel, { nullable: true, onUpdate: 'CASCADE' })

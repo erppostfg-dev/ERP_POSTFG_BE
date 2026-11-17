@@ -67,18 +67,32 @@ const zepto = (n: number, at: string): FakeEmail => ({ id: `ze${n}`, from: 'po_f
 const fc = (n: number, at: string): FakeEmail => ({ id: `fc${n}`, from: 'noreply@firstcry.com', subject: `Brainbees PONO pin${100000000 + n}ABCDEFG for PEP`, at });
 
 let admin: TestLogin;
-const switchOn = (channel: string, processFrom: string) =>
-  api().patch(`/api/v1/admin/po-intake/${channel}`).set('Cookie', admin.cookie).send({ enabled: true, processFrom }).expect(200);
+/** Channels whose catch-up a switch asked for, with their row's requested time before the switch (settle waits for them). */
+const asked = new Map<string, number>();
+const switchOn = async (channel: string, processFrom: string) => {
+  const before = await catchUp(channel);
+  asked.set(channel, before ? new Date(before.requested_at as string).getTime() : 0);
+  return api().patch(`/api/v1/admin/po-intake/${channel}`).set('Cookie', admin.cookie).send({ enabled: true, processFrom }).expect(200);
+};
 /**
  * Lets every catch-up asked so far finish: the switch API saves the request in the background (not awaited), so wait
- * until none is running or due (a failed one with a later retry time counts as finished here).
+ * until every switched channel's NEW request row is there (a slow CI run saved it after the old 3-tick wait: flake
+ * 2026-11-17) and none is running or due (a failed one with a later retry time counts as finished here).
  */
 const settle = async () => {
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < 250; i++) {
     await kickCatchUps();
     await new Promise((r) => setTimeout(r, 20));
+    let saved = true;
+    for (const [channel, before] of asked) {
+      const row = await catchUp(channel);
+      if (!row || new Date(row.requested_at as string).getTime() <= before) saved = false;
+    }
     const open = await count('intake_catchups', "status = 'running' OR (status IN ('waiting', 'failed') AND next_try_at <= NOW(6))");
-    if (!open && i > 1) return;
+    if (saved && !open && i > 1) {
+      asked.clear();
+      return;
+    }
   }
   throw new Error('catch-ups did not settle');
 };
@@ -95,6 +109,7 @@ beforeEach(async () => {
   box.calls = { list: 0, meta: 0, full: 0, history: 0 };
   box.fail = { meta429: 0, list403: 0 };
   posted.length = 0;
+  asked.clear();
   vi.stubGlobal('fetch', vi.fn(async (_url: string, init: { body: FormData }) => {
     posted.push(init.body.get('gmailId') as string);
     return new Response('{"data":{}}', { status: 201 });
@@ -125,7 +140,7 @@ describe('catch-ups: one pass, each email read once', () => {
     expect(box.calls.meta - before.meta).toBe(0);
     expect(box.calls.full - before.full).toBe(3);
     expect(box.calls.list - before.list).toBe(1);
-    expect(posted.filter((id) => id.startsWith('fc'))).toHaveLength(3);
+    await expect.poll(() => posted.filter((id) => id.startsWith('fc')).length, { timeout: 5000 }).toBe(3);
   });
 
   it('a channel whose start is later than an email leaves it in Gmail (read once); an earlier start takes it', async () => {

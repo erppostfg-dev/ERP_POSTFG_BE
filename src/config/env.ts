@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { CACHE } from '../constants/cache';
+import { PEPIMS_DATABASE } from '../constants/db';
 import { ERROR_CODES } from '../constants/errors';
 import { GMAIL_PACE } from '../constants/gmail-intake';
 import { LOG_DEFAULTS, LOG_FORMAT, LOG_LEVEL_RANK, type LogFormat, type LogLevel } from '../constants/logging';
@@ -22,7 +23,6 @@ const laptopMode = process.env.LAPTOP_MODE === 'true';
 export const LAPTOP_MODE_OFF = {
   PUBSUB_ENABLED: 'false', OCR_ENABLED: 'false', OCR_BACKLOG: 'false', PIPELINE_RESUME: 'false', CHANNEL_API_ENABLED: 'false',
   LOCAL_CLEANUP_ENABLED: 'false', WORKER_IN_SERVER: 'false', QUEUE_MODE: 'local', RECHECK_MINUTES: '0', D2C_SYNC_ENABLED: 'false', PO_UNIWARE_SYNC_ENABLED: 'false', UNIWARE_CREATE_ENABLED: 'false',
-  APPOINTMENT_EMAILS_ENABLED: 'false',
   // not an off switch: laptop mode is D2C local test mode (env.d2c.testOnly), whatever .env says, unless
   // D2C_ALL_FACILITIES=true (d2cAllFacilities)
   D2C_TEST_ONLY: 'true',
@@ -302,8 +302,6 @@ export const env = {
   poUniwareSync: { enabled: flag('PO_UNIWARE_SYNC_ENABLED', 'true') },
   // Create in Uniware (2026-11-09, constants/uniware-create.ts): the ONE write to Uniware (sale order create). OFF unless
   // UNIWARE_CREATE_ENABLED=true; always off on a laptop. orderPhone = the phone on the sale order address (required by the API).
-  // Appointment dates from email (2026-11-16, modules/appointments): the label reader; on by default on a server, off on a laptop.
-  appointments: { enabled: flag('APPOINTMENT_EMAILS_ENABLED', 'true') },
   uniwareCreate: { enabled: flag('UNIWARE_CREATE_ENABLED'), orderPhone: (process.env.UNIWARE_ORDER_PHONE ?? '').trim() },
   d2c: {
     uniwareWrites: d2cAllFacilities || flag('D2C_UNIWARE_WRITES'),
@@ -318,6 +316,17 @@ export const env = {
   // automatic runs; 0 = only after masters:load and on the button.
   recheck: {
     minutes: Number(process.env.RECHECK_MINUTES ?? REVIEW_RECHECK.DEFAULT_MINUTES),
+  },
+  // PEPIMS -> POST_FG import + sync (2026-11-16, constants/pepims-sync.ts): the database PEPIMS's POs are READ from
+  // (read-only connection, same DB login). Tests point it at their own copy (postfg_test_pepims).
+  pepimsSync: {
+    sourceDb: (process.env.PEPIMS_SYNC_SOURCE_DB ?? '').trim() || PEPIMS_DATABASE,
+    // ONE WAY only (user 2026-11-17): PEPIMS -> this database and dev -> this database; nothing is ever written into
+    // PEPIMS or dev. Both jobs run only when the app's own database is this one (prod), so the dev server / the laptop
+    // (database mcaff_postfg_dev) can never import into dev. Tests: their own database.
+    targetDb: (process.env.DATA_SYNC_TARGET_DB ?? '').trim() || 'mcaff_postfg_prod',
+    // dev -> prod copy (step 2b): the database dev's work is read from (tests: their own copy)
+    devCopySourceDb: (process.env.DEV_COPY_SOURCE_DB ?? '').trim() || 'mcaff_postfg_dev',
   },
   // Channel API connectors (2026-10-16): POs pulled from channel APIs into the same chain. Off by default, like the
   // email listener; each connector also needs its own keys. Poll minutes: the connector's env value, else the constant.

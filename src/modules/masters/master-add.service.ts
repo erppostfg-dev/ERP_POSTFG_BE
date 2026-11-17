@@ -4,7 +4,7 @@ import { env } from '../../config/env';
 import { readSettings } from '../d2c-transfers/settings';
 import { testCodesOf } from '../d2c-transfers/test-mode';
 import {
-  BULK_SALE, ERROR_CODES, errorMessage, IST_OFFSET_MS, MASTER_ADD, MASTER_LOG_ACTION, MASTER_LOG_SOURCE, MASTER_LOG_TYPE, MasterLogType, REVIEW_RECHECK,
+  ERROR_CODES, errorMessage, FK_ONLY_CHANNEL_IDS, IST_OFFSET_MS, MASTER_ADD, MASTER_LOG_ACTION, MASTER_LOG_SOURCE, MASTER_LOG_TYPE, MasterLogType, REVIEW_RECHECK,
   STOCK_BUCKETS, STOCK_FEEDS, STOCK_FORMULAS, STOCK_NOT_COUNTED, TABLES,
 } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
@@ -137,7 +137,7 @@ export const formOptions = async () => {
   ]);
   return {
     // the Bulk Orders rows (OFF, only for the saved PO's channel FK) are not a channel to add masters to
-    channels: channels.filter((c) => !BULK_SALE.CHANNEL_IDS.includes(Number(c.id))).map((c) => ({ id: Number(c.id), name: c.name, active: !!Number(c.active) })),
+    channels: channels.filter((c) => !FK_ONLY_CHANNEL_IDS.includes(Number(c.id))).map((c) => ({ id: Number(c.id), name: c.name, active: !!Number(c.active) })),
     facilities,
     pepSkus: skus.map((s) => ({ ...s, mrp: s.mrp === null ? null : Number(s.mrp) })),
     productTypes: types.map((t) => t.v),

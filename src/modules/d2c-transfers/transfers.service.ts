@@ -3,7 +3,7 @@ import { EntityManager } from 'typeorm';
 import { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity';
 import { AppDataSource } from '../../config/data-source';
 import {
-  D2C_FINAL_STAGES, D2C_LIMITS, D2C_REQUEST_STATE, D2C_STAGE, d2cReferenceId, ERROR_CODES, NEW_PO_STATUS, round2, SHIPMENT_LOG_ACTION,
+  D2C_FINAL_STAGES, D2C_LIMITS, D2C_REQUEST_STATE, D2C_STAGE, d2cReferenceId, ERROR_CODES, NEW_PO_STATUS, poGroupOf, round2, SHIPMENT_LOG_ACTION,
   SHIPMENT_LOG_SOURCE, ShipmentLogAction, ShipmentLogSource,
 } from '../../constants';
 import { DetailsPurchaseOrder, MasterPurchaseOrder, ShipmentLog } from '../../entities';
@@ -79,6 +79,8 @@ export const insertTransfers = async (
     const res = await headers.insert({
       poNumber: reference,
       channel: t.channel,
+      // D2C / Internal Transfer from the channel (2026-11-16, constants/po-group.ts)
+      poGroup: poGroupOf(t.channel),
       facility: t.senderCode,
       facilityId: t.senderId,
       location: t.location,

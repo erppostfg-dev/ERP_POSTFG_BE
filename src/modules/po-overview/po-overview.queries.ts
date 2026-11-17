@@ -1,7 +1,6 @@
 import { In, IsNull, SelectQueryBuilder } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
-import { APPOINTMENT_SOURCE, AppointmentSource, NOT_ASSIGNED, NOT_ASSIGNED_DATE, NotAssignedDate, STATUS_STAGE, STATUS_WHEN_EMPTY, TABLES } from '../../constants';
-import { fromEmailSql } from '../appointments/appointment.service';
+import { NOT_ASSIGNED, NOT_ASSIGNED_DATE, NotAssignedDate, PO_GROUPS, PoGroup, STATUS_STAGE, STATUS_WHEN_EMPTY, TABLES } from '../../constants';
 import {
   DetailsChannel,
   DetailsPurchaseOrder,
@@ -30,6 +29,8 @@ export interface PoOverviewFilters {
   docketNo?: string;
   brand: string[];
   channel: string[];
+  /** PO groups (Channel, D2C, Marketing, ...; constants/po-group.ts); missing = all. */
+  poGroup?: PoGroup[];
   /** master_facilities codes. */
   facility: string[];
   location: string[];
@@ -48,8 +49,6 @@ export interface PoOverviewFilters {
   dispatchDateTo?: string;
   appointmentDateFrom?: string;
   appointmentDateTo?: string;
-  /** Where the appointment date came from (2026-11-16): any of email / typed / cancelled / none. */
-  appointmentSource?: AppointmentSource[];
 }
 
 export interface Paging {
@@ -59,8 +58,7 @@ export interface Paging {
 
 /** A stage status as the final-status lookup sees it: empty = STATUS_WHEN_EMPTY. */
 const stageSql = (col: string) => `COALESCE(NULLIF(TRIM(${col}), ''), '${STATUS_WHEN_EMPTY}')`;
-// cancelled by an appointment email (2026-11-16) = no date, even with a First Appointment Date (COPT)
-const CURRENT_APPOINTMENT_SQL = `(CASE WHEN ${fromEmailSql(true)} THEN NULL ELSE COALESCE(po.currentAppointmentDate, po.firstAppointmentDateCOPT) END)`;
+const CURRENT_APPOINTMENT_SQL = 'COALESCE(po.currentAppointmentDate, po.firstAppointmentDateCOPT)';
 
 /** `col IN (values)`, plus empty rows when NOT_ASSIGNED is picked. */
 const whereIn = <T extends object>(qb: SelectQueryBuilder<T>, col: string, values: string[], key: string, inSql?: (p: string) => string) => {
@@ -80,7 +78,8 @@ const range = <T extends object>(qb: SelectQueryBuilder<T>, sql: string, from: s
 /** The shipment filters on alias `po` (and `d` for a line-level brand when `lineAlias` is given). */
 const applyFilters = async <T extends object>(qb: SelectQueryBuilder<T>, f: PoOverviewFilters, lineAlias?: string): Promise<void> => {
   // Only POs whose sale order CSV was marked uploaded into Uniware (user, 2026-10-19); the rest wait on Processed.
-  qb.andWhere(`EXISTS (SELECT 1 FROM ${TABLES.PO_UPLOADS} hu WHERE hu.po_uid = po.uid AND hu.uniware_uploaded_at IS NOT NULL)`);
+  // Imported POs (PEPIMS, 2026-11-16) have no CSV of ours: they are shown as they are.
+  qb.andWhere(`(po.importedFrom IS NOT NULL OR EXISTS (SELECT 1 FROM ${TABLES.PO_UPLOADS} hu WHERE hu.po_uid = po.uid AND hu.uniware_uploaded_at IS NOT NULL))`);
   // Never a D2C internal transfer (user, 2026-11-02: transfers are not shown on PO Overview).
   qb.andWhere('po.transferCode IS NULL');
   if (f.q) qb.andWhere('(po.poNumber LIKE :q OR CAST(po.uid AS CHAR) LIKE :q)', { q: `%${f.q}%` });
@@ -88,6 +87,7 @@ const applyFilters = async <T extends object>(qb: SelectQueryBuilder<T>, f: PoOv
   if (f.skuCode && lineAlias) qb.andWhere(`${lineAlias}.skuCode LIKE :sku`, { sku: `%${f.skuCode}%` });
 
   whereIn(qb, 'po.channel', f.channel, 'channel');
+  if (f.poGroup?.length) qb.andWhere('po.poGroup IN (:...poGroup)', { poGroup: f.poGroup });
   whereIn(qb, 'po.location', f.location, 'location');
   whereIn(qb, 'po.statusPlanning', f.statusPlanning, 'stPlanning');
   whereIn(qb, 'po.statusWarehouse', f.statusWarehouse, 'stWarehouse');
@@ -126,16 +126,6 @@ const applyFilters = async <T extends object>(qb: SelectQueryBuilder<T>, f: PoOv
   range(qb, 'po.workingDatePlanner', f.workingDateFrom, f.workingDateTo, 'workingDate');
   range(qb, 'po.dispatchDate', f.dispatchDateFrom, f.dispatchDateTo, 'dispatchDate');
   range(qb, CURRENT_APPOINTMENT_SQL, f.appointmentDateFrom, f.appointmentDateTo, 'apptDate');
-
-  if (f.appointmentSource?.length) {
-    const parts = f.appointmentSource.map((s) => {
-      if (s === APPOINTMENT_SOURCE.EMAIL) return fromEmailSql(false);
-      if (s === APPOINTMENT_SOURCE.CANCELLED) return fromEmailSql(true);
-      if (s === APPOINTMENT_SOURCE.TYPED) return `(COALESCE(po.currentAppointmentDate, po.firstAppointmentDateCOPT) IS NOT NULL AND NOT ${fromEmailSql()})`;
-      return `${CURRENT_APPOINTMENT_SQL} IS NULL AND NOT ${fromEmailSql(true)}`;
-    });
-    qb.andWhere(`(${parts.map((p) => `(${p})`).join(' OR ')})`);
-  }
 
   for (const d of f.notAssigned) {
     if (d === NOT_ASSIGNED_DATE.WORKING_DATE) qb.andWhere('po.workingDatePlanner IS NULL');
@@ -223,6 +213,7 @@ export const skuWeights = async (codes: string[]): Promise<Map<string, number | 
 export interface FilterOptions {
   brand: string[];
   channel: string[];
+  poGroup: PoGroup[];
   facility: string[];
   location: string[];
   statusPlanning: string[];
@@ -253,6 +244,7 @@ export const filterOptions = async (): Promise<FilterOptions> => {
   return {
     brand,
     channel,
+    poGroup: [...PO_GROUPS],
     facility: facilities.map((x) => x.code),
     location,
     statusPlanning: ofStage(STATUS_STAGE.PLANNING),
