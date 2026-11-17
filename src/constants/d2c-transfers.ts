@@ -13,7 +13,18 @@ export const D2C_REFERENCE_TAG: Record<string, string> = {
   [D2C_TRANSFER_TYPE.FREEBEE]: 'Freebee',
 };
 
-export const D2C_PRIORITIES = ['P1', 'P2', 'P3'] as const;
+/**
+ * The usual priorities, most urgent first (user, 2026-11-17: P0 added, and any other text is allowed too, up to
+ * D2C_LIMITS.PRIORITY_MAX). Lists sort these first in this order, then any other priority A-Z (d2cPriorityOrderSql).
+ */
+export const D2C_PRIORITIES = ['P0', 'P1', 'P2', 'P3'] as const;
+export const D2C_DEFAULT_PRIORITY = 'P2';
+
+/** ORDER BY terms for a transfer priority column: none last, the usual ones in their order, then others A-Z. */
+export const d2cPriorityOrderSql = (col: string): string => {
+  const known = D2C_PRIORITIES.map((p) => `'${p}'`).join(', ');
+  return `${col} IS NULL, FIELD(${col}, ${known}) = 0, FIELD(${col}, ${known}), ${col}`;
+};
 
 /** The 5 transfer channels as PEPIMS names them (d2c:settings.channels starts with these). */
 export const D2C_CHANNELS = ['McaffeineB2C', 'HYP_Website', 'GGN_WAREHOUSE', 'MUM_WAREHOUSE2', 'KOL_WAREHOUSE'] as const;
@@ -258,6 +269,8 @@ export const D2C_LIMITS = {
   REMARKS_MAX: 1000,
   REASON_MAX: 500,
   GROUP_MAX: 100,
+  /** Priority: any text up to this length (master_purchase_orders.transferPriority varchar(20)). */
+  PRIORITY_MAX: 20,
   /** List paging, as PO Overview. */
   DEFAULT_PAGE_SIZE: 100,
   MAX_PAGE_SIZE: 500,

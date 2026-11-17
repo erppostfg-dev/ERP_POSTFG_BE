@@ -1,6 +1,7 @@
 import { AppDataSource } from '../../config/data-source';
 import {
-  D2C_EXPORT_LEVEL, D2C_FINAL_STAGES, D2C_LIMITS, D2C_PRICE, D2C_PRIORITIES, D2C_REQUEST_STATE, D2C_SOURCE, D2C_STAGE, D2C_TAB, D2cTab,
+  D2C_DEFAULT_PRIORITY, D2C_EXPORT_LEVEL, D2C_FINAL_STAGES, D2C_LIMITS, D2C_PRICE, D2C_PRIORITIES, D2C_REQUEST_STATE, D2C_SOURCE, D2C_STAGE, D2C_TAB, D2cTab,
+  d2cPriorityOrderSql,
   ERROR_CODES, SHIPMENT_LOG_ACTION, TABLES,
 } from '../../constants';
 import { DetailsPurchaseOrder, MasterPurchaseOrder } from '../../entities';
@@ -100,7 +101,7 @@ const where = (f: D2cFilters, withTab = true): { sql: string; params: unknown[] 
   return { sql: parts.join(' AND '), params };
 };
 
-const ORDER = 'ORDER BY p.transferPriority IS NULL, p.transferPriority ASC, p.poDate ASC, p.uid ASC';
+const ORDER = `ORDER BY ${d2cPriorityOrderSql('p.transferPriority')}, p.poDate ASC, p.uid ASC`;
 
 type HeadRow = {
   uid: string | number; transferCode: string; poNumber: string | null; poDate: string | null; entryDate: string | null; labelsLink: string | null;
@@ -384,7 +385,7 @@ export const exportTransfers = async (f: D2cFilters, level: string): Promise<{ c
 /** GET /d2c-transfers/options: what the form and the filters offer. */
 export const transferOptions = async () => {
   const settings = await readSettings();
-  const [senders, locations, routes, facilities] = await Promise.all([
+  const [senders, locations, routes, facilities, usedPriorities] = await Promise.all([
     AppDataSource.query<{ id: number; code: string; name: string | null }[]>(
       `SELECT id, code, name FROM ${TABLES.MASTER_FACILITIES} WHERE is_active = 1 AND allow_internal_transfer = 1 ORDER BY code`,
     ),
@@ -400,6 +401,12 @@ export const transferOptions = async () => {
          FROM ${TABLES.D2C_TRANSFER_ROUTES} r JOIN ${TABLES.MASTER_FACILITIES} f ON f.id = r.dispatch_facility_id ORDER BY f.code, r.uniware_channel_code`,
     ),
     AppDataSource.query<{ id: number; code: string }[]>(`SELECT DISTINCT f.id, f.code FROM ${TABLES.MASTER_FACILITIES} f JOIN ${TABLES.DETAILS_CHANNELS} d ON d.transfer_facility_id = f.id ORDER BY f.code`),
+    // priorities other than the usual ones already on transfers (for the filter and the form's suggestions)
+    AppDataSource.query<{ p: string }[]>(
+      `SELECT DISTINCT p.transferPriority p FROM ${TABLES.MASTER_PURCHASE_ORDERS} p
+        WHERE p.transferCode IS NOT NULL AND p.transferPriority IS NOT NULL AND p.transferPriority NOT IN (?) ORDER BY p.transferPriority`,
+      [[...D2C_PRIORITIES]],
+    ),
   ]);
   const routesOf = (locationId: string) => routes.filter((r) => String(r.location_id) === locationId).map((r) => ({
     routeId: Number(r.id), senderId: Number(r.dispatch_facility_id), senderCode: String(r.sender_code), isActive: Number(r.is_active) === 1,
@@ -420,10 +427,11 @@ export const transferOptions = async () => {
       })),
     })),
     types: settings.types,
-    priorities: [...D2C_PRIORITIES],
+    /** P0-P3, then other priorities already used (any text is allowed). */
+    priorities: [...D2C_PRIORITIES, ...usedPriorities.map((r) => r.p)],
     stages: Object.values(D2C_STAGE),
     sources: Object.values(D2C_SOURCE),
-    defaults: { priority: 'P2', type: settings.types[0], poDate: today, expiryDays: settings.defaultExpiryDays },
+    defaults: { priority: D2C_DEFAULT_PRIORITY, type: settings.types[0], poDate: today, expiryDays: settings.defaultExpiryDays },
     live: settings.live,
     /** Production gate (plan 2.11): Uniware writes for every sender only when open; else only testFacilities. */
     uniwareGate: gateOf(settings),
@@ -516,7 +524,7 @@ export const listInvoices = async (f: D2cFilters, p: Paging): Promise<{ items: D
     AppDataSource.query<Record<string, unknown>[]>(
       `SELECT i.*, p.uid, p.transferCode, p.poNumber, p.orderNo1, p.transferStage, p.transferPriority, p.facility, p.soState, rf.code rcode, ${ROUTE_VENDOR} vendor
        ${from} WHERE ${sql}
-       ORDER BY p.transferPriority IS NULL, p.transferPriority ASC, p.poDate ASC, p.uid ASC, i.id ASC LIMIT ? OFFSET ?`,
+       ORDER BY ${d2cPriorityOrderSql('p.transferPriority')}, p.poDate ASC, p.uid ASC, i.id ASC LIMIT ? OFFSET ?`,
       [...w.params, p.pageSize, (p.page - 1) * p.pageSize],
     ),
     readSettings(),

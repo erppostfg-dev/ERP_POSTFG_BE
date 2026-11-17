@@ -1,7 +1,7 @@
 import { AppDataSource } from '../../config/data-source';
 import { env } from '../../config/env';
 import {
-  BRAND_NAMES, D2C_LIMITS, D2C_PRICE, D2C_PRIORITIES, D2C_UNDISPATCHED_STAGES, NO_BRAND, round2, TABLES,
+  BRAND_NAMES, D2C_DEFAULT_PRIORITY, D2C_LIMITS, D2C_PRICE, D2C_PRIORITIES, D2C_UNDISPATCHED_STAGES, NO_BRAND, round2, TABLES,
 } from '../../constants';
 import { addDays, parseDay } from './reference';
 import { D2cSettings } from './settings';
@@ -17,7 +17,7 @@ import { isTestFacility } from './test-mode';
  *     a route with 2+ active Uniware channels and no / a wrong Uniware Channel chosen (pickRoute);
  *     dispatch = receiving (allowed for a test facility only); in local test mode (masters.testOnly) a sender or
  *     receiving facility that is not a test facility; SKU unknown / inactive / a combo (transfer its components) / without MRP; qty not a whole
- *     number above 0; bad dates (YYYY-MM-DD or DD-MM-YYYY); priority not P1-P3; type not in the settings; expiry
+ *     number above 0; bad dates (YYYY-MM-DD or DD-MM-YYYY); priority longer than D2C_LIMITS.PRIORITY_MAX; type not in the settings; expiry
  *     before the PO date; rows of one Group that disagree on the header.
  *   Warnings: route without vendor code (inward PO blocked until filled) / customer / Uniware channel code (SO
  *     blocked until filled); SKU name differs (master name used); same SKU twice in a transfer (merged, qty summed);
@@ -295,11 +295,11 @@ const resolveRow = (r: RawRow, m: D2cMasters, out: RowResult): Resolved => {
     res.poDate = parseDay(r.poDate);
     if (!res.poDate) err('poDate', `PO Date ${r.poDate.trim()} is not a date (YYYY-MM-DD or DD-MM-YYYY)`);
   }
-  if (!r.priority.trim()) res.priority = 'P2';
-  else {
-    res.priority = D2C_PRIORITIES.find((p) => p === r.priority.trim().toUpperCase()) ?? null;
-    if (!res.priority) err('priority', `Priority ${r.priority.trim()} must be P1, P2 or P3`);
-  }
+  // P0-P3 (any case) as written in D2C_PRIORITIES; any other text is kept as typed (user, 2026-11-17)
+  const priority = r.priority.trim();
+  if (!priority) res.priority = D2C_DEFAULT_PRIORITY;
+  else if (priority.length > D2C_LIMITS.PRIORITY_MAX) err('priority', `Priority must be at most ${D2C_LIMITS.PRIORITY_MAX} characters`);
+  else res.priority = D2C_PRIORITIES.find((p) => p === priority.toUpperCase()) ?? priority;
   if (!r.type.trim()) res.type = s.types[0];
   else {
     res.type = s.types.find((t) => lower(t) === lower(r.type)) ?? null;
