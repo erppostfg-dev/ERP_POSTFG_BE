@@ -331,7 +331,8 @@ export class MasterPurchaseOrder {
   transferType: string | null;
 
   /** P1 / P2 / P3. */
-  @Column({ name: 'transferPriority', type: 'varchar', length: 2, nullable: true })
+  /** P0-P3 or any other text up to D2C_LIMITS.PRIORITY_MAX (2026-11-17, migration D2cPriorityText). */
+  @Column({ name: 'transferPriority', type: 'varchar', length: 20, nullable: true })
   transferPriority: string | null;
 
   /** D2C_STAGE: recomputed after every action and sync. */

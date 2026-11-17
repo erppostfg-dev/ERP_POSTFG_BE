@@ -81,13 +81,13 @@ describe('upload', () => {
   });
 
   it('preview: per-row errors and warnings, canImport false', async () => {
-    const res = await upload('/uploads/preview', csv(line({ sku: 'COMBO_TEST' }), line({ sender: 'TEST_RECV' }), line({ priority: 'P9' }), line({ qty: 0 }))).expect(200);
+    const res = await upload('/uploads/preview', csv(line({ sku: 'COMBO_TEST' }), line({ sender: 'TEST_RECV' }), line({ priority: 'P'.repeat(21) }), line({ qty: 0 }))).expect(200);
     const d = res.body.data;
     expect(d.canImport).toBe(false);
     expect(d.rows.map((r: { errors: { message: string }[] }) => r.errors.map((e) => e.message).join(' | '))).toEqual([
       'SKU COMBO_TEST is a combo: transfer its components',
       expect.stringContaining('Dispatch and receiving facility are the same'),
-      'Priority P9 must be P1, P2 or P3',
+      'Priority must be at most 20 characters',
       'Qty 0 must be a whole number above 0',
     ]);
   });

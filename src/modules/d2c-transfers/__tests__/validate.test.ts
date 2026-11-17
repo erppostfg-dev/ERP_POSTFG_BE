@@ -85,6 +85,12 @@ describe('validateRows: a clean transfer', () => {
     expect(out.transfers[0]).toMatchObject({ poDate: '2026-11-05', priority: 'P1', type: 'Internal', channel: 'McaffeineB2C', expiry: '2026-11-30' });
   });
 
+  it('priority: p0 -> P0, any other text kept as typed, longer than 20 characters refused', () => {
+    const out = validateRows([row({ priority: 'p0', group: 'A' }), row({ priority: ' Urgent ', group: 'B' }), row({ priority: 'X'.repeat(21), group: 'C' })], masters());
+    expect(out.transfers.map((t) => t.priority)).toEqual(['P0', 'Urgent', null]);
+    expect(out.rows[2].errors.map((e) => e.message)).toEqual(['Priority must be at most 20 characters']);
+  });
+
   it('uses settings.defaultExpiryDays', () => {
     const m = masters();
     m.settings.defaultExpiryDays = 7;
@@ -109,7 +115,7 @@ describe('validateRows: errors', () => {
     [{ poDate: '' }, 'PO Date is required'],
     [{ poDate: '2026-02-30' }, 'PO Date 2026-02-30 is not a date'],
     [{ poDate: '11/05/2026' }, 'is not a date'],
-    [{ priority: 'P4' }, 'Priority P4 must be P1, P2 or P3'],
+    [{ priority: 'X'.repeat(21) }, 'Priority must be at most 20 characters'],
     [{ type: 'Gift' }, 'Type Gift must be one of Regular, Internal, Freebee'],
     [{ expiry: '2026-11-01' }, 'is before the PO date'],
     [{ expiry: 'soon' }, 'PO Expiry Date soon is not a date'],
