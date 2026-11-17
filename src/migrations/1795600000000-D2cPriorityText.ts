@@ -5,8 +5,8 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  * master_purchase_orders.transferPriority varchar(2) -> varchar(20) (D2C_LIMITS.PRIORITY_MAX). Values stay as they are.
  * down() cuts back to varchar(2): a longer priority is shortened to its first 2 characters first.
  */
-export class D2cPriorityText1795500000000 implements MigrationInterface {
-    name = 'D2cPriorityText1795500000000'
+export class D2cPriorityText1795600000000 implements MigrationInterface {
+    name = 'D2cPriorityText1795600000000'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
         await queryRunner.query("ALTER TABLE `master_purchase_orders` MODIFY `transferPriority` varchar(20) NULL");
