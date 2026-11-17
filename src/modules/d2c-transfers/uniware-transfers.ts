@@ -115,7 +115,8 @@ export const itemCodeOf = (lineId: string): string => `${D2C_UNIWARE.ITEM_CODE_P
 
 /**
  * The create-SO body: one item per transfer line with its quantity (user, 2026-11-03), price = 15% of MRP (tax
- * included), totalPrice = price x qty. No address: Uniware takes it from the customer.
+ * included), totalPrice = price x qty, channelMrp = the MRP of one unit (user, 2026-11-17: SOs showed Channel MRP 0;
+ * not in Uniware's create docs, but saleorder/get returns the field). No address: Uniware takes it from the customer.
  */
 export const buildSaleOrderPayload = (o: SoInput) => ({
   saleOrder: {
@@ -133,6 +134,7 @@ export const buildSaleOrderPayload = (o: SoInput) => ({
         shippingMethodCode: D2C_UNIWARE.SHIPPING_METHOD,
         sellingPrice,
         totalPrice: round2(sellingPrice * l.qty),
+        channelMrp: l.mrp,
         facilityCode: o.facility,
       };
     }),
