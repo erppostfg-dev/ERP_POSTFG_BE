@@ -61,6 +61,7 @@ const work: Record<DataSyncJob, () => Promise<Record<string, number>>> = {
     return {
       posLinked: r.posLinked, posAdded: r.posAdded, posUpdated: r.posUpdated, linesAdded: r.linesAdded, usersAdded: r.usersAdded.length,
       history: r.tables[TABLES.SHIPMENT_LOGS] ?? 0, uploads: r.tables[TABLES.PO_UPLOADS] ?? 0,
+      rowsWritten: Object.values(r.tables).reduce((n, v) => n + v, 0), prodOwnKept: Object.values(r.prodOwnKept).reduce((n, v) => n + v, 0),
     };
   },
 };

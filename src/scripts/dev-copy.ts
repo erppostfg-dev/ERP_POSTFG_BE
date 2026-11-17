@@ -29,7 +29,9 @@ const main = async () => {
     console.log(`\n=== dev copy ${r.apply ? 'APPLIED' : 'DRY RUN (rolled back)'}: ${r.source} -> ${r.target} ===`);
     console.log(`users added: ${r.usersAdded.length ? r.usersAdded.join(', ') : 'none'}`);
     console.log(`POs: ${r.posLinked} matched to PEPIMS's, ${r.posAdded} only on dev (added, ${r.linesAdded} lines), ${r.posSkippedTransfers} D2C transfers left on dev`);
-    console.log(`Uniware status filled from dev: ${r.uniwareStatusFilled} | sale order code notes: ${r.saleCodeNotes}`);
+    console.log(`dev-only POs updated: ${r.posUpdated} | Uniware status filled from dev: ${r.uniwareStatusFilled} | sale order code notes: ${r.saleCodeNotes}`);
+    const own = Object.entries(r.prodOwnKept);
+    if (own.length) console.log(`prod's own rows kept (same key, another row; dev's NOT written): ${own.map(([t, n]) => `${t} ${n}`).join(', ')}`);
     for (const [t, n] of Object.entries(r.tables)) console.log(`  ${n}\t${t}`);
     if (!r.apply) console.log('\nDry run only: nothing kept. Add --apply --target <DB_NAME> to write.');
   } finally {

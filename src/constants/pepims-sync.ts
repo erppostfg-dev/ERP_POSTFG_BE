@@ -170,6 +170,19 @@ export const DEV_COPY = {
   MASTER_TABLES: ['master_facilities', 'master_channels', 'master_skus', 'master_channel_skus', 'master_sku_components', 'details_channels'] as readonly string[],
   BULK_TABLES: ['bulk_locations', 'bulk_type_settings', 'bulk_customers', 'bulk_orders', 'bulk_order_lines', 'bulk_order_events', 'bulk_order_documents'] as readonly string[],
   FEEDBACK_TABLES: ['feedback_items', 'feedback_members', 'feedback_comments', 'feedback_images', 'feedback_notifications', 'notices', 'notice_seen'] as readonly string[],
+  /**
+   * 2026-11-17 (user: "batch, never too much load on any DB"): tables whose rows carry a reliable "changed at" (the
+   * database sets it on every update) or that only ever get NEW rows: read only from the last run on. Every other table
+   * is read whole (dev is small) but a row is written only when missing / different in prod.
+   */
+  SINCE_COLUMN: {
+    po_uploads: 'updated_at', po_review_submissions: 'updated_at', feedback_items: 'updated_at', master_facilities: 'updated_at', master_sku_components: 'updated_at',
+    po_issue_actions: 'created_at', master_change_logs: 'created_at', bulk_order_events: 'created_at', feedback_comments: 'created_at', feedback_notifications: 'created_at',
+  } as Readonly<Record<string, string>>,
+  /** Minutes before the last run's start still read again (rows written while it ran). */
+  OVERLAP_MINUTES: 10,
+  /** Keys per query when reading prod's rows / dev's full rows. */
+  KEY_BATCH: 500,
   /** dev's Uniware sync text for a PO marked uploaded whose code Uniware never had. */
   MARKED_NOT_IN_UNIWARE: 'Marked uploaded, not in Uniware',
   /** Start of the History note on a PO whose dev sale order code was not the one used. */

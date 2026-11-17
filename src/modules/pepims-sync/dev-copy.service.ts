@@ -41,8 +41,18 @@ export interface DevCopyReport {
   linesAdded: number;
   saleCodeNotes: number;
   uniwareStatusFilled: number;
+  /** table -> dev rows NOT written because prod has its own row with that key (another created time). */
+  prodOwnKept: Record<string, number>;
 }
 
+/** One value as text, for "did it change" (dates, JSON, numbers read the same way from both databases). */
+const same = (v: unknown): string => {
+  if (v === null || v === undefined) return '\u0000';
+  if (v instanceof Date) return v.toISOString();
+  if (Buffer.isBuffer(v)) return v.toString('hex');
+  if (typeof v === 'object') return JSON.stringify(v);
+  return textOf(v);
+};
 const chunk = <T>(a: T[], n: number): T[][] => Array.from({ length: Math.ceil(a.length / n) }, (_, i) => a.slice(i * n, i * n + n));
 
 /** Columns both databases have for a table, which are JSON, and the primary key. */
@@ -66,7 +76,7 @@ export const runDevCopy = async (o: { apply: boolean; log?: (s: string) => void 
   const src = env.pepimsSync.devCopySourceDb;
   const report: DevCopyReport = {
     apply: o.apply, source: src, target: String(AppDataSource.options.database), tables: {}, usersAdded: [], posLinked: 0, posAdded: 0, posUpdated: 0,
-    posSkippedTransfers: 0, linesAdded: 0, saleCodeNotes: 0, uniwareStatusFilled: 0,
+    posSkippedTransfers: 0, linesAdded: 0, saleCodeNotes: 0, uniwareStatusFilled: 0, prodOwnKept: {},
   };
   if (report.target === src) throw new Error(`source and target are the same database (${src})`);
   const qr = AppDataSource.createQueryRunner();
@@ -95,27 +105,56 @@ export const runDevCopy = async (o: { apply: boolean; log?: (s: string) => void 
     }
     const user = (v: unknown) => (v === null || v === undefined ? null : userMap.get(Number(v)) ?? null);
 
-    // generic: rows of dev not in prod yet (by primary key or a unique key), users / POs / lines re-pointed
+    // the last run (dev clock = prod clock: same server, UTC): a table with a reliable "changed at" column is read only
+    // from then on (DEV_COPY.SINCE_COLUMN, with DEV_COPY.OVERLAP_MINUTES so nothing at the edge is missed); the first run
+    // of this version reads everything
+    const state = await q<{ value: unknown }[]>(`SELECT value FROM ${TABLES.APP_STATE} WHERE state_key = ?`, [DEV_COPY.STATE_KEY]);
+    const prev = (state[0]?.value ?? {}) as { shipmentLogId?: number; dbAt?: string };
+    const [clock] = await q<{ now: string; since: string | null }[]>(
+      `SELECT DATE_FORMAT(NOW(), '%Y-%m-%d %H:%i:%s') now, DATE_FORMAT(? - INTERVAL ${DEV_COPY.OVERLAP_MINUTES} MINUTE, '%Y-%m-%d %H:%i:%s') since`, [prev.dbAt ?? null]);
+    const since = clock.since;
+
+    // generic: dev rows written to prod only when missing there, or (upsert) when a value differs; users / POs / lines
+    // re-pointed first. Prod's rows are read only for the keys read from dev (never a whole prod table).
     const poMap = new Map<string, string>();
     const lineMap = new Map<string, string>();
     const po = (v: unknown) => (v === null || v === undefined ? null : poMap.get(textOf(v)) ?? null);
     const copy = async (table: string, cfg: { users?: string[]; po?: string[]; line?: string[]; key?: string[]; dropId?: boolean; where?: string; upsert?: boolean; skip?: (r: Row) => boolean; noExistCheck?: boolean } = {}) => {
       const s = await shape(qr, src, table);
       const key = cfg.key ?? s.pk;
-      const rows = await fromDev(table, cfg.where);
-      // rows with new ids (History) are not compared by id: the caller's `where` (a watermark) decides
-      const existing = cfg.noExistCheck ? new Set<string>() : new Set((await q<Row[]>(`SELECT ${key.map((k) => `\`${k}\``).join(', ')} FROM \`${table}\``)).map((r) => key.map((k) => textOf(r[k])).join('|')));
-      // users / POs / lines re-pointed FIRST, so "already in prod" is checked on prod's values (a key can hold a user id)
+      const sinceCol = DEV_COPY.SINCE_COLUMN[table];
+      const where = [cfg.where, since && sinceCol ? `\`${sinceCol}\` >= '${since}'` : null].filter(Boolean).join(' AND ') || '1 = 1';
+      const rows = await fromDev(table, where);
       const mapped = rows.filter((r) => !(cfg.skip?.(r))).map((r) => {
         const m: Row = { ...r };
         for (const c of cfg.users ?? []) if (c in m) m[c] = user(m[c]);
         for (const c of cfg.po ?? []) if (c in m) m[c] = po(m[c]);
         for (const c of cfg.line ?? []) if (c in m) m[c] = m[c] === null ? null : lineMap.get(textOf(m[c])) ?? null;
         return m;
-      }).filter((m) => cfg.upsert || !existing.has(key.map((k) => textOf(m[k])).join('|')));
+      });
       const cols = cfg.dropId ? s.cols.filter((c) => c !== 'id') : s.cols;
-      if (mapped.length) await insertRows(qr, table, cols, s.json, mapped, cfg.upsert);
-      count(table, mapped.length);
+      const keyOf = (r: Row) => key.map((k) => textOf(r[k])).join('|');
+      const there = new Map<string, Row>();
+      if (!cfg.noExistCheck) {
+        const sel = (cfg.upsert ? [...new Set([...key, ...cols])] : key).map((c) => `\`${c}\``).join(', ');
+        for (const part of chunk(mapped, DEV_COPY.KEY_BATCH)) {
+          const found = key.length === 1
+            ? await q<Row[]>(`SELECT ${sel} FROM \`${table}\` WHERE \`${key[0]}\` IN (?)`, [part.map((r) => r[key[0]])])
+            : await q<Row[]>(`SELECT ${sel} FROM \`${table}\` WHERE (${key.map((k) => `\`${k}\``).join(', ')}) IN (?)`, [part.map((r) => key.map((k) => r[k]))]);
+          for (const f of found) there.set(keyOf(f), f);
+        }
+      }
+      // a prod row with the same key but another created time is prod's OWN row (made on prod): never overwritten, reported
+      const born = cols.find((c) => c === 'created_at' || c === 'createdAt');
+      const write = mapped.filter((m) => {
+        const p = there.get(keyOf(m));
+        if (!p) return true;
+        if (!cfg.upsert || cols.every((c) => same(p[c]) === same(m[c]))) return false;
+        if (born && same(p[born]) !== same(m[born])) { report.prodOwnKept[table] = (report.prodOwnKept[table] ?? 0) + 1; return false; }
+        return true;
+      });
+      if (write.length) await insertRows(qr, table, cols, s.json, write, cfg.upsert);
+      count(table, write.length);
     };
 
     await copy(TABLES.USER_ROLES, { users: ['user_id'], key: ['user_id', 'role'], skip: (r) => !addedDev.has(Number(r.user_id)), dropId: true });
@@ -130,69 +169,94 @@ export const runDevCopy = async (o: { apply: boolean; log?: (s: string) => void 
     say('[dev-copy] masters done');
 
     // ---- 3. POs ----
-    const devPos = await fromDev(TABLES.MASTER_PURCHASE_ORDERS);
+    // every dev PO by a few columns only (to match it); full rows + lines only for POs that need them
+    const devPos = await q<Row[]>(`SELECT uid, channel, poNumber, transferCode, orderNo1, uniwareStatus, uniwareDoneAt, lastSyncedAt FROM \`${src}\`.${TABLES.MASTER_PURCHASE_ORDERS}`);
     const prodKeys = new Map((await q<{ uid: string; channel: string; poNumber: string; orderNo1: string | null; uniwareStatus: string | null; importedFrom: string | null }[]>(
       `SELECT uid, channel, poNumber, orderNo1, uniwareStatus, importedFrom FROM ${TABLES.MASTER_PURCHASE_ORDERS} WHERE transferCode IS NULL`))
       .map((p) => [`${p.channel.toLowerCase()}|${p.poNumber}`, p]));
     const pos = await shape(qr, src, TABLES.MASTER_PURCHASE_ORDERS);
     const lines = await shape(qr, src, TABLES.DETAILS_PURCHASE_ORDERS);
-    const devLines = await fromDev(TABLES.DETAILS_PURCHASE_ORDERS);
-    const linesOf = new Map<string, Row[]>();
-    for (const l of devLines) (linesOf.get(String(l.shipmentOrderId)) ?? linesOf.set(String(l.shipmentOrderId), []).get(String(l.shipmentOrderId))!).push(l);
+    const poCols = pos.cols.filter((c) => c !== 'uid');
+    const poValue = (d: Row, c: string) => (pos.json.has(c) && d[c] !== null && typeof d[c] !== 'string' ? JSON.stringify(d[c]) : d[c] ?? null);
+    const fullRows = async (db: string, table: string, col: string, ids: string[]) => {
+      const out: Row[] = [];
+      for (const part of chunk(ids, DEV_COPY.KEY_BATCH)) out.push(...await q<Row[]>(`SELECT * FROM \`${db}\`.\`${table}\` WHERE \`${col}\` IN (?) ORDER BY 1`, [part]));
+      return out;
+    };
+    const target = report.target;
     const notes: Row[] = [];
+    const devOnlyKnown: [string, string][] = [];
+    const devOnlyNew: string[] = [];
+    const fill: Row[] = [];
     for (const d of devPos) {
       if (d.transferCode !== null) { report.posSkippedTransfers++; continue; }
       const hit = prodKeys.get(`${String(d.channel).toLowerCase()}|${String(d.poNumber)}`);
-      if (hit) {
-        poMap.set(String(d.uid), String(hit.uid));
-        report.posLinked++;
-        // a dev-only PO copied by an earlier run (not PEPIMS's): dev's values again (MySQL skips identical rows)
-        if (hit.importedFrom !== PO_IMPORTED_FROM.PEPIMS) {
-          const cols = pos.cols.filter((c) => c !== 'uid');
-          const res = (await qr.query(`UPDATE ${TABLES.MASTER_PURCHASE_ORDERS} SET ${cols.map((c) => `\`${c}\` = ?`).join(', ')} WHERE uid = ?`,
-            [...cols.map((c) => (pos.json.has(c) && d[c] !== null && typeof d[c] !== 'string' ? JSON.stringify(d[c]) : d[c] ?? null)), hit.uid])) as { changedRows?: number; affectedRows?: number };
-          if (Number(res.changedRows ?? 0) > 0) report.posUpdated++;
-        }
-        if (!hit.uniwareStatus && d.uniwareStatus) {
-          await qr.query(`UPDATE ${TABLES.MASTER_PURCHASE_ORDERS} SET uniwareStatus = ?, uniwareDoneAt = ?, lastSyncedAt = ? WHERE uid = ?`, [d.uniwareStatus, d.uniwareDoneAt ?? null, d.lastSyncedAt ?? null, hit.uid]);
-          report.uniwareStatusFilled++;
-        }
-        if (d.orderNo1 && hit.orderNo1 && d.orderNo1 !== hit.orderNo1) {
-          notes.push({ shipment_uid: hit.uid, action: SHIPMENT_LOG_ACTION.FIELD_CHANGED, source: SHIPMENT_LOG_SOURCE.SCRIPT,
-            remark: `${DEV_COPY.SALE_CODE_NOTE} ${textOf(d.orderNo1)}; the code used is PEPIMS's ${hit.orderNo1}${d.uniwareStatus === DEV_COPY.MARKED_NOT_IN_UNIWARE ? ' (dev marked it uploaded, but it was never in Uniware)' : ''}` });
-          report.saleCodeNotes++;
-        }
-        // line ids: dev line -> the prod line with the same SKU (n-th with the n-th)
-        const prodLines = await q<{ id: string; skuCode: string | null }[]>(`SELECT id, skuCode FROM ${TABLES.DETAILS_PURCHASE_ORDERS} WHERE shipmentOrderId = ? ORDER BY id`, [hit.uid]);
-        const free = [...prodLines];
-        for (const l of linesOf.get(String(d.uid)) ?? []) {
-          const at = free.findIndex((p) => (p.skuCode ?? '').toLowerCase() === textOf(l.skuCode).toLowerCase());
-          if (at >= 0) lineMap.set(String(l.id), String(free.splice(at, 1)[0].id));
-        }
-        continue;
-      }
-      // only on dev: a new PO in prod (new uid) with its lines
-      const cols = pos.cols.filter((c) => c !== 'uid');
-      const res = (await qr.query(`INSERT INTO ${TABLES.MASTER_PURCHASE_ORDERS} (${cols.map((c) => `\`${c}\``).join(', ')}) VALUES (?)`,
-        [cols.map((c) => (pos.json.has(c) && d[c] !== null && typeof d[c] !== 'string' ? JSON.stringify(d[c]) : d[c] ?? null))])) as { insertId: number };
-      const uid = String(res.insertId);
-      poMap.set(String(d.uid), uid);
-      report.posAdded++;
-      const lcols = lines.cols.filter((c) => c !== 'id');
-      for (const l of linesOf.get(String(d.uid)) ?? []) {
-        const r = (await qr.query(`INSERT INTO ${TABLES.DETAILS_PURCHASE_ORDERS} (${lcols.map((c) => `\`${c}\``).join(', ')}) VALUES (?)`,
-          [lcols.map((c) => (c === 'shipmentOrderId' ? uid : l[c] ?? null))])) as { insertId: number };
-        lineMap.set(String(l.id), String(r.insertId));
-        report.linesAdded++;
+      if (!hit) { devOnlyNew.push(String(d.uid)); continue; }
+      poMap.set(String(d.uid), String(hit.uid));
+      report.posLinked++;
+      if (hit.importedFrom !== PO_IMPORTED_FROM.PEPIMS) devOnlyKnown.push([String(d.uid), String(hit.uid)]);
+      if (!hit.uniwareStatus && d.uniwareStatus) fill.push({ uid: hit.uid, s: d.uniwareStatus, done: d.uniwareDoneAt ?? null, synced: d.lastSyncedAt ?? null });
+      if (d.orderNo1 && hit.orderNo1 && d.orderNo1 !== hit.orderNo1) {
+        notes.push({ shipment_uid: hit.uid, action: SHIPMENT_LOG_ACTION.FIELD_CHANGED, source: SHIPMENT_LOG_SOURCE.SCRIPT,
+          remark: `${DEV_COPY.SALE_CODE_NOTE} ${textOf(d.orderNo1)}; the code used is PEPIMS's ${hit.orderNo1}${d.uniwareStatus === DEV_COPY.MARKED_NOT_IN_UNIWARE ? ' (dev marked it uploaded, but it was never in Uniware)' : ''}` });
+        report.saleCodeNotes++;
       }
     }
-    count(TABLES.MASTER_PURCHASE_ORDERS, report.posAdded);
+    // dev's Uniware status where prod has none
+    for (const f of fill) {
+      await qr.query(`UPDATE ${TABLES.MASTER_PURCHASE_ORDERS} SET uniwareStatus = ?, uniwareDoneAt = ?, lastSyncedAt = ? WHERE uid = ?`, [f.s, f.done, f.synced, f.uid]);
+      report.uniwareStatusFilled++;
+    }
+    // a dev-only PO copied earlier: dev's values again, only when one differs
+    if (devOnlyKnown.length) {
+      const devFull = new Map((await fullRows(src, TABLES.MASTER_PURCHASE_ORDERS, 'uid', devOnlyKnown.map(([d]) => d))).map((r) => [textOf(r.uid), r]));
+      const prodFull = new Map((await fullRows(target, TABLES.MASTER_PURCHASE_ORDERS, 'uid', devOnlyKnown.map(([, p]) => p))).map((r) => [textOf(r.uid), r]));
+      for (const [d, p] of devOnlyKnown) {
+        const dr = devFull.get(d);
+        const pr = prodFull.get(p);
+        if (!dr || !pr || poCols.every((c) => same(dr[c]) === same(pr[c]))) continue;
+        await qr.query(`UPDATE ${TABLES.MASTER_PURCHASE_ORDERS} SET ${poCols.map((c) => `\`${c}\` = ?`).join(', ')} WHERE uid = ?`, [...poCols.map((c) => poValue(dr, c)), p]);
+        report.posUpdated++;
+      }
+    }
+    // only on dev: a new PO in prod (new uid) with its lines
+    if (devOnlyNew.length) {
+      const devFull = await fullRows(src, TABLES.MASTER_PURCHASE_ORDERS, 'uid', devOnlyNew);
+      const devLines = await fullRows(src, TABLES.DETAILS_PURCHASE_ORDERS, 'shipmentOrderId', devOnlyNew);
+      const lcols = lines.cols.filter((c) => c !== 'id');
+      for (const d of devFull) {
+        const res = (await qr.query(`INSERT INTO ${TABLES.MASTER_PURCHASE_ORDERS} (${poCols.map((c) => `\`${c}\``).join(', ')}) VALUES (?)`, [poCols.map((c) => poValue(d, c))])) as { insertId: number };
+        const uid = String(res.insertId);
+        poMap.set(String(d.uid), uid);
+        report.posAdded++;
+        for (const l of devLines.filter((x) => textOf(x.shipmentOrderId) === textOf(d.uid))) {
+          const r = (await qr.query(`INSERT INTO ${TABLES.DETAILS_PURCHASE_ORDERS} (${lcols.map((c) => `\`${c}\``).join(', ')}) VALUES (?)`,
+            [lcols.map((c) => (c === 'shipmentOrderId' ? uid : l[c] ?? null))])) as { insertId: number };
+          lineMap.set(String(l.id), String(r.insertId));
+          report.linesAdded++;
+        }
+      }
+    }
     say(`[dev-copy] POs: ${report.posLinked} linked to PEPIMS's, ${report.posAdded} added, ${report.posUpdated} dev-only updated, ${report.posSkippedTransfers} D2C transfers left on dev`);
 
     // ---- 4. the PO work done on dev ----
-    const state = await q<{ value: unknown }[]>(`SELECT value FROM ${TABLES.APP_STATE} WHERE state_key = ?`, [DEV_COPY.STATE_KEY]);
-    const lastLog = Number(((state[0]?.value ?? {}) as { shipmentLogId?: number }).shipmentLogId ?? 0);
+    const lastLog = Number(prev.shipmentLogId ?? 0);
     const [maxLog] = await q<{ m: number | null }[]>(`SELECT MAX(id) m FROM \`${src}\`.${TABLES.SHIPMENT_LOGS}`);
+    // line ids of the new History rows: dev line -> the prod line with the same SKU (n-th with the n-th), only for those POs
+    const logPos = (await q<{ u: string }[]>(`SELECT DISTINCT shipment_uid u FROM \`${src}\`.${TABLES.SHIPMENT_LOGS} WHERE id > ? AND line_id IS NOT NULL`, [lastLog]))
+      .map((r) => textOf(r.u)).filter((u) => poMap.has(u));
+    if (logPos.length) {
+      const dLines = await fullRows(src, TABLES.DETAILS_PURCHASE_ORDERS, 'shipmentOrderId', logPos);
+      const pLines = await fullRows(target, TABLES.DETAILS_PURCHASE_ORDERS, 'shipmentOrderId', logPos.map((u) => poMap.get(u)!));
+      for (const u of logPos) {
+        const free = pLines.filter((l) => textOf(l.shipmentOrderId) === poMap.get(u));
+        for (const l of dLines.filter((x) => textOf(x.shipmentOrderId) === u)) {
+          if (lineMap.has(String(l.id))) continue;
+          const at = free.findIndex((p) => textOf(p.skuCode).toLowerCase() === textOf(l.skuCode).toLowerCase());
+          if (at >= 0) lineMap.set(String(l.id), String(free.splice(at, 1)[0].id));
+        }
+      }
+    }
     await copy(TABLES.SHIPMENT_LOGS, {
       users: ['user_id'], po: ['shipment_uid'], line: ['line_id'], dropId: true, where: `id > ${lastLog}`, key: ['id'], noExistCheck: true,
       skip: (r) => !poMap.has(String(r.shipment_uid)),
@@ -210,11 +274,12 @@ export const runDevCopy = async (o: { apply: boolean; log?: (s: string) => void 
     await copy(TABLES.PO_PRICE_DIFFERENCES, { users: ['approved_by', 'reviewed_by', 'sent_by'], po: ['po_uid'], upsert: true });
     await copy(TABLES.PO_REOPENS, { users: ['rejected_by', 'reopened_by'], upsert: true });
     await copy(TABLES.MANUAL_UPLOADS, { users: ['uploaded_by', 'process_by'], upsert: true });
-    await copy(TABLES.CHANNEL_PULL_ITEMS, { key: ['source_system', 'external_id'], dropId: true, upsert: true });
+    await copy(TABLES.CHANNEL_PULL_ITEMS, { key: ['source_system', 'external_id'], dropId: true });
     await copy(TABLES.UNIWARE_CREATES, { users: ['requested_by'], po: ['po_uid'], upsert: true });
-    await copy(TABLES.GMAIL_MESSAGES, { key: ['gmail_id'], upsert: true });
-    await copy(TABLES.INTAKE_EMAILS, { key: ['message_key'], dropId: true, upsert: true });
-    await copy(TABLES.PO_VERIFY_CHANNEL_SETTINGS, { users: ['updated_by'], key: ['channel'], dropId: true, upsert: true });
+    // prod's own email intake / robot / switches keep their state: dev's rows only when prod has none (never updated)
+    await copy(TABLES.GMAIL_MESSAGES, { key: ['gmail_id'] });
+    await copy(TABLES.INTAKE_EMAILS, { key: ['message_key'], dropId: true });
+    await copy(TABLES.PO_VERIFY_CHANNEL_SETTINGS, { users: ['updated_by'], key: ['channel'], dropId: true });
     for (const t of DEV_COPY.BULK_TABLES) {
       await copy(t, { users: ['created_by', 'decided_by', 'needed_by', 'ordered_by', 'payment_by', 'processed_by', 'uploaded_by', 'by_user_id', 'updated_by', 'hidden_by'], po: ['po_uid'], upsert: true });
     }
@@ -222,13 +287,16 @@ export const runDevCopy = async (o: { apply: boolean; log?: (s: string) => void 
       await copy(t, { users: ['updated_by', 'assigned_to', 'reporter_id', 'user_id', 'added_by', 'uploaded_by', 'removed_by', 'actor_id', 'from_user_id', 'to_user_id'], upsert: true });
     }
     // sale order counter: the higher serial per day, so prod never gives a code dev already gave
-    const counters = await fromDev(TABLES.SALE_ORDER_CODE_COUNTER);
-    for (const c of counters) {
-      await qr.query(`INSERT INTO ${TABLES.SALE_ORDER_CODE_COUNTER} (counter_date, last_serial) VALUES (?, ?) ON DUPLICATE KEY UPDATE last_serial = GREATEST(last_serial, VALUES(last_serial))`, [c.counter_date, c.last_serial]);
+    // (only the days where dev is ahead: one grouped write, nothing on a quiet night)
+    const ahead = await q<Row[]>(`SELECT d.counter_date, d.last_serial FROM \`${src}\`.${TABLES.SALE_ORDER_CODE_COUNTER} d
+      LEFT JOIN ${TABLES.SALE_ORDER_CODE_COUNTER} p ON p.counter_date = d.counter_date WHERE p.counter_date IS NULL OR p.last_serial < d.last_serial`);
+    if (ahead.length) {
+      await qr.query(`INSERT INTO ${TABLES.SALE_ORDER_CODE_COUNTER} (counter_date, last_serial) VALUES ? ON DUPLICATE KEY UPDATE last_serial = GREATEST(last_serial, VALUES(last_serial))`,
+        [ahead.map((c) => [c.counter_date, c.last_serial])]);
     }
-    count(TABLES.SALE_ORDER_CODE_COUNTER, counters.length);
+    count(TABLES.SALE_ORDER_CODE_COUNTER, ahead.length);
     await qr.query(`INSERT INTO ${TABLES.APP_STATE} (state_key, value, updated_at) VALUES (?, CAST(? AS JSON), NOW()) ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = VALUES(updated_at)`,
-      [DEV_COPY.STATE_KEY, JSON.stringify({ shipmentLogId: Number(maxLog.m ?? 0), at: new Date().toISOString() })]);
+      [DEV_COPY.STATE_KEY, JSON.stringify({ shipmentLogId: Number(maxLog.m ?? 0), at: new Date().toISOString(), dbAt: clock.now })]);
 
     if (o.apply) await qr.commitTransaction();
     else await qr.rollbackTransaction();

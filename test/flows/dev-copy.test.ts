@@ -93,14 +93,24 @@ describe('dev -> prod copy', () => {
     const logs = await count('shipment_logs');
     const again = await runDevCopy({ apply: true });
     expect(again.usersAdded).toEqual([]);
+    // nothing changed on dev = nothing written to prod (user: never more load than needed)
+    expect(Object.values(again.tables).reduce((n, v) => n + v, 0)).toBe(0);
     expect(await count('po_uploads')).toBe(1);
     expect(await count('shipment_logs')).toBe(logs);
 
     // ONE WAY, nightly (2026-11-17): a row changed on dev after the copy is changed on prod too; prod's change never goes to dev
     await c.query(`UPDATE \`${DEV}\`.po_uploads SET status = 'rejected'`);
     await rows("UPDATE master_purchase_orders SET statusLogistics = 'Delivered' WHERE uid = 7001");
-    await runDevCopy({ apply: true });
+    const changed = await runDevCopy({ apply: true });
     expect((await rows<{ status: string }>('SELECT status FROM po_uploads'))[0].status).toBe('rejected');
+    // only the changed row was written
+    expect(Object.entries(changed.tables).filter(([, n]) => n > 0)).toEqual([['po_uploads', 1]]);
+    // prod's OWN row under the same id (another created time) is never overwritten: kept + reported
+    await rows("UPDATE po_uploads SET created_at = '2030-01-01 00:00:00'");
+    await c.query(`UPDATE \`${DEV}\`.po_uploads SET status = 'failed'`);
+    const guarded = await runDevCopy({ apply: true });
+    expect((await rows<{ status: string }>('SELECT status FROM po_uploads'))[0].status).toBe('rejected');
+    expect(guarded.prodOwnKept).toEqual({ po_uploads: 1 });
     const [devPo] = (await c.query(`SELECT statusLogistics s FROM \`${DEV}\`.master_purchase_orders`))[0] as { s: string | null }[];
     expect(devPo.s).not.toBe('Delivered');
   });
