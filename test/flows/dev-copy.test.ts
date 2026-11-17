@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { runDevCopy } from '../../src/modules/pepims-sync/dev-copy.service';
-import { loginAs } from '../helpers/auth';
+import { api, loginAs } from '../helpers/auth';
 import { closeDb, count, insert, resetDb, rows } from '../helpers/db';
 import { bigBasketPo, seedMasters, type Masters } from '../helpers/fixtures';
 import { runPo } from '../helpers/po-flow';
@@ -95,5 +95,26 @@ describe('dev -> prod copy', () => {
     expect(again.usersAdded).toEqual([]);
     expect(await count('po_uploads')).toBe(1);
     expect(await count('shipment_logs')).toBe(logs);
+
+    // ONE WAY, nightly (2026-11-17): a row changed on dev after the copy is changed on prod too; prod's change never goes to dev
+    await c.query(`UPDATE \`${DEV}\`.po_uploads SET status = 'rejected'`);
+    await rows("UPDATE master_purchase_orders SET statusLogistics = 'Delivered' WHERE uid = 7001");
+    await runDevCopy({ apply: true });
+    expect((await rows<{ status: string }>('SELECT status FROM po_uploads'))[0].status).toBe('rejected');
+    const [devPo] = (await c.query(`SELECT statusLogistics s FROM \`${DEV}\`.master_purchase_orders`))[0] as { s: string | null }[];
+    expect(devPo.s).not.toBe('Delivered');
+  });
+
+  it('Admin > Data sync "Copy from dev" (POST /admin/data-sync/dev-copy): developers only, runs and is recorded', async () => {
+    expect((await api().post('/api/v1/admin/data-sync/dev-copy').set('Cookie', (await loginAs('admin')).cookie).send({})).status).toBe(403);
+    const dev = await loginAs('developer');
+    await api().post('/api/v1/admin/data-sync/dev-copy').set('Cookie', dev.cookie).send({}).expect(202);
+    let s: { running: string | null; devCopy: { ok: boolean | null; summary: Record<string, number> | null } } = { running: 'devCopy', devCopy: { ok: null, summary: null } };
+    for (let i = 0; i < 100 && s.running; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      s = (await api().get('/api/v1/admin/data-sync').set('Cookie', dev.cookie).expect(200)).body.data as typeof s;
+    }
+    expect(s.devCopy).toMatchObject({ ok: true, summary: { posLinked: 1, uploads: 1 } });
+    expect(await count('po_uploads', 'po_uid = 7001')).toBe(1);
   });
 });

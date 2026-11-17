@@ -32,7 +32,6 @@ const print = (r: SyncReport) => {
   console.log(`\n=== PEPIMS sync ${r.apply ? 'APPLIED' : 'DRY RUN'}: ${r.source} -> ${r.target} ===`);
   console.log(`read ${r.read} PEPIMS POs | new ${r.inserted} (other uid: ${r.newUid}) | linked to ours ${r.linked} | updated ${r.updated} | unchanged ${r.unchanged} | skipped ${r.skipped.length}`);
   console.log(`field changes ${r.fieldChanges} | lines: new ${r.linesInserted}, linked ${r.linesLinked}, updated ${r.linesUpdated}, ours without a PEPIMS line ${r.oursWithoutPepimsLine} | PEPIMS log lines -> History ${r.logsAdded}`);
-  console.log(r.writeBack ? `POST_FG -> PEPIMS: ${r.writeBack.posUpdated} POs updated (${r.writeBack.fieldsWritten} fields), ${r.writeBack.posAdded} POs added (${r.writeBack.linesAdded} lines)` : 'POST_FG -> PEPIMS: off (PEPIMS_SYNC_WRITE_BACK not true)');
   if (r.noLinkTables) console.log('NOTE: this database has no PEPIMS link tables yet (migration PepimsMigration not run): read as a first import.');
   if (r.skipped.length) console.log(`skipped (user: skip): ${r.skipped.join(', ')}`);
   top('new POs by group', r.byGroup);

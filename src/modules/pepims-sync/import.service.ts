@@ -8,7 +8,6 @@ import {
   SHIPMENT_LOG_ACTION, SHIPMENT_LOG_SOURCE, TABLES,
 } from '../../constants';
 import { DetailsPurchaseOrder, MasterPurchaseOrder, PepimsSyncLineLink, PepimsSyncLink, ShipmentLog } from '../../entities';
-import { WriteBackReport, writeBackToPepims } from './write-back';
 import { channelChoice, ChannelChoice, mapLine, MappedPo, mapPo, Masters, partnerKeyOf, Row, statusKeyOf, textOf, toValues } from './mapping';
 
 /*
@@ -57,8 +56,6 @@ export interface SyncReport {
   saved: State | null;
   /** Dry run on a database without migration PepimsMigration yet (links read as none). */
   noLinkTables: boolean;
-  /** POST_FG -> PEPIMS (only with PEPIMS_SYNC_WRITE_BACK=true and --apply; null = not run). */
-  writeBack: WriteBackReport | null;
 }
 
 const bump = (o: Record<string, number>, k: string, n = 1) => { o[k] = (o[k] ?? 0) + n; };
@@ -139,7 +136,7 @@ export const runPepimsSync = async (o: { apply: boolean; limit?: number; log?: (
   const report: SyncReport = {
     apply: o.apply, source: env.pepimsSync.sourceDb, target: String(AppDataSource.options.database), read: 0, skipped: [], inserted: 0, newUid: 0, linked: 0,
     updated: 0, unchanged: 0, fieldChanges: 0, conflictsKeptOurs: [], linesInserted: 0, linesLinked: 0, linesUpdated: 0, oursWithoutPepimsLine: 0,
-    logsAdded: 0, byGroup: {}, byChannel: {}, channelNotes: {}, unmatched: { facility: {}, transporter: {}, location: {}, status: {} }, junkDates: {}, saved: null, noLinkTables: false, writeBack: null,
+    logsAdded: 0, byGroup: {}, byChannel: {}, channelNotes: {}, unmatched: { facility: {}, transporter: {}, location: {}, status: {} }, junkDates: {}, saved: null, noLinkTables: false,
   };
   const src = new DataSource({
     type: 'mysql', host: env.db.host, port: env.db.port, username: env.db.username, password: env.db.password,
@@ -175,8 +172,6 @@ export const runPepimsSync = async (o: { apply: boolean; limit?: number; log?: (
       if (o.apply) await AppDataSource.transaction((m) => applyPlan(m, plan, report));
       say(`[pepims-sync] batch ${i + 1}: ${pos.length} POs (inserted ${report.inserted}, linked ${report.linked}, updated ${report.updated}, unchanged ${report.unchanged})`);
     }
-    // POST_FG -> PEPIMS after PEPIMS's own changes were taken (switch OFF unless PEPIMS_SYNC_WRITE_BACK=true)
-    if (o.apply && env.pepimsSync.writeBack) report.writeBack = await writeBackToPepims();
     if (o.apply && !o.limit) {
       report.saved = { poUpdatedAt: top.po, lineUpdatedAt: top.line, logId: Number(top.log ?? 0) };
       await saveState(report.saved);

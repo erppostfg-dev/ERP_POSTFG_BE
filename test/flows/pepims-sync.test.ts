@@ -2,13 +2,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { OTHERS_CHANNEL, PEPIMS_FIELD_KIND, PEPIMS_LINE_FIELDS, PEPIMS_PO_FIELDS, PEPIMS_SYNC_STATE_KEY, PO_GROUP } from '../../src/constants';
 import { env } from '../../src/config/env';
 import { runPepimsSync } from '../../src/modules/pepims-sync/import.service';
+import { runNightlyIfDue } from '../../src/modules/pepims-sync/sync-runner';
 import { api, loginAs, type TestLogin } from '../helpers/auth';
 import { closeDb, count, insert, resetDb, rows } from '../helpers/db';
 import { bigBasketPo, seedMasters, type Masters } from '../helpers/fixtures';
 import { runPo } from '../helpers/po-flow';
 import { covers } from '../helpers/routes';
 
-covers(['GET /po-overview/pepims-sync', 'POST /po-overview/pepims-sync']);
+covers(['GET /admin/data-sync', 'POST /admin/data-sync/pepims', 'POST /admin/data-sync/dev-copy', 'PUT /admin/data-sync/nightly']);
 
 /*
  * PEPIMS -> POST_FG import + sync (2026-11-16, step 2a). PEPIMS here = a small copy of its tables in the test MySQL
@@ -185,61 +186,84 @@ describe('PEPIMS sync (later runs)', () => {
   });
 });
 
-describe('Sync from PEPIMS (PO Overview button, GET / POST /po-overview/pepims-sync)', () => {
-  it('a page viewer sees the last run; only admin / developer may start one; a run imports and is recorded', async () => {
-    const viewer = await loginAs('viewer');
-    const before = await api().get('/api/v1/po-overview/pepims-sync').set('Cookie', viewer.cookie).expect(200);
-    expect(before.body.data).toMatchObject({ running: false, ok: null, everyMinutes: 0, timerOn: false });
-    const manager = await loginAs('operations-manager'); // editor on PO Overview, not admin / developer
-    const refused = await api().post('/api/v1/po-overview/pepims-sync').set('Cookie', manager.cookie).send({});
-    expect(refused.status).toBe(403);
-    expect(refused.body.error.code).toBe('NOT_A_USER_ADMIN');
-    expect((await api().post('/api/v1/po-overview/pepims-sync').set('Cookie', viewer.cookie).send({})).status).toBe(403);
-
-    const started = await api().post('/api/v1/po-overview/pepims-sync').set('Cookie', admin.cookie).send({}).expect(202);
-    expect(started.body.data.state).toBe('started');
+describe('Admin > Data sync (GET /admin/data-sync, POST /admin/data-sync/pepims, PUT /admin/data-sync/nightly)', () => {
+  const waitDone = async (who: TestLogin) => {
     let status: Record<string, unknown> = {};
     for (let i = 0; i < 100; i++) {
-      status = (await api().get('/api/v1/po-overview/pepims-sync').set('Cookie', admin.cookie).expect(200)).body.data as Record<string, unknown>;
-      if (!status.running && status.finishedAt) break;
+      status = (await api().get('/api/v1/admin/data-sync').set('Cookie', who.cookie).expect(200)).body.data as Record<string, unknown>;
+      if (!status.running) break;
       await new Promise((r) => setTimeout(r, 100));
     }
-    expect(status).toMatchObject({ ok: true, error: null, summary: { read: 5, inserted: 4 } });
+    return status;
+  };
+
+  it('developers only; Sync from PEPIMS imports and is recorded; a second start while one runs = 409', async () => {
+    const dev = await loginAs('developer');
+    expect((await api().get('/api/v1/admin/data-sync').set('Cookie', admin.cookie)).body.error.code).toBe('DEVELOPER_ONLY');
+    expect((await api().post('/api/v1/admin/data-sync/pepims').set('Cookie', admin.cookie).send({})).status).toBe(403);
+    const before = await api().get('/api/v1/admin/data-sync').set('Cookie', dev.cookie).expect(200);
+    expect(before.body.data).toMatchObject({ allowed: true, running: null, pepims: { ok: null }, devCopy: { ok: null }, nightly: { enabled: true, atIst: '01:00', lastDate: null } });
+
+    const started = await api().post('/api/v1/admin/data-sync/pepims').set('Cookie', dev.cookie).send({}).expect(202);
+    expect(started.body.data.state).toBe('started');
+    const busy = await api().post('/api/v1/admin/data-sync/dev-copy').set('Cookie', dev.cookie).send({});
+    expect(busy.status).toBe(409);
+    expect(busy.body.error.code).toBe('DATA_SYNC_RUNNING');
+    const done = await waitDone(dev);
+    expect(done.pepims).toMatchObject({ ok: true, error: null, by: dev.email, summary: { read: 5, inserted: 4 } });
     expect(await count('master_purchase_orders', "importedFrom = 'pepims'")).toBe(4);
+  });
+
+  it('refuses on a server whose database is not the target (dev server / laptop): nothing runs', async () => {
+    const dev = await loginAs('developer');
+    const target = env.pepimsSync.targetDb;
+    env.pepimsSync.targetDb = 'mcaff_postfg_prod';
+    try {
+      const r = await api().post('/api/v1/admin/data-sync/pepims').set('Cookie', dev.cookie).send({});
+      expect(r.status).toBe(409);
+      expect(r.body.error.code).toBe('DATA_SYNC_NOT_HERE');
+      expect(await runNightlyIfDue(new Date('2026-11-17T19:45:00Z'))).toBe(false);
+      expect(await count('master_purchase_orders')).toBe(0);
+    } finally {
+      env.pepimsSync.targetDb = target;
+    }
+  });
+
+  it('nightly: runs once per IST night from 01:00 (catch-up until 07:00), PEPIMS then dev; OFF = never', async () => {
+    const dev = await loginAs('developer');
+    // 00:59 IST = 19:29 UTC the day before: not yet
+    expect(await runNightlyIfDue(new Date('2026-11-17T19:29:00Z'))).toBe(false);
+    // 01:15 IST on 18 Nov: runs (the dev copy fails here: no dev database in this file, recorded, not thrown)
+    expect(await runNightlyIfDue(new Date('2026-11-17T19:45:00Z'))).toBe(true);
+    const s = await waitDone(dev);
+    expect(s.pepims).toMatchObject({ ok: true, by: 'nightly' });
+    expect(s.devCopy).toMatchObject({ by: 'nightly' });
+    expect(s.nightly).toMatchObject({ lastDate: '2026-11-18' });
+    // same night again: no; 08:00 IST the next day (missed night window): no; 01:05 IST next night: yes
+    expect(await runNightlyIfDue(new Date('2026-11-17T21:00:00Z'))).toBe(false);
+    expect(await runNightlyIfDue(new Date('2026-11-19T02:30:00Z'))).toBe(false);
+    // switched OFF in the tab: the next night does nothing
+    const bad = await api().put('/api/v1/admin/data-sync/nightly').set('Cookie', dev.cookie).send({ enabled: 'no' });
+    expect(bad.status).toBe(400);
+    const off = await api().put('/api/v1/admin/data-sync/nightly').set('Cookie', dev.cookie).send({ enabled: false }).expect(200);
+    expect(off.body.data.nightly).toMatchObject({ enabled: false, changedBy: dev.email, lastDate: '2026-11-18' });
+    expect(await runNightlyIfDue(new Date('2026-11-18T19:35:00Z'))).toBe(false);
+    await api().put('/api/v1/admin/data-sync/nightly').set('Cookie', dev.cookie).send({ enabled: true }).expect(200);
+    expect(await runNightlyIfDue(new Date('2026-11-18T19:35:00Z'))).toBe(true);
+    await waitDone(dev);
   });
 });
 
-describe('POST_FG -> PEPIMS (switch PEPIMS_SYNC_WRITE_BACK)', () => {
-  const pepRow = async (sql: string, p: unknown[] = []) => ((await pep.query(sql, p)) as [Record<string, unknown>[]])[0];
-  it('off (default): nothing is written to PEPIMS', async () => {
+describe('ONE WAY: nothing is ever written into PEPIMS (user 2026-11-17)', () => {
+  it('our change and our own PO stay ours; PEPIMS is unchanged after any number of syncs', async () => {
+    const pepRow = async (sql: string) => ((await pep.query(sql)) as [Record<string, unknown>[]])[0];
     await sync();
     await rows("UPDATE master_purchase_orders SET statusLogistics = 'Dispatched', updatedAt = '2030-01-01 00:00:00' WHERE uid = 101");
-    const r = await sync();
-    expect(r.writeBack).toBeNull();
-    expect((await pepRow('SELECT statusLogistics FROM shipment_orders WHERE uid = 101'))[0].statusLogistics).toBe('Delivered');
-  });
-
-  it('on: our change goes to PEPIMS with a log line; a PO made in POST_FG is added to PEPIMS and linked; nothing twice', async () => {
+    await runPo(bigBasketPo(m, { po_number: 'OWN-1' }));
+    const pepBefore = JSON.stringify([await pepRow('SELECT * FROM shipment_orders ORDER BY uid'), await pepRow('SELECT * FROM sku_orders ORDER BY id'), await pepRow('SELECT * FROM logs ORDER BY id')]);
     await sync();
-    await rows("UPDATE master_purchase_orders SET statusLogistics = 'Dispatched', updatedAt = '2030-01-01 00:00:00' WHERE uid = 101");
-    const own = await runPo(bigBasketPo(m, { po_number: 'OWN-1' }));
-    env.pepimsSync.writeBack = true;
-    try {
-      const r = await sync();
-      expect(r.writeBack).toMatchObject({ posUpdated: 1, fieldsWritten: 1, posAdded: 1, linesAdded: 1 });
-      expect((await pepRow('SELECT statusLogistics FROM shipment_orders WHERE uid = 101'))[0].statusLogistics).toBe('Dispatched');
-      const log = await pepRow('SELECT messages, createdBy FROM logs WHERE shipmentOrderId = 101 ORDER BY id DESC LIMIT 1');
-      expect(JSON.stringify(log[0].messages)).toContain('statusLogistics changed from Delivered to Dispatched (POST_FG)');
-      expect(log[0].createdBy).toBeNull();
-      const [added] = await pepRow("SELECT uid, channel FROM shipment_orders WHERE poNumber = 'OWN-1'");
-      expect(added.channel).toBe('BigBasket');
-      expect(await count('pepims_sync_links', 'po_uid = ? AND pepims_uid = ?', [own.po_uid, added.uid])).toBe(1);
-      // a second run writes nothing again
-      const again = await sync();
-      expect(again.writeBack).toMatchObject({ posUpdated: 0, posAdded: 0 });
-      expect((await pepRow("SELECT COUNT(*) n FROM shipment_orders WHERE poNumber = 'OWN-1'"))[0].n).toBe(1);
-    } finally {
-      env.pepimsSync.writeBack = false;
-    }
+    await sync();
+    expect(JSON.stringify([await pepRow('SELECT * FROM shipment_orders ORDER BY uid'), await pepRow('SELECT * FROM sku_orders ORDER BY id'), await pepRow('SELECT * FROM logs ORDER BY id')])).toBe(pepBefore);
+    expect((await pepRow("SELECT COUNT(*) n FROM shipment_orders WHERE poNumber = 'OWN-1'"))[0].n).toBe(0);
   });
 });

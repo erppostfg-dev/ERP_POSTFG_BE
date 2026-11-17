@@ -22,7 +22,7 @@ dotenv.config();
 const laptopMode = process.env.LAPTOP_MODE === 'true';
 export const LAPTOP_MODE_OFF = {
   PUBSUB_ENABLED: 'false', OCR_ENABLED: 'false', OCR_BACKLOG: 'false', PIPELINE_RESUME: 'false', CHANNEL_API_ENABLED: 'false',
-  LOCAL_CLEANUP_ENABLED: 'false', WORKER_IN_SERVER: 'false', QUEUE_MODE: 'local', RECHECK_MINUTES: '0', D2C_SYNC_ENABLED: 'false', PO_UNIWARE_SYNC_ENABLED: 'false', UNIWARE_CREATE_ENABLED: 'false', PEPIMS_SYNC_MINUTES: '0', PEPIMS_SYNC_WRITE_BACK: 'false',
+  LOCAL_CLEANUP_ENABLED: 'false', WORKER_IN_SERVER: 'false', QUEUE_MODE: 'local', RECHECK_MINUTES: '0', D2C_SYNC_ENABLED: 'false', PO_UNIWARE_SYNC_ENABLED: 'false', UNIWARE_CREATE_ENABLED: 'false',
   // not an off switch: laptop mode is D2C local test mode (env.d2c.testOnly), whatever .env says, unless
   // D2C_ALL_FACILITIES=true (d2cAllFacilities)
   D2C_TEST_ONLY: 'true',
@@ -321,12 +321,12 @@ export const env = {
   // (read-only connection, same DB login). Tests point it at their own copy (postfg_test_pepims).
   pepimsSync: {
     sourceDb: (process.env.PEPIMS_SYNC_SOURCE_DB ?? '').trim() || PEPIMS_DATABASE,
-    // the server's timer: minutes between runs; 0 / unset = no timer (the button still works); laptop mode = 0
-    minutes: Math.max(0, Number(process.env.PEPIMS_SYNC_MINUTES ?? 0) || 0),
+    // ONE WAY only (user 2026-11-17): PEPIMS -> this database and dev -> this database; nothing is ever written into
+    // PEPIMS or dev. Both jobs run only when the app's own database is this one (prod), so the dev server / the laptop
+    // (database mcaff_postfg_dev) can never import into dev. Tests: their own database.
+    targetDb: (process.env.DATA_SYNC_TARGET_DB ?? '').trim() || 'mcaff_postfg_prod',
     // dev -> prod copy (step 2b): the database dev's work is read from (tests: their own copy)
     devCopySourceDb: (process.env.DEV_COPY_SOURCE_DB ?? '').trim() || 'mcaff_postfg_dev',
-    // POST_FG -> PEPIMS writes (step 2c): only with PEPIMS_SYNC_WRITE_BACK=true (user: "until I say"); laptop: never
-    writeBack: process.env.PEPIMS_SYNC_WRITE_BACK === 'true',
   },
   // Channel API connectors (2026-10-16): POs pulled from channel APIs into the same chain. Off by default, like the
   // email listener; each connector also needs its own keys. Poll minutes: the connector's env value, else the constant.

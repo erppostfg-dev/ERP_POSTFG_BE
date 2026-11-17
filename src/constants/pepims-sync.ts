@@ -17,6 +17,27 @@ export const PEPIMS_SYNC_STATE_KEY = 'pepims-sync:state';
 /** app_state key of the last server run (timer / button): when, by whom, result. */
 export const PEPIMS_SYNC_RUN_KEY = 'pepims-sync:last-run';
 
+/*
+ * Admin > Data sync (2026-11-17, user: "every night ~1 AM IST until I say; a tab in Admin for developers with the
+ * buttons; ONE WAY: PEPIMS -> prod and dev -> prod, never back into PEPIMS or dev"). Two jobs on the prod server, one at
+ * a time; the nightly run does PEPIMS first (dev POs are matched to PEPIMS's), then dev.
+ */
+export const DATA_SYNC_JOB = { PEPIMS: 'pepims', DEV_COPY: 'devCopy' } as const;
+export type DataSyncJob = (typeof DATA_SYNC_JOB)[keyof typeof DATA_SYNC_JOB];
+export const DATA_SYNC = {
+  ROUTES: { STATUS: '/data-sync', PEPIMS: '/data-sync/pepims', DEV_COPY: '/data-sync/dev-copy', NIGHTLY: '/data-sync/nightly' },
+  /** app_state keys of each job's last run (the PEPIMS one kept from the first version). */
+  RUN_KEY: { pepims: PEPIMS_SYNC_RUN_KEY, devCopy: 'dev-copy:last-run' } as Record<DataSyncJob, string>,
+  /** app_state key of the nightly switch + the IST day it last ran. No row = ON (user: "until I say"). */
+  NIGHTLY_KEY: 'data-sync:nightly',
+  /** IST start of the nightly run; a server that was down then catches up until END_HOUR the same night, else next night. */
+  NIGHTLY_IST: { HOUR: 1, MINUTE: 0, END_HOUR: 7 },
+  IST_OFFSET_MINUTES: 330,
+  CHECK_EVERY_MS: 60_000,
+  BY_NIGHTLY: 'nightly',
+  BODY: { ENABLED: 'enabled' },
+} as const;
+
 /** A date outside this range is junk in PEPIMS (1900-01-03, 2152-11-25 ...): saved empty and listed. */
 export const PEPIMS_DATE_RANGE = { MIN: '2025-01-01', MAX: '2027-12-31' } as const;
 

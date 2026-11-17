@@ -1,7 +1,7 @@
 import { QueryRunner } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
 import { env } from '../../config/env';
-import { DEV_COPY, SHIPMENT_LOG_ACTION, SHIPMENT_LOG_SOURCE, TABLES } from '../../constants';
+import { DEV_COPY, PO_IMPORTED_FROM, SHIPMENT_LOG_ACTION, SHIPMENT_LOG_SOURCE, TABLES } from '../../constants';
 import { textOf } from './mapping';
 
 /*
@@ -12,6 +12,10 @@ import { textOf } from './mapping';
  *   1. users of dev missing in prod (by email) + their roles / warehouses / page overrides; every user id re-pointed.
  *   2. masters edited on dev (channels, SKUs, channel SKUs, locations, warehouses, combos, margin requests, change log):
  *      upserted by id (prod's masters are a copy of dev's with the same ids; nothing deleted).
+ *   (2026-11-17, user: "run it every night until I say; ONE WAY, dev -> prod, never prod -> dev") a re-run also brings
+ *   what CHANGED on dev since: dev's own rows are upserted (an upload approved on dev = approved on prod), a dev-only PO
+ *   takes dev's values again; a PO PEPIMS also has keeps PEPIMS's values (the PEPIMS sync owns them; dev's edits arrive
+ *   as History rows).
  *   3. POs: dev PO = the prod PO with the same channel + PO number (imported from PEPIMS: PEPIMS wins, dev's Uniware
  *      status fills an empty one, a different sale order code is written to History); a dev-only PO is inserted (new
  *      uid) with its lines. D2C transfers stay on dev. Lines re-pointed by SKU (in order).
@@ -32,6 +36,8 @@ export interface DevCopyReport {
   posLinked: number;
   posAdded: number;
   posSkippedTransfers: number;
+  /** dev-only POs copied earlier whose values changed on dev since. */
+  posUpdated: number;
   linesAdded: number;
   saleCodeNotes: number;
   uniwareStatusFilled: number;
@@ -59,7 +65,7 @@ export const runDevCopy = async (o: { apply: boolean; log?: (s: string) => void 
   const say = o.log ?? (() => undefined);
   const src = env.pepimsSync.devCopySourceDb;
   const report: DevCopyReport = {
-    apply: o.apply, source: src, target: String(AppDataSource.options.database), tables: {}, usersAdded: [], posLinked: 0, posAdded: 0,
+    apply: o.apply, source: src, target: String(AppDataSource.options.database), tables: {}, usersAdded: [], posLinked: 0, posAdded: 0, posUpdated: 0,
     posSkippedTransfers: 0, linesAdded: 0, saleCodeNotes: 0, uniwareStatusFilled: 0,
   };
   if (report.target === src) throw new Error(`source and target are the same database (${src})`);
@@ -125,8 +131,8 @@ export const runDevCopy = async (o: { apply: boolean; log?: (s: string) => void 
 
     // ---- 3. POs ----
     const devPos = await fromDev(TABLES.MASTER_PURCHASE_ORDERS);
-    const prodKeys = new Map((await q<{ uid: string; channel: string; poNumber: string; orderNo1: string | null; uniwareStatus: string | null }[]>(
-      `SELECT uid, channel, poNumber, orderNo1, uniwareStatus FROM ${TABLES.MASTER_PURCHASE_ORDERS} WHERE transferCode IS NULL`))
+    const prodKeys = new Map((await q<{ uid: string; channel: string; poNumber: string; orderNo1: string | null; uniwareStatus: string | null; importedFrom: string | null }[]>(
+      `SELECT uid, channel, poNumber, orderNo1, uniwareStatus, importedFrom FROM ${TABLES.MASTER_PURCHASE_ORDERS} WHERE transferCode IS NULL`))
       .map((p) => [`${p.channel.toLowerCase()}|${p.poNumber}`, p]));
     const pos = await shape(qr, src, TABLES.MASTER_PURCHASE_ORDERS);
     const lines = await shape(qr, src, TABLES.DETAILS_PURCHASE_ORDERS);
@@ -140,6 +146,13 @@ export const runDevCopy = async (o: { apply: boolean; log?: (s: string) => void 
       if (hit) {
         poMap.set(String(d.uid), String(hit.uid));
         report.posLinked++;
+        // a dev-only PO copied by an earlier run (not PEPIMS's): dev's values again (MySQL skips identical rows)
+        if (hit.importedFrom !== PO_IMPORTED_FROM.PEPIMS) {
+          const cols = pos.cols.filter((c) => c !== 'uid');
+          const res = (await qr.query(`UPDATE ${TABLES.MASTER_PURCHASE_ORDERS} SET ${cols.map((c) => `\`${c}\` = ?`).join(', ')} WHERE uid = ?`,
+            [...cols.map((c) => (pos.json.has(c) && d[c] !== null && typeof d[c] !== 'string' ? JSON.stringify(d[c]) : d[c] ?? null)), hit.uid])) as { changedRows?: number; affectedRows?: number };
+          if (Number(res.changedRows ?? 0) > 0) report.posUpdated++;
+        }
         if (!hit.uniwareStatus && d.uniwareStatus) {
           await qr.query(`UPDATE ${TABLES.MASTER_PURCHASE_ORDERS} SET uniwareStatus = ?, uniwareDoneAt = ?, lastSyncedAt = ? WHERE uid = ?`, [d.uniwareStatus, d.uniwareDoneAt ?? null, d.lastSyncedAt ?? null, hit.uid]);
           report.uniwareStatusFilled++;
@@ -174,7 +187,7 @@ export const runDevCopy = async (o: { apply: boolean; log?: (s: string) => void 
       }
     }
     count(TABLES.MASTER_PURCHASE_ORDERS, report.posAdded);
-    say(`[dev-copy] POs: ${report.posLinked} linked to PEPIMS's, ${report.posAdded} added, ${report.posSkippedTransfers} D2C transfers left on dev`);
+    say(`[dev-copy] POs: ${report.posLinked} linked to PEPIMS's, ${report.posAdded} added, ${report.posUpdated} dev-only updated, ${report.posSkippedTransfers} D2C transfers left on dev`);
 
     // ---- 4. the PO work done on dev ----
     const state = await q<{ value: unknown }[]>(`SELECT value FROM ${TABLES.APP_STATE} WHERE state_key = ?`, [DEV_COPY.STATE_KEY]);
@@ -189,24 +202,24 @@ export const runDevCopy = async (o: { apply: boolean; log?: (s: string) => void 
     const newNotes = notes.filter((n) => !noted.has(`${textOf(n.shipment_uid)}|${textOf(n.remark)}`));
     if (newNotes.length) await insertRows(qr, TABLES.SHIPMENT_LOGS, ['shipment_uid', 'action', 'source', 'remark'], new Set(), newNotes);
     count(`${TABLES.SHIPMENT_LOGS} (sale code notes)`, newNotes.length);
-    await copy(TABLES.PO_UPLOADS, { users: ['csv_downloaded_by', 'uniware_uploaded_by', 'uploaded_by'], po: ['po_uid'] });
-    await copy(TABLES.PO_ISSUES, { users: ['resolved_by'] });
-    await copy(TABLES.PO_ISSUE_ACTIONS, { users: ['action_by'] });
-    await copy(TABLES.PO_REVIEW_SUBMISSIONS, { users: ['submitted_by', 'decided_by'], po: ['po_uid'] });
-    await copy(TABLES.PO_VERIFICATIONS, { users: ['done_by'], po: ['po_uid'] });
-    await copy(TABLES.PO_PRICE_DIFFERENCES, { users: ['approved_by', 'reviewed_by', 'sent_by'], po: ['po_uid'] });
-    await copy(TABLES.PO_REOPENS, { users: ['rejected_by', 'reopened_by'] });
-    await copy(TABLES.MANUAL_UPLOADS, { users: ['uploaded_by', 'process_by'] });
-    await copy(TABLES.CHANNEL_PULL_ITEMS, { key: ['source_system', 'external_id'], dropId: true });
-    await copy(TABLES.UNIWARE_CREATES, { users: ['requested_by'], po: ['po_uid'] });
-    await copy(TABLES.GMAIL_MESSAGES, { key: ['gmail_id'] });
-    await copy(TABLES.INTAKE_EMAILS, { key: ['message_key'], dropId: true });
-    await copy(TABLES.PO_VERIFY_CHANNEL_SETTINGS, { users: ['updated_by'], key: ['channel'], dropId: true });
+    await copy(TABLES.PO_UPLOADS, { users: ['csv_downloaded_by', 'uniware_uploaded_by', 'uploaded_by'], po: ['po_uid'], upsert: true });
+    await copy(TABLES.PO_ISSUES, { users: ['resolved_by'], upsert: true });
+    await copy(TABLES.PO_ISSUE_ACTIONS, { users: ['action_by'], upsert: true });
+    await copy(TABLES.PO_REVIEW_SUBMISSIONS, { users: ['submitted_by', 'decided_by'], po: ['po_uid'], upsert: true });
+    await copy(TABLES.PO_VERIFICATIONS, { users: ['done_by'], po: ['po_uid'], upsert: true });
+    await copy(TABLES.PO_PRICE_DIFFERENCES, { users: ['approved_by', 'reviewed_by', 'sent_by'], po: ['po_uid'], upsert: true });
+    await copy(TABLES.PO_REOPENS, { users: ['rejected_by', 'reopened_by'], upsert: true });
+    await copy(TABLES.MANUAL_UPLOADS, { users: ['uploaded_by', 'process_by'], upsert: true });
+    await copy(TABLES.CHANNEL_PULL_ITEMS, { key: ['source_system', 'external_id'], dropId: true, upsert: true });
+    await copy(TABLES.UNIWARE_CREATES, { users: ['requested_by'], po: ['po_uid'], upsert: true });
+    await copy(TABLES.GMAIL_MESSAGES, { key: ['gmail_id'], upsert: true });
+    await copy(TABLES.INTAKE_EMAILS, { key: ['message_key'], dropId: true, upsert: true });
+    await copy(TABLES.PO_VERIFY_CHANNEL_SETTINGS, { users: ['updated_by'], key: ['channel'], dropId: true, upsert: true });
     for (const t of DEV_COPY.BULK_TABLES) {
-      await copy(t, { users: ['created_by', 'decided_by', 'needed_by', 'ordered_by', 'payment_by', 'processed_by', 'uploaded_by', 'by_user_id', 'updated_by', 'hidden_by'], po: ['po_uid'] });
+      await copy(t, { users: ['created_by', 'decided_by', 'needed_by', 'ordered_by', 'payment_by', 'processed_by', 'uploaded_by', 'by_user_id', 'updated_by', 'hidden_by'], po: ['po_uid'], upsert: true });
     }
     for (const t of DEV_COPY.FEEDBACK_TABLES) {
-      await copy(t, { users: ['updated_by', 'assigned_to', 'reporter_id', 'user_id', 'added_by', 'uploaded_by', 'removed_by', 'actor_id', 'from_user_id', 'to_user_id'] });
+      await copy(t, { users: ['updated_by', 'assigned_to', 'reporter_id', 'user_id', 'added_by', 'uploaded_by', 'removed_by', 'actor_id', 'from_user_id', 'to_user_id'], upsert: true });
     }
     // sale order counter: the higher serial per day, so prod never gives a code dev already gave
     const counters = await fromDev(TABLES.SALE_ORDER_CODE_COUNTER);
