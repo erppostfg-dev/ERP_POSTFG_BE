@@ -238,7 +238,7 @@ describe('stock', () => {
 });
 
 describe('create payload', () => {
-  it('one item per line with its qty; price = round(15% x MRP, 2); total = price x qty; channelMrp = MRP; sender facility', () => {
+  it('one item per line with its qty, item code = SKU code; price = round(15% x MRP, 2); total = price x qty; channelMrp = MRP; sender facility', () => {
     const p = buildSaleOrderPayload({
       code: 'erp_it_20261103001', displayOrderCode: 'TEST_FACILITY|03Nov2026|Int1', channel: 'mCaff_Test', customerCode: 'Test_Channel', facility: 'TEST_FACILITY',
       lines: [{ lineId: '7', skuCode: 'TEST_UNICOM1', qty: 3, mrp: 649 }, { lineId: '8', skuCode: 'B', qty: 0, mrp: 10 }, { lineId: '9', skuCode: 'C', qty: 7, mrp: 333.33 }],
@@ -247,8 +247,8 @@ describe('create payload', () => {
       saleOrder: {
         code: 'erp_it_20261103001', displayOrderCode: 'TEST_FACILITY|03Nov2026|Int1', channel: 'mCaff_Test', customerCode: 'Test_Channel', cashOnDelivery: false,
         saleOrderItems: [
-          { code: 'L7', itemSku: 'TEST_UNICOM1', quantity: 3, shippingMethodCode: 'STD', sellingPrice: 97.35, totalPrice: 292.05, channelMrp: 649, facilityCode: 'TEST_FACILITY' },
-          { code: 'L9', itemSku: 'C', quantity: 7, shippingMethodCode: 'STD', sellingPrice: 50, totalPrice: 350, channelMrp: 333.33, facilityCode: 'TEST_FACILITY' },
+          { code: 'TEST_UNICOM1', itemSku: 'TEST_UNICOM1', quantity: 3, shippingMethodCode: 'STD', sellingPrice: 97.35, totalPrice: 292.05, channelMrp: 649, facilityCode: 'TEST_FACILITY' },
+          { code: 'C', itemSku: 'C', quantity: 7, shippingMethodCode: 'STD', sellingPrice: 50, totalPrice: 350, channelMrp: 333.33, facilityCode: 'TEST_FACILITY' },
         ],
       },
     });
