@@ -608,7 +608,7 @@ export const cancelTransfer = async (rawId: string, body: unknown, by: Actor, ap
 
 export interface LineRef { id: string; skuCode: string | null }
 
-/** The transfer line of an SO item: by our item code L<lineId>, else by SKU. */
+/** The transfer line of an SO item: by the old item code L<lineId>, else by SKU (newer SOs: item code = SKU code). */
 export const lineOfItem = (item: Pick<SoItem, 'code' | 'itemSku'>, lines: LineRef[]): LineRef | undefined =>
   lines.find((l) => itemCodeOf(l.id) === item.code) ?? lines.find((l) => (l.skuCode ?? '').toLowerCase() === item.itemSku.toLowerCase());
 

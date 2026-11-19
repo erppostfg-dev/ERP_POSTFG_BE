@@ -149,7 +149,7 @@ export const planSync = (state: SyncState, so: SoDetail, now: Date = new Date())
   const src = SHIPMENT_LOG_SOURCE.UNIWARE;
   const uniwareStatus = soStatusText(so);
 
-  // -- SO items per line (our code L<id>, else the SKU)
+  // -- SO items per line (old SOs: our code L<id>; newer: the SKU code as item code; else the item's SKU)
   // counted: every item of the line has quantities; allCancelled: every item without counts says CANCELLED
   const agg = new Map<string, { total: number; cancelled: number; open: number; counted: boolean; allCancelled: boolean; openUncounted: boolean }>();
   const unmatched: string[] = [];

@@ -367,7 +367,10 @@ export const D2C_UNIWARE = {
   INVALID_SALE_ORDER_CODE: 'INVALID_SALE_ORDER_CODE',
   /** stock of SKUs none of which has inventory at that facility (code 60004) = 0 available. */
   INVENTORY_NOT_AVAILABLE: 'INVENTORY_NOT_AVAILABLE',
-  /** Item line code of a transfer line on the SO: L<details_purchase_orders.id> (stable, one item per line with its qty). */
+  /**
+   * Item line code of a transfer line on SOs created before 2026-11-18: L<details_purchase_orders.id>. Newer SOs use our
+   * SKU code (one line per SKU in a transfer); both are matched (lineOfItem, sync-plan).
+   */
   ITEM_CODE_PREFIX: 'L',
   /** Remark / log text cut at this many characters (trimmed request / response, never credentials). */
   LOG_MAX: 4000,
