@@ -142,7 +142,7 @@ export const bulkProcessOptions = async (id: string) => {
 const addressText = (line: string | null, city: string | null, state: string | null, pin: string | null): string =>
   [line, city, state, pin].filter(Boolean).join(', ');
 
-/** Lines at a type's fixed unit price (Marketing ₹1), else as approved. */
+/** Lines at a type's fixed unit price (Marketing / Head office: MARKETING_UNIT_PRICE), else as approved. */
 const atFixedPrice = (type: BulkOrderType, lines: BulkOrderLine[]): BulkOrderLine[] => {
   const p = BULK_ORDERS.FIXED_UNIT_PRICE[type];
   return p === undefined ? lines : lines.map((l) => ({ ...l, discountPct: 0, unitPrice: p, lineTotal: Math.round(p * l.qty * 100) / 100 }));

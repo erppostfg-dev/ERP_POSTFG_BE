@@ -137,6 +137,14 @@ export const BULK_DOCS = {
 export const BULK_DELIVERY_MODES = ['Porter', 'Courier', 'Self pickup'] as const;
 export const BULK_PRIORITIES = ['Standard', 'Fast-track'] as const;
 
+/**
+ * Price of every unit of a Marketing / Head office order in Uniware (Bulk Orders Portal v2, user 2026-11-23: "keep this
+ * 0.01 as a constant ... so we can change in future by taking the confirmation"; v1 was ₹1 from 2026-11-13). Not yet
+ * confirmed that Uniware takes 0.01: if it refuses, change ONLY this value. The portal shows no amount on these orders
+ * ("Free order"); our team sees this price in POST_FG and the Uniware CSV Selling Price = it.
+ */
+export const MARKETING_UNIT_PRICE = 0.01;
+
 export const BULK_ORDERS = {
   BASE: '/bulk-orders',
   ROUTES: {
@@ -160,14 +168,16 @@ export const BULK_ORDERS = {
   LINES_MAX: 200,
   /** Units per line. */
   QTY_MAX: 1_000_000,
-  /** Discount % (0-100, 2 decimals). No business limit (user): only what makes sense. */
+  /** Discount %: 0 up to BELOW this (2 decimals). v2 (2026-11-23): 100% is not allowed (a free line is not an order). */
   DISCOUNT_MAX: 100,
+  /** v2 (2026-11-23): every line of a priced order (Institutional) must come to at least this many rupees. */
+  LINE_TOTAL_MIN: 1,
   /**
    * Fixed price per unit by type (user 2026-11-13, Marketing: "don't show the amount, just put 1 rupee per SKU, one item,
    * same for everything, no discounts"): every unit at this price (with GST), no discount (a discount sent = 400), the
    * Uniware CSV Selling Price = this; the portal shows no money on these orders. A type not listed = MRP less discount %.
    */
-  FIXED_UNIT_PRICE: { [BULK_ORDER_TYPE.MARKETING]: 1, [BULK_ORDER_TYPE.HEAD_OFFICE]: 1 } as Partial<Record<BulkOrderType, number>>,
+  FIXED_UNIT_PRICE: { [BULK_ORDER_TYPE.MARKETING]: MARKETING_UNIT_PRICE, [BULK_ORDER_TYPE.HEAD_OFFICE]: MARKETING_UNIT_PRICE } as Partial<Record<BulkOrderType, number>>,
   /** SKU search: at least this many characters, at most this many answers. */
   SKU_QUERY_MIN: 2,
   SKU_RESULTS_MAX: 20,

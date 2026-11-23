@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { BulkCustomerAddresses1795300000000 } from '../../src/migrations/1795300000000-BulkCustomerAddresses';
+import { MARKETING_UNIT_PRICE } from '../../src/constants';
 import { api, loginAs, type TestLogin } from '../helpers/auth';
 import { closeDb, count, db, insert, resetDb, rows } from '../helpers/db';
 import { s3Objects } from '../helpers/fake-s3';
@@ -142,15 +143,15 @@ describe('bulk orders: create', () => {
     expect((await api().get(`${V}/${o.id}`).set('Cookie', inst.cookie).expect(200)).body.data).toEqual(o);
   });
 
-  it('Marketing (2026-11-13): every unit ₹1 whatever the MRP, no discount (a discount sent = 400), MRP still kept', async () => {
+  it('Marketing: every unit at MARKETING_UNIT_PRICE (₹0.01, v2 2026-11-23; was ₹1) whatever the MRP, no discount (a discount sent = 400), MRP still kept', async () => {
     const o = (await create(mkt, order({ lines: [{ pepCode: 'SKU_A', qty: 10 }, { pepCode: 'SKU_B', qty: 3, discountPct: 0 }] })).expect(201)).body.data;
-    expect(o).toMatchObject({ poNumber: `MKT-${YEAR}-0001`, type: 'marketing', lineCount: 2, totalUnits: 13, totalMrp: 2047, totalValue: 13 });
-    expect(o.lines.map((l: Record<string, unknown>) => [l.pepCode, l.mrp, l.discountPct, l.unitPrice, l.lineTotal])).toEqual([['SKU_A', 100, 0, 1, 10], ['SKU_B', 349, 0, 1, 3]]);
+    expect(o).toMatchObject({ poNumber: `MKT-${YEAR}-0001`, type: 'marketing', lineCount: 2, totalUnits: 13, totalMrp: 2047, totalValue: 0.13 });
+    expect(o.lines.map((l: Record<string, unknown>) => [l.pepCode, l.mrp, l.discountPct, l.unitPrice, l.lineTotal])).toEqual([['SKU_A', 100, 0, 0.01, 0.1], ['SKU_B', 349, 0, 0.01, 0.03]]);
     const res = await create(mkt, order({ lines: [{ pepCode: 'SKU_A', qty: 1, discountPct: 30 }] })).expect(400);
     expect(fields(res)).toEqual(['lines[0].discountPct']);
     expect(res.body.error.details[0].message).toContain('no discount');
     const edited = (await api().put(`${V}/${o.id}`).set('Cookie', mkt.cookie).send(order({ lines: [{ pepCode: 'SKU_B', qty: 5 }] })).expect(200)).body.data;
-    expect(edited).toMatchObject({ totalValue: 5, totalMrp: 1745 });
+    expect(edited).toMatchObject({ totalValue: 0.05, totalMrp: 1745 });
   });
 
   it('PO numbers: one series per type and year, never repeated (also when 8 are created at the same moment)', async () => {
@@ -287,19 +288,19 @@ describe('bulk orders step 2: edit, cancel, approve, reject (timeline)', () => {
     expect((await post(approver, o.id, 'reject', { reason: 'x' }).expect(409)).body.error.code).toBe('BULK_ORDER_NOT_PENDING');
   });
 
-  it('approve a Marketing order: qty may change, a discount is refused, every unit stays ₹1', async () => {
+  it('approve a Marketing order: qty may change, a discount is refused, every unit stays at ₹0.01', async () => {
     const o = (await create(mkt, order()).expect(201)).body.data;
     expect(fields(await post(approver, o.id, 'approve', { lines: [{ lineNo: 1, discountPct: 20 }] }).expect(400))).toEqual(['lines[0].discountPct']);
     const a = (await post(approver, o.id, 'approve', { lines: [{ lineNo: 1, qty: 4 }, { lineNo: 2, discountPct: 0 }] }).expect(200)).body.data;
-    expect(a).toMatchObject({ status: 'approved', totalUnits: 7, totalValue: 7 });
-    expect(a.lines.map((l: Record<string, unknown>) => [l.qty, l.unitPrice, l.lineTotal])).toEqual([[4, 1, 4], [3, 1, 3]]);
+    expect(a).toMatchObject({ status: 'approved', totalUnits: 7, totalValue: 0.07 });
+    expect(a.lines.map((l: Record<string, unknown>) => [l.qty, l.unitPrice, l.lineTotal])).toEqual([[4, 0.01, 0.04], [3, 0.01, 0.03]]);
   });
 
-  it('a Marketing order saved with discounts before the ₹1 rule: approval sets every unit to ₹1 (on the timeline)', async () => {
+  it('a Marketing order saved with discounts before the fixed-price rule: approval sets every unit to ₹0.01 (on the timeline)', async () => {
     const o = (await create(mkt, order()).expect(201)).body.data;
     await rows('UPDATE bulk_order_lines SET discount_pct = 30, requested_discount_pct = 30, unit_price = 70, line_total = 700 WHERE order_id = ? AND line_no = 1', [o.id]);
     const a = (await post(approver, o.id, 'approve').expect(200)).body.data;
-    expect(a.lines[0]).toMatchObject({ discountPct: 0, unitPrice: 1, lineTotal: 10, requestedDiscountPct: 30 });
+    expect(a.lines[0]).toMatchObject({ discountPct: 0, unitPrice: 0.01, lineTotal: 0.1, requestedDiscountPct: 30 });
     expect(a.events[1].changes.lines).toEqual([{ lineNo: 1, pepCode: 'SKU_A', discountPct: [30, 0] }]);
   });
 
@@ -648,21 +649,21 @@ describe('bulk orders step 3b: Institutional requester details + our team create
     expect((await optsOf(m2.id)).customers.map((x) => [x.customerCode, x.matchedBy])).toEqual([['CUST_JIVA_01', 'address']]);
   });
 
-  it('Marketing (2026-11-13): processed the same way (channel + customer code typed, e.g. Jiva), CSV at ₹1 a unit, address saved in the book', async () => {
+  it('Marketing (2026-11-13): processed the same way (channel + customer code typed, e.g. Jiva), CSV at ₹0.01 a unit, address saved in the book', async () => {
     const m = (await create(mkt, order()).expect(201)).body.data as { id: string; poNumber: string };
     await approve(m.id);
     expect((await api().get(`${T}/${m.id}/process-options`).set('Cookie', opsExec.cookie).expect(200)).body.data.customers).toEqual([]);
     const JIVA = { facilityCode: WH, uniwareChannel: 'JIVA', customerCode: 'CUST_JIVA_01' };
     const done = (await processIt(opsExec, m.id, JIVA).expect(200)).body.data;
-    expect(done).toMatchObject({ status: 'processing', payment: null, totalValue: 13, saleOrder: { ...JIVA } });
+    expect(done).toMatchObject({ status: 'processing', payment: null, totalValue: 0.13, saleOrder: { ...JIVA } });
     const code = done.saleOrder.code as string;
     const [po] = await rows<{ uid: string; channel: string; customerCode: string }>('SELECT uid, channel, customerCode FROM master_purchase_orders');
     expect(po).toMatchObject({ channel: 'Bulk Marketing', customerCode: 'CUST_JIVA_01' });
     const lines = await rows<{ skuCode: string; qty: number; poValue: string }>('SELECT skuCode, qty, poValue FROM details_purchase_orders WHERE shipmentOrderId = ? ORDER BY id', [po.uid]);
-    expect(lines.map((l) => [l.skuCode, l.qty, Number(l.poValue)])).toEqual([['SKU_A', 10, 10], ['SKU_B', 3, 3]]);
+    expect(lines.map((l) => [l.skuCode, l.qty, Number(l.poValue)])).toEqual([['SKU_A', 10, 0.1], ['SKU_B', 3, 0.03]]);
     const csv = [...s3Objects(`bulk-orders/${m.poNumber}/sale-order-1/`).entries()].find(([k]) => k.endsWith('.csv'))![1];
-    expect(csv).toContain(`${code},${m.poNumber},0,JIVA,SKU_A,STD,SKU_A,SKU_A,1.00,FALSE,10,CUST_JIVA_01,${WH},`);
-    expect(csv).toContain(',1.00,FALSE,3,');
+    expect(csv).toContain(`${code},${m.poNumber},0,JIVA,SKU_A,STD,SKU_A,SKU_A,0.01,FALSE,10,CUST_JIVA_01,${WH},`);
+    expect(csv).toContain(',0.01,FALSE,3,');
     expect(await rows('SELECT order_type, name, gstin, uniware_channel, customer_code, used_count FROM bulk_customers')).toEqual([
       { order_type: 'marketing', name: 'Ravi Kumar', gstin: null, uniware_channel: 'JIVA', customer_code: 'CUST_JIVA_01', used_count: 1 }]);
     const m2 = (await create(mkt, order()).expect(201)).body.data as { id: string };
@@ -670,14 +671,14 @@ describe('bulk orders step 3b: Institutional requester details + our team create
     expect((await optsOf(m2.id)).customers).toEqual([expect.objectContaining({ uniwareChannel: 'JIVA', customerCode: 'CUST_JIVA_01', matchedBy: 'address' })]);
   });
 
-  it('a Marketing order approved with discounts before the ₹1 rule is punched at ₹1 (lines set, on the timeline)', async () => {
+  it('a Marketing order approved with discounts before the fixed-price rule is punched at ₹0.01 (lines set, on the timeline)', async () => {
     const m = (await create(mkt, order()).expect(201)).body.data as { id: string; poNumber: string };
     await approve(m.id);
     await rows('UPDATE bulk_order_lines SET discount_pct = 30, unit_price = 70, line_total = 700 WHERE order_id = ? AND line_no = 1', [m.id]);
     const done = (await processIt(opsExec, m.id).expect(200)).body.data;
-    expect(done.totalValue).toBe(13);
-    expect(done.lines[0]).toMatchObject({ discountPct: 0, unitPrice: 1, lineTotal: 10 });
-    expect(done.events.at(-1).changes).toMatchObject({ repricedLines: [1], unitPrice: 1 });
+    expect(done.totalValue).toBe(0.13);
+    expect(done.lines[0]).toMatchObject({ discountPct: 0, unitPrice: 0.01, lineTotal: 0.1 });
+    expect(done.events.at(-1).changes).toMatchObject({ repricedLines: [1], unitPrice: 0.01 });
     const csv = [...s3Objects(`bulk-orders/${m.poNumber}/sale-order-1/`).entries()].find(([k]) => k.endsWith('.csv'))![1];
     expect(csv).not.toContain('70.00');
   });
@@ -711,10 +712,10 @@ describe('bulk orders v2: Head office works like Marketing', () => {
   const WH = 'MUM_WAREHOUSE2';
   const HO = { type: 'head_office' };
 
-  it('Marketing people create it (HO- series of its own), ₹1 a unit, a discount refused, delivery mode kept; Institutional people cannot', async () => {
+  it('Marketing people create it (HO- series of its own), ₹0.01 a unit, a discount refused, delivery mode kept; Institutional people cannot', async () => {
     const o = (await create(mkt, order(HO)).expect(201)).body.data;
-    expect(o).toMatchObject({ poNumber: `HO-${YEAR}-0001`, type: 'head_office', mode: 'Courier', totalUnits: 13, totalValue: 13, payment: null });
-    expect(o.lines.map((l: Record<string, unknown>) => [l.pepCode, l.discountPct, l.unitPrice])).toEqual([['SKU_A', 0, 1], ['SKU_B', 0, 1]]);
+    expect(o).toMatchObject({ poNumber: `HO-${YEAR}-0001`, type: 'head_office', mode: 'Courier', totalUnits: 13, totalValue: 0.13, payment: null });
+    expect(o.lines.map((l: Record<string, unknown>) => [l.pepCode, l.discountPct, l.unitPrice])).toEqual([['SKU_A', 0, 0.01], ['SKU_B', 0, 0.01]]);
     const m = (await create(mkt, order()).expect(201)).body.data;
     expect(m.poNumber).toBe(`MKT-${YEAR}-0001`); // Marketing's own series is untouched
     expect((await create(mkt, order({ ...HO, poNumber: undefined })).expect(201)).body.data.poNumber).toBe(`HO-${YEAR}-0002`);
@@ -729,20 +730,20 @@ describe('bulk orders v2: Head office works like Marketing', () => {
     await api().get(`${V}/${o.id}`).set('Cookie', inst.cookie).expect(404);
     await api().get(`${V}?type=head_office`).set('Cookie', inst.cookie).expect(403);
     const done = (await api().post(`${V}/${o.id}/approve`).set('Cookie', approver.cookie).send({}).expect(200)).body.data;
-    expect(done).toMatchObject({ status: 'approved', totalValue: 13 });
+    expect(done).toMatchObject({ status: 'approved', totalValue: 0.13 });
   });
 
-  it('our team processes it like Marketing: saved PO in Bulk Marketing (group Marketing), CSV at ₹1, its own address book', async () => {
+  it('our team processes it like Marketing: saved PO in Bulk Marketing (group Marketing), CSV at ₹0.01, its own address book', async () => {
     await insert('master_facilities', { code: WH, name: 'Bhiwandi', entity: 'PEP', state: 'Maharashtra', is_active: 1, source: 'manual', uniware_export: 0 });
     const o = (await create(mkt, order(HO)).expect(201)).body.data as { id: string; poNumber: string };
     await api().post(`${V}/${o.id}/approve`).set('Cookie', approver.cookie).send({}).expect(200);
     const SALE = { facilityCode: WH, uniwareChannel: 'JIVA', customerCode: 'CUST_HO_01' };
     const done = (await api().post(`${T}/${o.id}/process`).set('Cookie', opsExec.cookie).send(SALE).expect(200)).body.data;
-    expect(done).toMatchObject({ status: 'processing', totalValue: 13, saleOrder: SALE });
+    expect(done).toMatchObject({ status: 'processing', totalValue: 0.13, saleOrder: SALE });
     const [po] = await rows<{ channel: string; poGroup: string; poNumber: string }>('SELECT channel, poGroup, poNumber FROM master_purchase_orders');
     expect(po).toEqual({ channel: 'Bulk Marketing', poGroup: 'Marketing', poNumber: o.poNumber });
     const csv = [...s3Objects(`bulk-orders/${o.poNumber}/sale-order-1/`).entries()].find(([k]) => k.endsWith('.csv'))![1];
-    expect(csv).toContain(',1.00,FALSE,10,CUST_HO_01,');
+    expect(csv).toContain(',0.01,FALSE,10,CUST_HO_01,');
     expect(await rows('SELECT order_type, customer_code FROM bulk_customers')).toEqual([{ order_type: 'head_office', customer_code: 'CUST_HO_01' }]);
   });
 
@@ -750,5 +751,45 @@ describe('bulk orders v2: Head office works like Marketing', () => {
     const admin = await loginAs('admin');
     const list = (await api().get(`${V}/settings`).set('Cookie', admin.cookie).expect(200)).body.data as { type: string; paymentCheck: boolean }[];
     expect(list.find((s) => s.type === 'head_office')).toMatchObject({ paymentCheck: false });
+  });
+});
+
+/*
+ * Bulk Orders Portal v2, piece 1b (2026-11-23): Marketing / Head office every unit at MARKETING_UNIT_PRICE (₹0.01, a
+ * constant until Uniware confirms it), Institutional: no 100% discount, every line at least ₹1 (create, edit, approve).
+ */
+describe('bulk orders v2: pricing rules', () => {
+  const act = (who: TestLogin, id: string, what: string, body: Record<string, unknown> = {}) => api().post(`${V}/${id}/${what}`).set('Cookie', who.cookie).send(body);
+  const inst1 = (lines: Record<string, unknown>[]) => order({ type: 'institutional', lines });
+
+  it('Marketing / Head office use the one constant MARKETING_UNIT_PRICE', async () => {
+    for (const type of ['marketing', 'head_office']) {
+      const o = (await create(mkt, order({ type })).expect(201)).body.data;
+      expect(o.lines.map((l: { unitPrice: number }) => l.unitPrice)).toEqual([MARKETING_UNIT_PRICE, MARKETING_UNIT_PRICE]);
+    }
+  });
+
+  it('Institutional: 100% discount refused; a line under ₹1 refused (named), at exactly ₹1 accepted; edit checked the same', async () => {
+    let res = await create(inst, inst1([{ pepCode: 'SKU_A', qty: 5, discountPct: 100 }])).expect(400);
+    expect(fields(res)).toEqual(['lines[0].discountPct']);
+    expect(res.body.error.details[0].message).toContain('100% is not allowed');
+    // MRP 100 at 99.5% = ₹0.50 a unit: 1 unit = ₹0.50 (refused), 2 units = ₹1.00 (ok)
+    res = await create(inst, inst1([{ pepCode: 'SKU_B', qty: 1 }, { pepCode: 'SKU_A', qty: 1, discountPct: 99.5 }])).expect(400);
+    expect(fields(res)).toEqual(['lines[1].discountPct']);
+    expect(res.body.error.details[0].message).toContain('at least ₹1');
+    const ok = (await create(inst, inst1([{ pepCode: 'SKU_A', qty: 2, discountPct: 99.5 }])).expect(201)).body.data;
+    expect(ok.lines[0]).toMatchObject({ unitPrice: 0.5, lineTotal: 1 });
+    res = await api().put(`${V}/${ok.id}`).set('Cookie', inst.cookie).send(inst1([{ pepCode: 'SKU_A', qty: 1, discountPct: 99.5 }])).expect(400);
+    expect(fields(res)).toEqual(['lines[0].discountPct']);
+  });
+
+  it('approve: 100% refused, a line pushed under ₹1 refused, nothing changed', async () => {
+    const o = (await create(inst, inst1([{ pepCode: 'SKU_A', qty: 1, discountPct: 10 }])).expect(201)).body.data;
+    expect(fields(await act(approver, o.id, 'approve', { lines: [{ lineNo: 1, discountPct: 100 }] }).expect(400))).toEqual(['lines[0].discountPct']);
+    const res = await act(approver, o.id, 'approve', { lines: [{ lineNo: 1, discountPct: 99.5 }] }).expect(400);
+    expect(res.body.error.details[0]).toMatchObject({ field: 'line 1' });
+    expect(res.body.error.details[0].message).toContain('at least ₹1');
+    const now = (await api().get(`${V}/${o.id}`).set('Cookie', inst.cookie).expect(200)).body.data;
+    expect(now).toMatchObject({ status: 'pending_approval', totalValue: 90 });
   });
 });

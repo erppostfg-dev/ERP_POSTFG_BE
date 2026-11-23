@@ -120,13 +120,18 @@ const isDay = (s: string): boolean => /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.i
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 /** MRP less discount %, in whole paise (half up): MRP 100, 30% -> 70; 349, 12.5% -> 305.38. mrp x (100 - d) = paise. */
 const priceAfterDiscount = (mrp: number, discountPct: number): number => Math.round(Number((mrp * (100 - discountPct)).toFixed(6))) / 100;
-/** A type's fixed unit price (Marketing: ₹1, user 2026-11-13), or undefined = MRP less discount %. */
+/** A type's fixed unit price (Marketing / Head office: MARKETING_UNIT_PRICE), or undefined = MRP less discount %. */
 const fixedPrice = (type: BulkOrderType | null): number | undefined => (type ? BULK_ORDERS.FIXED_UNIT_PRICE[type] : undefined);
+/** A priced line (not a fixed-price type) whose total is under ₹LINE_TOTAL_MIN (v2, 2026-11-23). '' = OK. */
+const lineTotalProblem = (type: BulkOrderType, lineTotal: number): string =>
+  fixedPrice(type) === undefined && lineTotal < BULK_ORDERS.LINE_TOTAL_MIN
+    ? `the line comes to ₹${lineTotal.toFixed(2)}: each line must be at least ₹${BULK_ORDERS.LINE_TOTAL_MIN} (lower the discount or raise the qty)` : '';
 /** The unit price of a line of this type. */
 const unitPriceOf = (type: BulkOrderType, mrp: number, discountPct: number): number => fixedPrice(type) ?? priceAfterDiscount(mrp, discountPct);
-/** A discount % from a request: 0-100, 2 decimals; a fixed-price type takes none (0 or left out). '' = OK. */
+/** A discount % from a request: 0 to below 100 (v2: 100% refused), 2 decimals; a fixed-price type takes none (0 or left out). '' = OK. */
 const discountProblem = (d: unknown, type: BulkOrderType | null): string =>
-  !(typeof d === 'number' && Number.isFinite(d) && d >= 0 && d <= BULK_ORDERS.DISCOUNT_MAX && round2(d) === d) ? `a % from 0 to ${BULK_ORDERS.DISCOUNT_MAX} with at most 2 decimals`
+  !(typeof d === 'number' && Number.isFinite(d) && d >= 0 && d < BULK_ORDERS.DISCOUNT_MAX && round2(d) === d)
+    ? `a % from 0 to below ${BULK_ORDERS.DISCOUNT_MAX} (${BULK_ORDERS.DISCOUNT_MAX}% is not allowed) with at most 2 decimals`
     : fixedPrice(type) !== undefined && d !== 0 ? `0: ${type} orders have no discount (every unit at ₹${fixedPrice(type)})` : '';
 
 interface AddressIn { line: string; city: string; state: string; pincode: string }
@@ -381,7 +386,7 @@ const priceLines = async (type: BulkOrderType, lines: LineIn[]): Promise<PricedL
     if (why) c.add(`${F.LINES}[${i}].${F.PEP_CODE}`, why);
   });
   c.fail();
-  return lines.map((l, i) => {
+  const priced = lines.map((l, i) => {
     const s = byCode.get(l.pepCode.toUpperCase())!;
     const mrp = Number(s.mrp);
     const unitPrice = unitPriceOf(type, mrp, l.discountPct);
@@ -391,6 +396,12 @@ const priceLines = async (type: BulkOrderType, lines: LineIn[]): Promise<PricedL
       unitPrice, lineTotal: round2(unitPrice * l.qty),
     };
   });
+  priced.forEach((p, i) => {
+    const why = lineTotalProblem(type, p.lineTotal);
+    if (why) c.add(`${F.LINES}[${i}].${F.DISCOUNT}`, why);
+  });
+  c.fail();
+  return priced;
 };
 
 /** Units / MRP / value of priced lines (kept on the order so lists need no line query). */
@@ -589,6 +600,11 @@ export const approveBulkOrder = async (actor: BulkActor, id: string, body: Recor
       if (Object.keys(diff).length) changed.push({ lineNo: l.lineNo, pepCode: l.pepCode, ...diff });
       return { line: l, qty, discountPct, mrp, unitPrice, lineTotal: round2(unitPrice * qty) };
     });
+    next.forEach((n) => {
+      const why = lineTotalProblem(type, n.lineTotal);
+      if (why) c.add(`line ${n.line.lineNo}`, why);
+    });
+    c.fail();
     for (const l of lines.filter((x) => d.remove.has(x.lineNo))) changed.push({ lineNo: l.lineNo, pepCode: l.pepCode, removed: true });
     if (d.remove.size) await m.getRepository(BulkOrderLine).delete({ orderId: id, lineNo: In([...d.remove]) });
     for (const n of next) {
