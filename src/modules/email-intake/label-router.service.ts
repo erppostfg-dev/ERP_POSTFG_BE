@@ -300,11 +300,11 @@ const backfillLabel = async (gmail: gmail_v1.Gmail, route: ResolvedRoute, after?
  * If the stored id is too old (Gmail keeps about a week), it falls back to a label search since
  * the last sync, so nothing is skipped.
  */
-export const processGmailChanges = async (routes: ResolvedRoute[], notifiedHistoryId?: string): Promise<void> => {
+export const processGmailChanges = async (routes: ResolvedRoute[], notifiedHistoryId?: string): Promise<number> => {
   const gmail = getGmail();
   const state = await readState();
   const startHistoryId = state.historyId ?? notifiedHistoryId;
-  if (!startHistoryId) return;
+  if (!startHistoryId) return 0;
 
   let changes: { ids: string[]; latestHistoryId: string };
   try {
@@ -315,16 +315,35 @@ export const processGmailChanges = async (routes: ResolvedRoute[], notifiedHisto
     const since = new Date(new Date(state.lastSyncAt ?? 0).getTime() - RESYNC_MARGIN_MS);
     log.warn(LOG_SOURCE.GMAIL, `history ${startHistoryId} expired; searching labels for emails since ${since.toISOString()}`);
     const profile = await gmailCall('getProfile', GMAIL_UNITS.GET_PROFILE, () => gmail.users.getProfile({ userId: 'me' }));
-    for (const route of routes) await backfillLabel(gmail, route, since);
-    if (pipelineFull()) return; // intake stopped: keep the old sync point (see below)
+    let sent = 0;
+    for (const route of routes) sent += total(await backfillLabel(gmail, route, since));
+    if (pipelineFull()) return sent; // intake stopped: keep the old sync point (see below)
     await writeState({ historyId: profile.data.historyId ?? notifiedHistoryId, lastSyncAt: new Date().toISOString() });
-    return;
+    return sent;
   }
 
-  await sendAll(gmail, changes.ids, routes);
+  const sent = total(await sendAll(gmail, changes.ids, routes));
   // Intake stopped at PIPELINE_LIMIT: keep the old sync point, so the next start still finds the unsent emails.
-  if (pipelineFull()) return;
+  if (pipelineFull()) return sent;
   await writeState({ historyId: changes.latestHistoryId, lastSyncAt: new Date().toISOString() });
+  return sent;
+};
+
+/**
+ * Safety net (2026-11-23): each route's label listed for the last `lookbackMs` and every email no one has taken yet is
+ * sent. Emails already known (gmail_messages: done, or left because their channel is OFF) need no Gmail call, so
+ * a quiet mailbox costs one list per label. Catches an email whose Pub/Sub notification never reached this server
+ * AND that the history read did not show. Returns how many were sent.
+ */
+export const labelSafetyPass = async (routes: ResolvedRoute[], lookbackMs: number): Promise<number> => {
+  const gmail = getGmail();
+  const after = new Date(Date.now() - lookbackMs);
+  let sent = 0;
+  for (const route of routes) {
+    if (pipelineFull()) break;
+    sent += total(await backfillLabel(gmail, route, after));
+  }
+  return sent;
 };
 
 /**

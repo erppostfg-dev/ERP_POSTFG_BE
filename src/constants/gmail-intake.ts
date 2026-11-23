@@ -43,3 +43,22 @@ export const CATCHUP = {
   LAST_ERROR_MAX: 500,
   SUBJECT_MAX: 300,
 } as const;
+
+/*
+ * Safety net for missed notifications (2026-11-23). A Pub/Sub notification can miss this server (on 16-23 Nov prod's
+ * listener shared the subscription and took ~1 in 10; Zepto P6336538 waited 2 h and was uploaded by hand). Without a
+ * net such an email waits for the NEXT notification (hours at night). User: "no unnecessary calls, a delay is fine".
+ *   1. Quiet check: when no Gmail read ran for QUIET_CHECK_MINUTES (notifications do one each), one history read
+ *      (2 units; 0 calls while notifications keep coming). Ticks each TICK_MS, no Gmail / DB call on a tick.
+ *   2. Label check every LABEL_CHECK_HOURS: the labels' last LABEL_LOOKBACK_HOURS listed (5 units per label); only an
+ *      email no one has taken is downloaded.
+ * GMAIL_QUIET_CHECK_MINUTES / GMAIL_LABEL_CHECK_HOURS override; 0 = off. Laptop: the listener does not run at all.
+ */
+export const GMAIL_SAFETY = {
+  QUIET_CHECK_MINUTES: 15,
+  LABEL_CHECK_HOURS: 2,
+  LABEL_LOOKBACK_HOURS: 4,
+  TICK_MS: 60_000,
+  /** Log code when the net took an email no notification brought (CloudWatch: LOGGING.md). */
+  MISSED_LOG: 'GMAIL_MISSED_NOTIFICATION',
+} as const;

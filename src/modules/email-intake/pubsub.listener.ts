@@ -11,6 +11,7 @@ import { getAuthClient } from './gmail.client';
 import { keepWatching, resolveRoutes } from './gmail-watch.service';
 import { groupDirFor, NOT_PO_SUFFIX } from './email-storage.service';
 import { catchUpOnStart, processGmailChanges } from './label-router.service';
+import { startSafetyNet } from './safety-net';
 import { resumeCatchUps } from './catchup.service';
 import { mirrorLater, syncLabelToS3 } from './s3-mirror.service';
 import { queueOcrBacklog } from '../ocr/extract-po.service';
@@ -64,6 +65,11 @@ export const startEmailListener = async (): Promise<{ stop: () => Promise<void> 
       }
     }
   });
+  // Safety net for missed notifications (2026-11-23): quiet check + label check on this same queue (safety-net.ts).
+  const net = startSafetyNet(routes, (job) => {
+    queue = queue.then(job).catch((err) => { logError(LOG_SOURCE.GMAIL, 'safety check failed (the next one tries again)', err); });
+  });
+
   subscription.on('message', (message: Message) => {
     queue = queue.then(async () => {
       try {
@@ -71,6 +77,7 @@ export const startEmailListener = async (): Promise<{ stop: () => Promise<void> 
         log.info(LOG_SOURCE.PUBSUB, `${data.emailAddress} changed (historyId ${data.historyId})`, { messageId: message.id });
         // One job per notification: every Gmail / S3 / DB / OCR line of it carries the same jobId.
         await runJob('pubsub-change', () => processGmailChanges(routes, data.historyId !== undefined ? String(data.historyId) : undefined), { historyId: data.historyId });
+        net.markRead();
         message.ack();
       } catch (err) {
         logError(LOG_SOURCE.PUBSUB, 'handling a notification failed: not acknowledged, Pub/Sub sends it again', err, { messageId: message.id });
@@ -85,6 +92,7 @@ export const startEmailListener = async (): Promise<{ stop: () => Promise<void> 
   return {
     stop: async () => {
       clearInterval(renewTimer);
+      net.stop();
       await subscription.close();
     },
   };

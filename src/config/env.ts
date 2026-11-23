@@ -5,7 +5,7 @@ import path from 'path';
 import { CACHE } from '../constants/cache';
 import { PEPIMS_DATABASE } from '../constants/db';
 import { ERROR_CODES } from '../constants/errors';
-import { GMAIL_PACE } from '../constants/gmail-intake';
+import { GMAIL_PACE, GMAIL_SAFETY } from '../constants/gmail-intake';
 import { LOG_DEFAULTS, LOG_FORMAT, LOG_LEVEL_RANK, type LogFormat, type LogLevel } from '../constants/logging';
 import { PO_JOBS, QUEUE_MODE, type QueueMode } from '../constants/po-jobs';
 import { REVIEW_RECHECK } from '../constants/po-review';
@@ -122,6 +122,9 @@ export const env = {
     unitsPerMinute: Number(process.env.GMAIL_UNITS_PER_MINUTE ?? GMAIL_PACE.UNITS_PER_MINUTE),
     // first wait after a rate-limited Gmail call (then doubled); tests set it tiny
     retryFirstWaitMs: Number(process.env.GMAIL_RETRY_FIRST_WAIT_MS ?? GMAIL_PACE.FIRST_WAIT_MS),
+    // safety net for missed Pub/Sub notifications (2026-11-23); 0 = off
+    quietCheckMinutes: Number(process.env.GMAIL_QUIET_CHECK_MINUTES ?? GMAIL_SAFETY.QUIET_CHECK_MINUTES),
+    labelCheckHours: Number(process.env.GMAIL_LABEL_CHECK_HOURS ?? GMAIL_SAFETY.LABEL_CHECK_HOURS),
   },
   // Gmail watch -> Pub/Sub topic -> pull subscription read by this server.
   pubsub: {
