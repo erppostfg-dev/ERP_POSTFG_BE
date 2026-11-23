@@ -14,6 +14,7 @@ import {
   BULK_EDITABLE_STATUSES,
   BULK_LIST_READY,
   BULK_ORDER_TYPE,
+  BULK_PRIORITY,
   BULK_PROCESSABLE_STATUSES,
   isMarketingLike,
   BULK_ORDER_TYPES,
@@ -316,8 +317,10 @@ interface OrderIn {
   orderedBy: string;
   receiverName: string;
   phone: string;
-  neededBy: string;
+  neededBy: string | null;
   priority: string;
+  fastTrackRemarks: string | null;
+  purpose: string | null;
   mode: string | null;
   note: string | null;
   locationId: string | null;
@@ -337,10 +340,16 @@ const parseOrder = (body: Record<string, unknown>, fixedType?: BulkOrderType): O
   const phoneText = c.text(body[F.RECEIVER_PHONE], F.RECEIVER_PHONE, 20);
   const phone = phoneText ? normalPhone(phoneText) : null;
   if (phoneText && !phone) c.add(F.RECEIVER_PHONE, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.RECEIVER_PHONE, 'a 10-digit phone number'));
-  const neededBy = c.text(body[F.NEEDED_BY], F.NEEDED_BY, 10);
+  const priority = c.oneOf(body[F.PRIORITY] ?? BULK_PRIORITY.NORMAL, F.PRIORITY, BULK_PRIORITIES);
+  const fastTrack = priority === BULK_PRIORITY.FAST_TRACK;
+  // v2 1d: Needed by required for Fast-track, optional for Normal; never in the past
+  const neededBy = c.text(body[F.NEEDED_BY], F.NEEDED_BY, 10, fastTrack) || null;
   if (neededBy && !isDay(neededBy)) c.add(F.NEEDED_BY, errorMessage(ERROR_CODES.FIELD_NOT_DAY, F.NEEDED_BY));
   else if (neededBy && neededBy < todayIst()) c.add(F.NEEDED_BY, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.NEEDED_BY, 'today or later'));
-  const priority = c.oneOf(body[F.PRIORITY] ?? BULK_PRIORITIES[0], F.PRIORITY, BULK_PRIORITIES);
+  // Fast-track remarks: required for Fast-track (why it is urgent), not kept otherwise
+  const fastTrackRemarks = fastTrack ? c.text(body[F.FAST_TRACK_REMARKS], F.FAST_TRACK_REMARKS, BULK_ORDERS.FAST_TRACK_REMARKS_MAX) || null : null;
+  // purpose: Marketing orders only (user), optional
+  const purpose = type === BULK_ORDER_TYPE.MARKETING ? c.text(body[F.PURPOSE], F.PURPOSE, BULK_ORDERS.PURPOSE_MAX, false) || null : null;
   // delivery mode: Marketing (and Head office, which works like it) only (the design shows it only there)
   const mode = isMarketingLike(type) ? c.oneOf(body[F.MODE], F.MODE, BULK_DELIVERY_MODES) : null;
   const note = c.text(body[F.NOTE], F.NOTE, BULK_ORDERS.NOTE_MAX, false) || null;
@@ -359,7 +368,7 @@ const parseOrder = (body: Record<string, unknown>, fixedType?: BulkOrderType): O
   const lines = checkLines(c, body[F.LINES], type);
   const institution = type === BULK_ORDER_TYPE.INSTITUTIONAL ? checkInstitution(c, body) : null;
   c.fail();
-  return { type: type!, orderedBy, receiverName, phone: phone!, neededBy, priority: priority!, mode, note, locationId, address, saveAs, lines, institution };
+  return { type: type!, orderedBy, receiverName, phone: phone!, neededBy, priority: priority!, fastTrackRemarks, purpose, mode, note, locationId, address, saveAs, lines, institution };
 };
 
 /** Today's MRP / name / active of SKUs from OUR master (one read; never the cache, never the request). */
@@ -463,6 +472,7 @@ export const createBulkOrder = async (actor: BulkActor, body: Record<string, unk
     const res = await m.getRepository(BulkOrder).insert({
       poNumber, orderType: o.type, status: approval.needed ? BULK_ORDER_STATUS.PENDING_APPROVAL : BULK_ORDER_STATUS.SUBMITTED, orderedBy: o.orderedBy, receiverName: o.receiverName,
       receiverPhone: o.phone, ...where, neededBy: o.neededBy, deliveryMode: o.mode, priority: o.priority, note: o.note,
+      fastTrackRemarks: o.fastTrackRemarks, purpose: o.purpose,
       ...institutionCols(o.institution, where), ...totalsOf(priced), createdBy: actor.id, paymentStatus: paymentCheck ? BULK_PAYMENT_STATUS.AWAITING_PROOF : null,
     });
     const orderId = String(res.identifiers[0].id);
@@ -526,6 +536,7 @@ export const updateBulkOrder = async (actor: BulkActor, id: string, body: Record
     const where = await whereTo(m, o, actor.id);
     const next = {
       orderedBy: o.orderedBy, receiverName: o.receiverName, receiverPhone: o.phone, ...where, neededBy: o.neededBy,
+      fastTrackRemarks: o.fastTrackRemarks, purpose: o.purpose,
       deliveryMode: o.mode, priority: o.priority, note: o.note, ...institutionCols(o.institution, where),
     };
     const fields = (Object.keys(next) as (keyof typeof next)[]).filter((k) => String(cur[k] ?? '') !== String(next[k] ?? ''));
@@ -683,7 +694,7 @@ const orderOut = (o: BulkOrder, names: Map<number, string>) => ({
   id: String(o.id), poNumber: o.poNumber, type: o.orderType, status: o.status,
   orderedBy: o.orderedBy, receiverName: o.receiverName, receiverPhone: o.receiverPhone,
   location: { id: o.locationId ? String(o.locationId) : null, label: o.locationLabel, address: { line: o.addressLine, city: o.city, state: o.state, pincode: o.pincode } },
-  neededBy: o.neededBy, mode: o.deliveryMode, priority: o.priority, note: o.note,
+  neededBy: o.neededBy, mode: o.deliveryMode, priority: o.priority, note: o.note, fastTrackRemarks: o.fastTrackRemarks, purpose: o.purpose,
   // Institutional requester details (null on Marketing orders)
   institution: o.institutionName ? {
     name: o.institutionName, gstin: o.gstin, email: o.contactEmail,

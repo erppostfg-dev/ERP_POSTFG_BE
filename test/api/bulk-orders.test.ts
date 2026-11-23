@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { BulkCustomerAddresses1795300000000 } from '../../src/migrations/1795300000000-BulkCustomerAddresses';
+import { BulkOrderFields1795800000000 } from '../../src/migrations/1795800000000-BulkOrderFields';
 import { MARKETING_UNIT_PRICE } from '../../src/constants';
 import { api, loginAs, type TestLogin } from '../helpers/auth';
 import { closeDb, count, db, insert, resetDb, rows } from '../helpers/db';
@@ -37,7 +38,7 @@ const order = (over: Record<string, unknown> = {}) => {
   const discounted = over.type === 'institutional';
   const o: Record<string, unknown> = {
     type: 'marketing', orderedBy: 'Brand team', receiverName: 'Ravi Kumar', receiverPhone: '+91 98765-43210',
-    address: ADDRESS, neededBy: TOMORROW, mode: 'Courier', priority: 'Standard',
+    address: ADDRESS, neededBy: TOMORROW, mode: 'Regular', priority: 'Normal',
     lines: discounted ? [{ pepCode: 'SKU_A', qty: 10, discountPct: 30 }, { pepCode: 'SKU_B', qty: 3, discountPct: 12.5 }] : [{ pepCode: 'SKU_A', qty: 10 }, { pepCode: 'SKU_B', qty: 3 }],
     ...over,
   };
@@ -205,9 +206,9 @@ describe('bulk orders: create', () => {
     expect(res.body.error.details[1].message).toContain('no MRP');
   });
 
-  it('Institutional: no delivery mode (ignored); Standard priority by default', async () => {
+  it('Institutional: no delivery mode (ignored); Normal priority by default (v2 1d)', async () => {
     const o = (await create(inst, order({ type: 'institutional', mode: 'Porter', priority: undefined })).expect(201)).body.data;
-    expect(o).toMatchObject({ mode: null, priority: 'Standard', poNumber: `INST-${YEAR}-0001` });
+    expect(o).toMatchObject({ mode: null, priority: 'Normal', poNumber: `INST-${YEAR}-0001` });
   });
 
   it('touches nothing of the PO chain (no upload, PO, sale order or channel row)', async () => {
@@ -718,7 +719,7 @@ describe('bulk orders v2: Head office works like Marketing', () => {
 
   it('Marketing people create it (HO- series of its own), ₹0.01 a unit, a discount refused, delivery mode kept; Institutional people cannot', async () => {
     const o = (await create(mkt, order(HO)).expect(201)).body.data;
-    expect(o).toMatchObject({ poNumber: `HO-${YEAR}-0001`, type: 'head_office', mode: 'Courier', totalUnits: 13, totalValue: 0.13, payment: null });
+    expect(o).toMatchObject({ poNumber: `HO-${YEAR}-0001`, type: 'head_office', mode: 'Regular', totalUnits: 13, totalValue: 0.13, payment: null });
     expect(o.lines.map((l: Record<string, unknown>) => [l.pepCode, l.discountPct, l.unitPrice])).toEqual([['SKU_A', 0, 0.01], ['SKU_B', 0, 0.01]]);
     const m = (await create(mkt, order()).expect(201)).body.data;
     expect(m.poNumber).toBe(`MKT-${YEAR}-0001`); // Marketing's own series is untouched
@@ -877,5 +878,54 @@ describe('bulk orders v2: approval rules', () => {
     await api().put(`${S}/marketing`).set('Cookie', admin.cookie).send({ approvalOverUnits: null }).expect(200);
     expect((await create(mkt, units(5000)).expect(201)).body.data.status).toBe('submitted');
     expect((await create(mkt, units(5, { mode: 'Porter' })).expect(201)).body.data.status).toBe('pending_approval'); // Porter still
+  });
+});
+
+/*
+ * Bulk Orders Portal v2, piece 1d (2026-11-23): Normal / Fast-track (remarks required, Needed by required), Needed by
+ * optional for Normal, modes Porter / Regular, Purpose for Marketing only, every wrong field reported together; the
+ * migration BulkOrderFields renames Standard -> Normal and Courier / Self pickup -> Regular.
+ */
+describe('bulk orders v2: order form fields', () => {
+  it('Normal: Needed by optional (empty kept), no remarks kept; Fast-track: remarks + Needed by required, reported together', async () => {
+    const n = (await create(mkt, order({ neededBy: undefined, fastTrackRemarks: 'ignored on Normal' })).expect(201)).body.data;
+    expect(n).toMatchObject({ priority: 'Normal', neededBy: null, fastTrackRemarks: null });
+    const bad = await create(mkt, order({ priority: 'Fast-track', neededBy: undefined })).expect(400);
+    expect(fields(bad).sort()).toEqual(['fastTrackRemarks', 'neededBy']);
+    const f = (await create(mkt, order({ priority: 'Fast-track', fastTrackRemarks: 'Launch event on Friday' })).expect(201)).body.data;
+    expect(f).toMatchObject({ priority: 'Fast-track', neededBy: TOMORROW, fastTrackRemarks: 'Launch event on Friday' });
+    expect(fields(await create(mkt, order({ neededBy: '2020-01-01' })).expect(400))).toEqual(['neededBy']);
+  });
+
+  it('modes Porter / Regular only (old Courier refused); Purpose kept on Marketing only; special instructions = note', async () => {
+    expect(fields(await create(mkt, order({ mode: 'Courier' })).expect(400))).toEqual(['mode']);
+    expect(fields(await create(mkt, order({ priority: 'Standard' })).expect(400))).toEqual(['priority']);
+    const m = (await create(mkt, order({ purpose: 'Influencer seeding', note: 'Gift wrap each kit' })).expect(201)).body.data;
+    expect(m).toMatchObject({ mode: 'Regular', purpose: 'Influencer seeding', note: 'Gift wrap each kit' });
+    const ho = (await create(mkt, order({ type: 'head_office', purpose: 'not for head office' })).expect(201)).body.data;
+    expect(ho.purpose).toBeNull();
+    const i = (await create(inst, order({ type: 'institutional', purpose: 'x' })).expect(201)).body.data;
+    expect(i.purpose).toBeNull();
+    expect(fields(await create(mkt, order({ purpose: 'x'.repeat(201) })).expect(400))).toEqual(['purpose']);
+  });
+
+  it('edit keeps the new fields; switching to Normal drops the remarks', async () => {
+    const o = (await create(mkt, order({ priority: 'Fast-track', fastTrackRemarks: 'Urgent', purpose: 'Event' })).expect(201)).body.data as { id: string };
+    const e = (await api().put(`${V}/${o.id}`).set('Cookie', mkt.cookie).send(order({ neededBy: undefined, purpose: 'Event 2' })).expect(200)).body.data;
+    expect(e).toMatchObject({ priority: 'Normal', fastTrackRemarks: null, neededBy: null, purpose: 'Event 2' });
+  });
+
+  it('migration BulkOrderFields renames the old words (Standard -> Normal, Courier / Self pickup -> Regular) and down() puts them back', async () => {
+    const o = (await create(mkt, order()).expect(201)).body.data as { id: string };
+    await rows("UPDATE bulk_orders SET priority = 'Standard', delivery_mode = 'Self pickup' WHERE id = ?", [o.id]);
+    const qr = (await db()).createQueryRunner();
+    try {
+      await new BulkOrderFields1795800000000().down(qr);
+      await new BulkOrderFields1795800000000().up(qr);
+    } finally {
+      await qr.release();
+    }
+    expect((await rows<{ priority: string; delivery_mode: string }>('SELECT priority, delivery_mode FROM bulk_orders WHERE id = ?', [o.id]))[0])
+      .toEqual({ priority: 'Normal', delivery_mode: 'Regular' });
   });
 });

@@ -164,8 +164,14 @@ export const BULK_DOCS = {
 } as const;
 
 /** The design's markers (figma-make-bulk-orders types.ts): delivery mode (Marketing only) and priority. */
-export const BULK_DELIVERY_MODES = ['Porter', 'Courier', 'Self pickup'] as const;
-export const BULK_PRIORITIES = ['Standard', 'Fast-track'] as const;
+/**
+ * v2 1d (2026-11-23, user: "go with the suggestions"): modes Porter / Regular (Courier + Self pickup -> Regular, the
+ * migration renames old orders), priority Normal / Fast-track (Standard -> Normal). Fast-track: remarks required (why it
+ * is urgent) and a Needed by date; Normal: Needed by optional. Purpose: Marketing orders only (optional).
+ */
+export const BULK_DELIVERY_MODES = ['Porter', 'Regular'] as const;
+export const BULK_PRIORITIES = ['Normal', 'Fast-track'] as const;
+export const BULK_PRIORITY = { NORMAL: 'Normal', FAST_TRACK: 'Fast-track' } as const;
 
 /**
  * Price of every unit of a Marketing / Head office order in Uniware (Bulk Orders Portal v2, user 2026-11-23: "keep this
@@ -222,6 +228,9 @@ export const BULK_ORDERS = {
   ADDRESS_MAX: 500,
   CITY_MAX: 100,
   NOTE_MAX: 1000,
+  /** v2 1d: Fast-track remarks + Marketing purpose (= their columns). */
+  FAST_TRACK_REMARKS_MAX: 500,
+  PURPOSE_MAX: 200,
   /** 10 digits after spaces / dashes and a +91 or leading 0 are removed. */
   PHONE_RE: /^\d{10}$/,
   PINCODE_RE: /^[1-9]\d{5}$/,
@@ -317,7 +326,11 @@ export const BULK_BODY = {
   NEEDED_BY: 'neededBy',
   MODE: 'mode',
   PRIORITY: 'priority',
+  /** Shown as "Special instructions" (v2 1d; the field keeps its name). */
   NOTE: 'note',
+  /** v2 1d. */
+  FAST_TRACK_REMARKS: 'fastTrackRemarks',
+  PURPOSE: 'purpose',
   LINES: 'lines',
   LABEL: 'label',
   PEP_CODE: 'pepCode',

@@ -57,9 +57,9 @@ export class BulkOrder {
   @Column({ name: 'pincode', type: 'varchar', length: 10 })
   pincode: string;
 
-  /** YYYY-MM-DD */
-  @Column({ name: 'needed_by', type: 'date' })
-  neededBy: string;
+  /** YYYY-MM-DD; v2 1d: optional for a Normal order (NULL), required for Fast-track. */
+  @Column({ name: 'needed_by', type: 'date', nullable: true })
+  neededBy: string | null;
 
   /** BULK_DELIVERY_MODES (Marketing only; NULL for Institutional). */
   @Column({ name: 'delivery_mode', type: 'varchar', length: 20, nullable: true })
@@ -69,8 +69,17 @@ export class BulkOrder {
   @Column({ name: 'priority', type: 'varchar', length: 20 })
   priority: string;
 
+  /** Special instructions (shown to our team). */
   @Column({ name: 'note', type: 'varchar', length: 1000, nullable: true })
   note: string | null;
+
+  /** v2 1d: why a Fast-track order is urgent (required for Fast-track, NULL otherwise). */
+  @Column({ name: 'fast_track_remarks', type: 'varchar', length: 500, nullable: true })
+  fastTrackRemarks: string | null;
+
+  /** v2 1d: Marketing only, optional (e.g. influencer seeding, an event name). */
+  @Column({ name: 'purpose', type: 'varchar', length: 200, nullable: true })
+  purpose: string | null;
 
   /** Totals of the lines (kept so lists need no line query). */
   @Column({ name: 'line_count', type: 'int' })
