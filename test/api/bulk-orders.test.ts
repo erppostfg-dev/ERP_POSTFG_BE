@@ -32,7 +32,7 @@ let skuA: number;
 
 /** Institutional requester details (required since 2026-11-12); added to every Institutional order of the tests. */
 const INSTITUTION = { institutionName: 'Sunrise Public School', gstin: '27AAACS1234A1Z5', contactEmail: 'office@sunrise.example', billingSameAsDelivery: true };
-/** Default lines: Institutional with discounts (MRP less discount %); Marketing without (every unit ₹1, no discount, 2026-11-13). */
+/** Default lines: Institutional with discounts (MRP less discount %); Marketing without (every unit at MARKETING_UNIT_PRICE, no discount). */
 const order = (over: Record<string, unknown> = {}) => {
   const discounted = over.type === 'institutional';
   const o: Record<string, unknown> = {
@@ -149,7 +149,8 @@ describe('bulk orders: create', () => {
     expect(o.lines.map((l: Record<string, unknown>) => [l.pepCode, l.mrp, l.discountPct, l.unitPrice, l.lineTotal])).toEqual([['SKU_A', 100, 0, 0.01, 0.1], ['SKU_B', 349, 0, 0.01, 0.03]]);
     const res = await create(mkt, order({ lines: [{ pepCode: 'SKU_A', qty: 1, discountPct: 30 }] })).expect(400);
     expect(fields(res)).toEqual(['lines[0].discountPct']);
-    expect(res.body.error.details[0].message).toContain('no discount');
+    expect(res.body.error.details[0].message).toContain('take no discount');
+    expect(res.body.error.details[0].message).not.toMatch(/marketing|head_office|₹/); // no type code or price shown (v2: free orders)
     const edited = (await api().put(`${V}/${o.id}`).set('Cookie', mkt.cookie).send(order({ lines: [{ pepCode: 'SKU_B', qty: 5 }] })).expect(200)).body.data;
     expect(edited).toMatchObject({ totalValue: 0.05, totalMrp: 1745 });
   });

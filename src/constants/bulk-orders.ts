@@ -214,7 +214,7 @@ export const BULK_ORDERS_TEAM = {
 
 /**
  * Step 3b, processing an approved order into a sale order (user 2026-11-12). Institutional first; Marketing 2026-11-13 the
- * same way (user: Uniware channel (e.g. Jiva) + customer code typed for now, auto-filled later), every unit at ₹1
+ * same way (user: Uniware channel (e.g. Jiva) + customer code typed for now, auto-filled later), every unit at MARKETING_UNIT_PRICE (₹1 then; ₹0.01 since v2 2026-11-23)
  * (BULK_ORDERS.FIXED_UNIT_PRICE).
  *   - Our team member types the warehouse (facility), the Uniware channel and the Uniware customer code (both change
  *     often: he creates the customer in Uniware himself and types the code; POST_FG never creates customers).

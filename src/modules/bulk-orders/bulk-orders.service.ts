@@ -132,7 +132,8 @@ const unitPriceOf = (type: BulkOrderType, mrp: number, discountPct: number): num
 const discountProblem = (d: unknown, type: BulkOrderType | null): string =>
   !(typeof d === 'number' && Number.isFinite(d) && d >= 0 && d < BULK_ORDERS.DISCOUNT_MAX && round2(d) === d)
     ? `a % from 0 to below ${BULK_ORDERS.DISCOUNT_MAX} (${BULK_ORDERS.DISCOUNT_MAX}% is not allowed) with at most 2 decimals`
-    : fixedPrice(type) !== undefined && d !== 0 ? `0: ${type} orders have no discount (every unit at ₹${fixedPrice(type)})` : '';
+    // no type code or price in the words: Marketing / Head office people never see amounts ("Free order", v2 2026-11-23)
+    : fixedPrice(type) !== undefined && d !== 0 ? '0: Marketing / Head office orders take no discount (free orders)' : '';
 
 interface AddressIn { line: string; city: string; state: string; pincode: string }
 

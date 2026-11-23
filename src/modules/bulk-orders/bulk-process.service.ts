@@ -54,7 +54,7 @@ import { addEvent, Checker, isId, teamBulkOrder } from './bulk-orders.service';
  *   Optional "Send back" (Verify panel; po-verify sendBack -> bulkSendBack), to undo a wrong one: that sale order cancelled (Inactive, kept), the upload
  *        rejected (kept), the order approved again with the sale order cleared (kept on the timeline) to be processed again.
  * Payment is shown but NEVER blocks (user). Selling Price = the approved unit price (MRP less discount %, with GST); a
- * fixed-price type (Marketing: ₹1 a unit, 2026-11-13) always at that price, also an order approved before the rule (its
+ * fixed-price type (Marketing / Head office: MARKETING_UNIT_PRICE, ₹0.01 since v2 2026-11-23; ₹1 from 2026-11-13) always at that price, also an order approved before the rule (its
  * lines are set to it here, in the same transaction). Marketing has no institution: no customer book row (auto-fill later).
  */
 
