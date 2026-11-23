@@ -57,6 +57,9 @@ beforeEach(async () => {
   inst = await loginAs('bulk-institutional');
   approver = await loginAs('bulk-approver');
   opsExec = await loginAs('operations-executive');
+  // The tests written for v1 (every order waits for approval) keep that: threshold 0 for every type = any order needs
+  // approval. The v2 rules with the shipped values (100 / Porter / Institutional never) are tested in their own block.
+  await rows('UPDATE bulk_type_settings SET approval_over_units = 0');
 });
 afterAll(closeDb);
 
@@ -222,7 +225,7 @@ describe('bulk orders: list, one order, locations', () => {
     expect((await list('status=pending_approval')).meta.total).toBe(2);
     expect((await list('status=approved')).meta.total).toBe(0);
     const p = await list('pageSize=1&page=2');
-    expect([p.meta, p.data.length]).toEqual([{ total: 2, page: 2, pageSize: 1 }, 1]);
+    expect([p.meta, p.data.length]).toEqual([expect.objectContaining({ total: 2, page: 2, pageSize: 1 }), 1]); // + approvalRules (v2 1c)
     expect(p.data[0].orderedBy).toBe('Brand team');
     await api().get(`${V}?status=done`).set('Cookie', mkt.cookie).expect(400);
     await api().get(`${V}?pageSize=1000`).set('Cookie', mkt.cookie).expect(400);
@@ -792,5 +795,87 @@ describe('bulk orders v2: pricing rules', () => {
     expect(res.body.error.details[0].message).toContain('at least ₹1');
     const now = (await api().get(`${V}/${o.id}`).set('Cookie', inst.cookie).expect(200)).body.data;
     expect(now).toMatchObject({ status: 'pending_approval', totalValue: 90 });
+  });
+});
+
+/*
+ * Bulk Orders Portal v2, piece 1c (2026-11-23): approval only when the total units are MORE than the type's threshold
+ * (Marketing / Head office 100 as shipped by the migration, Institutional never) or the delivery is Porter; otherwise
+ * 'submitted' = straight to our team. Edits apply the rules again; the admin changes the threshold in Settings.
+ */
+describe('bulk orders v2: approval rules', () => {
+  const T = '/api/v1/po-review/bulk-orders';
+  const WH = 'MUM_WAREHOUSE2';
+  const units = (n: number, over: Record<string, unknown> = {}) => order({ lines: [{ pepCode: 'SKU_A', qty: n }], ...over });
+  beforeEach(async () => {
+    // the values the migration ships (this file's first beforeEach set every type to 0 for the v1 tests)
+    await rows("UPDATE bulk_type_settings SET approval_over_units = CASE order_type WHEN 'institutional' THEN NULL ELSE 100 END");
+  });
+
+  it('create: 100 units -> submitted, 101 -> pending (why on the timeline), Porter -> pending at any size; Head office the same; Institutional never', async () => {
+    const at100 = (await create(mkt, units(100)).expect(201)).body.data;
+    expect(at100.status).toBe('submitted');
+    expect(at100.events[0]).toMatchObject({ action: 'created', changes: { approval: [] } });
+    const at101 = (await create(mkt, units(101)).expect(201)).body.data;
+    expect(at101.status).toBe('pending_approval');
+    expect(at101.events[0].changes.approval).toEqual(['101 units (over 100)']);
+    const porter = (await create(mkt, units(5, { mode: 'Porter' })).expect(201)).body.data;
+    expect(porter.status).toBe('pending_approval');
+    expect(porter.events[0].changes.approval).toEqual(['Porter delivery']);
+    expect((await create(mkt, units(150, { type: 'head_office', mode: 'Porter' })).expect(201)).body.data.events[0].changes.approval)
+      .toEqual(['150 units (over 100)', 'Porter delivery']);
+    expect((await create(mkt, units(40, { type: 'head_office' })).expect(201)).body.data.status).toBe('submitted');
+    const big = (await create(inst, order({ type: 'institutional', lines: [{ pepCode: 'SKU_A', qty: 500, discountPct: 10 }] })).expect(201)).body.data;
+    expect(big.status).toBe('submitted');
+    // a submitted order is not the approver's: approve refused
+    expect((await api().post(`${V}/${at100.id}/approve`).set('Cookie', approver.cookie).send({}).expect(409)).body.error.code).toBe('BULK_ORDER_NOT_PENDING');
+  });
+
+  it('edits apply the rules again (both ways, on the timeline); a submitted order can be cancelled', async () => {
+    const o = (await create(mkt, units(50)).expect(201)).body.data as { id: string };
+    let e = (await api().put(`${V}/${o.id}`).set('Cookie', mkt.cookie).send(units(150)).expect(200)).body.data;
+    expect(e.status).toBe('pending_approval');
+    expect(e.events.at(-1).changes).toMatchObject({ status: ['submitted', 'pending_approval'], approval: ['150 units (over 100)'] });
+    e = (await api().put(`${V}/${o.id}`).set('Cookie', mkt.cookie).send(units(20)).expect(200)).body.data;
+    expect(e.status).toBe('submitted');
+    expect(e.events.at(-1).changes).toMatchObject({ status: ['pending_approval', 'submitted'], approval: [] });
+    e = (await api().put(`${V}/${o.id}`).set('Cookie', mkt.cookie).send(units(30)).expect(200)).body.data;
+    expect(e.events.at(-1).changes.status).toBeUndefined(); // status unchanged: no status entry
+    expect((await api().post(`${V}/${o.id}/cancel`).set('Cookie', mkt.cookie).send({}).expect(200)).body.data.status).toBe('cancelled');
+    expect((await api().put(`${V}/${o.id}`).set('Cookie', mkt.cookie).send(units(30)).expect(409)).body.error.code).toBe('BULK_ORDER_NOT_EDITABLE');
+  });
+
+  it('our team: a submitted order counts as waiting and is processed like an approved one; then no more edits; send back -> submitted again', async () => {
+    await insert('master_facilities', { code: WH, name: 'Bhiwandi', entity: 'PEP', state: 'Maharashtra', is_active: 1, source: 'manual', uniware_export: 0 });
+    const o = (await create(mkt, units(10)).expect(201)).body.data as { id: string };
+    expect((await api().get(T).set('Cookie', opsExec.cookie).expect(200)).body.meta.waiting.marketing).toBe(1);
+    expect((await api().get(`${T}?status=ready`).set('Cookie', opsExec.cookie).expect(200)).body.meta.total).toBe(1); // approved + submitted
+    await api().get(`${T}?status=nope`).set('Cookie', opsExec.cookie).expect(400);
+    const done = (await api().post(`${T}/${o.id}/process`).set('Cookie', opsExec.cookie).send({ facilityCode: WH, uniwareChannel: 'JIVA', customerCode: 'C1' }).expect(200)).body.data;
+    expect(done.status).toBe('processing');
+    expect((await api().put(`${V}/${o.id}`).set('Cookie', mkt.cookie).send(units(5)).expect(409)).body.error.code).toBe('BULK_ORDER_NOT_EDITABLE');
+    const [up] = await rows<{ id: string }>('SELECT id FROM po_uploads');
+    await api().post(`/api/v1/po-verify/${up.id}/send-back`).set('Cookie', opsExec.cookie).send({ remark: 'wrong warehouse' }).expect(200);
+    expect((await api().get(`${V}/${o.id}`).set('Cookie', mkt.cookie).expect(200)).body.data.status).toBe('submitted');
+  });
+
+  it('settings: admin changes the threshold (applies to new orders), null = never; checked; only admin', async () => {
+    const admin = await loginAs('admin');
+    const S = `${V}/settings`;
+    expect(((await api().get(S).set('Cookie', admin.cookie).expect(200)).body.data as { type: string; approvalOverUnits: number | null }[]).map((x) => [x.type, x.approvalOverUnits]))
+      .toEqual([['marketing', 100], ['head_office', 100], ['institutional', null]]);
+    for (const bad of [-1, 1.5, 'x', 2_000_000]) expect(fields(await api().put(`${S}/marketing`).set('Cookie', admin.cookie).send({ approvalOverUnits: bad }).expect(400))).toEqual(['approvalOverUnits']);
+    await api().put(`${S}/marketing`).set('Cookie', admin.cookie).send({}).expect(400);
+    await api().put(`${S}/marketing`).set('Cookie', mkt.cookie).send({ approvalOverUnits: 50 }).expect(403);
+    const after = (await api().put(`${S}/marketing`).set('Cookie', admin.cookie).send({ approvalOverUnits: 50 }).expect(200)).body.data;
+    expect(after[0]).toMatchObject({ type: 'marketing', approvalOverUnits: 50, paymentCheck: false }); // payment check kept
+    // the portal list tells the order form the rules of the types I see (not Institutional's for Marketing people)
+    expect((await api().get(V).set('Cookie', mkt.cookie).expect(200)).body.meta.approvalRules).toEqual({
+      marketing: { overUnits: 50, modes: ['Porter'] }, head_office: { overUnits: 100, modes: ['Porter'] } });
+    expect((await api().get(V).set('Cookie', inst.cookie).expect(200)).body.meta.approvalRules).toEqual({ institutional: { overUnits: null, modes: [] } });
+    expect((await create(mkt, units(60)).expect(201)).body.data.status).toBe('pending_approval');
+    await api().put(`${S}/marketing`).set('Cookie', admin.cookie).send({ approvalOverUnits: null }).expect(200);
+    expect((await create(mkt, units(5000)).expect(201)).body.data.status).toBe('submitted');
+    expect((await create(mkt, units(5, { mode: 'Porter' })).expect(201)).body.data.status).toBe('pending_approval'); // Porter still
   });
 });

@@ -22,6 +22,7 @@ import {
   UPLOAD_SOURCE,
   UPLOAD_STATUS,
   VALIDATION_STATUS,
+  BULK_PROCESSABLE_STATUSES,
 } from '../../constants';
 import { CACHE_NS } from '../../constants/cache';
 import { LOG_SOURCE } from '../../constants/logging';
@@ -231,7 +232,7 @@ export const processBulkOrder = async (actor: ProcessActor, id: string, body: Re
   c.fail();
   const first = await loadOrder(id);
   if (!BULK_SALE.TYPES.includes(first.orderType as BulkOrderType)) throw appError(ERROR_CODES.BULK_PROCESS_TYPE_LATER, first.orderType);
-  if (first.status !== BULK_ORDER_STATUS.APPROVED) throw appError(ERROR_CODES.BULK_ORDER_NOT_APPROVED, first.poNumber, first.status);
+  if (!BULK_PROCESSABLE_STATUSES.includes(first.status)) throw appError(ERROR_CODES.BULK_ORDER_NOT_APPROVED, first.poNumber, first.status);
   // the warehouse exactly as the facility master spells it (case matters: main vs child warehouse)
   const facility = await AppDataSource.getRepository(MasterFacility).findOne({ select: { id: true, code: true, isActive: true }, where: { code: facilityCode } });
   if (!facility || !facility.isActive) {
@@ -250,7 +251,7 @@ export const processBulkOrder = async (actor: ProcessActor, id: string, body: Re
   let code = '';
   await AppDataSource.transaction(async (m) => {
     const o = await m.getRepository(BulkOrder).findOne({ where: { id: String(first.id) }, lock: { mode: 'pessimistic_write' } });
-    if (!o || o.status !== BULK_ORDER_STATUS.APPROVED) throw appError(ERROR_CODES.BULK_ORDER_NOT_APPROVED, first.poNumber, o?.status ?? 'gone');
+    if (!o || !BULK_PROCESSABLE_STATUSES.includes(o.status)) throw appError(ERROR_CODES.BULK_ORDER_NOT_APPROVED, first.poNumber, o?.status ?? 'gone');
     const n = o.saleOrderCount + 1;
     // The saved PO's number: the order's own, then INST-2026-0001-2 ... after a send back (the cancelled one is kept,
     // and channel + PO number is unique on master_purchase_orders).
@@ -361,7 +362,8 @@ export const bulkSendBack = async (uploadId: string, remark: string, by: Process
     const o = await m.getRepository(BulkOrder).findOne({ where: { uploadId: String(u.id) }, lock: { mode: 'pessimistic_write' } });
     if (o) {
       await m.getRepository(BulkOrder).update({ id: String(o.id) }, {
-        status: BULK_ORDER_STATUS.APPROVED, facilityCode: null, uniwareChannel: null, customerCode: null, customerId: null,
+        // back to where it was: approved by someone, or submitted (v2 1c: no approval was needed)
+        status: o.decidedBy ? BULK_ORDER_STATUS.APPROVED : BULK_ORDER_STATUS.SUBMITTED, facilityCode: null, uniwareChannel: null, customerCode: null, customerId: null,
         processedBy: null, processedAt: null, uploadId: null, poUid: null, saleOrderCode: null, updatedAt: new Date(),
       });
       await addEvent(m, String(o.id), BULK_EVENT.SENT_BACK, by.id, remark, { saleOrderCode: so, uploadId: String(u.id) });

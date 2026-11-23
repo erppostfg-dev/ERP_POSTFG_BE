@@ -69,9 +69,39 @@ export const BULK_ORDER_STATUS = {
   CANCELLED: 'cancelled',
   /** Step 3b (2026-11-12): our team created its sale order in POST_FG (PO rows + erp_ code + Uniware CSV). */
   PROCESSING: 'processing',
+  /**
+   * v2 1c (2026-11-23): with our team, no approval needed (BULK_APPROVAL). Editable / cancellable by its type until the
+   * sale order is made, like a pending one; processed like an approved one.
+   */
+  SUBMITTED: 'submitted',
 } as const;
 export type BulkOrderStatus = (typeof BULK_ORDER_STATUS)[keyof typeof BULK_ORDER_STATUS];
 export const BULK_ORDER_STATUSES = Object.values(BULK_ORDER_STATUS) as BulkOrderStatus[];
+
+/** Statuses whose order our team may turn into a sale order (approved, or submitted = no approval needed). */
+export const BULK_PROCESSABLE_STATUSES: readonly string[] = [BULK_ORDER_STATUS.APPROVED, BULK_ORDER_STATUS.SUBMITTED];
+/** List filter `status=ready` (v2 1c): every order our team may process (BULK_PROCESSABLE_STATUSES), the team tab's default. */
+export const BULK_LIST_READY = 'ready';
+/** Statuses the requester may still edit / cancel (before approval, or before the sale order when none is needed). */
+export const BULK_EDITABLE_STATUSES: readonly string[] = [BULK_ORDER_STATUS.PENDING_APPROVAL, BULK_ORDER_STATUS.SUBMITTED];
+
+/**
+ * Approval rules (Bulk Orders Portal v2 piece 1c, 2026-11-23; user: "go with the suggestions"). An order needs approval
+ * when EITHER: its total units are MORE than its type's bulk_type_settings.approval_over_units (admin setting in POST_FG
+ * Users & Roles > Settings > Bulk Orders; Marketing + Head office 100, Institutional NULL = never), OR its delivery mode is
+ * in MODES (Marketing-like types only: Institutional has no mode). Otherwise SUBMITTED: straight to our team. Fast-track
+ * alone never needs approval. Checked on create and again on every edit (an edit can move it either way).
+ */
+export const BULK_APPROVAL = {
+  /** Default of a type's threshold (the migration seeds it; the admin changes it). */
+  DEFAULT_OVER_UNITS: 100,
+  /** Threshold limits on the settings form. */
+  OVER_UNITS_MAX: 1_000_000,
+  MODES: ['Porter'] as readonly string[],
+  /** Why words on the timeline / API (approval.why). */
+  WHY_UNITS: (units: number, over: number) => `${units} units (over ${over})`,
+  WHY_MODE: (mode: string) => `${mode} delivery`,
+} as const;
 
 /** Timeline rows (bulk_order_events.action), one per change of an order, in the same transaction as the change. */
 export const BULK_EVENT = {
@@ -303,6 +333,8 @@ export const BULK_BODY = {
   KIND: 'kind',
   ACTION: 'action',
   PAYMENT_CHECK: 'paymentCheck',
+  /** v2 1c: settings, the units threshold (null = never by units). */
+  APPROVAL_OVER_UNITS: 'approvalOverUnits',
   INSTITUTION: 'institutionName',
   GSTIN: 'gstin',
   EMAIL: 'contactEmail',

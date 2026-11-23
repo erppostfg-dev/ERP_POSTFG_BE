@@ -10,6 +10,7 @@ import {
   BULK_DOCS,
   BULK_EVENT,
   BULK_ORDER_STATUS,
+  BULK_APPROVAL,
   BULK_ORDER_TYPES,
   BULK_ORDERS,
   BULK_PAGE,
@@ -205,22 +206,38 @@ export const listBulkSettings = async (actor: BulkActor) => {
   return BULK_ORDER_TYPES.map((type) => {
     const x = rows.find((y) => y.orderType === type);
     return {
-      type, paymentCheck: x?.paymentCheck === true,
+      type, paymentCheck: x?.paymentCheck === true, approvalOverUnits: x?.approvalOverUnits ?? null,
       updatedBy: x?.updatedBy ? { id: x.updatedBy, name: names.get(x.updatedBy) ?? null } : null, updatedAt: x?.updatedAt ?? null,
     };
   });
 };
 
-/** { paymentCheck: boolean } for one type; applies to orders created after it. */
+/**
+ * { paymentCheck?: boolean, approvalOverUnits?: whole number 0..OVER_UNITS_MAX | null } for one type (at least one);
+ * applies to orders created (or edited) after it. v2 1c: approvalOverUnits = an order with MORE units needs approval,
+ * null = never by units (BULK_APPROVAL).
+ */
 export const updateBulkSetting = async (actor: BulkActor, type: string, body: Record<string, unknown>) => {
   await needSettingsAdmin(actor);
   const c = new Checker();
   const t = c.oneOf<BulkOrderType>(type, F.TYPE, BULK_ORDER_TYPES);
+  const has = (k: string) => Object.prototype.hasOwnProperty.call(body, k);
   const v = body[F.PAYMENT_CHECK];
-  if (typeof v !== 'boolean') c.add(F.PAYMENT_CHECK, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.PAYMENT_CHECK, 'true or false'));
+  if (has(F.PAYMENT_CHECK) && typeof v !== 'boolean') c.add(F.PAYMENT_CHECK, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.PAYMENT_CHECK, 'true or false'));
+  const u = body[F.APPROVAL_OVER_UNITS];
+  if (has(F.APPROVAL_OVER_UNITS) && u !== null && !(Number.isInteger(u) && (u as number) >= 0 && (u as number) <= BULK_APPROVAL.OVER_UNITS_MAX)) {
+    c.add(F.APPROVAL_OVER_UNITS, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.APPROVAL_OVER_UNITS, `a whole number 0 to ${BULK_APPROVAL.OVER_UNITS_MAX}, or null (never)`));
+  }
+  if (!has(F.PAYMENT_CHECK) && !has(F.APPROVAL_OVER_UNITS)) c.add(F.PAYMENT_CHECK, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.PAYMENT_CHECK, `${F.PAYMENT_CHECK} and / or ${F.APPROVAL_OVER_UNITS}`));
   c.fail();
-  await AppDataSource.getRepository(BulkTypeSetting).upsert({ orderType: t!, paymentCheck: v as boolean, updatedBy: actor.id, updatedAt: new Date() }, ['orderType']);
-  log.info(LOG_SOURCE.API, `[bulk-orders] setting ${t} paymentCheck=${String(v)} by user ${actor.id}`);
+  const repo = AppDataSource.getRepository(BulkTypeSetting);
+  const cur = await repo.findOneBy({ orderType: t! });
+  const next = {
+    paymentCheck: has(F.PAYMENT_CHECK) ? (v as boolean) : cur?.paymentCheck ?? false,
+    approvalOverUnits: has(F.APPROVAL_OVER_UNITS) ? (u as number | null) : cur?.approvalOverUnits ?? null,
+  };
+  await repo.upsert({ orderType: t!, ...next, updatedBy: actor.id, updatedAt: new Date() }, ['orderType']);
+  log.info(LOG_SOURCE.API, `[bulk-orders] setting ${t} paymentCheck=${String(next.paymentCheck)} approvalOverUnits=${String(next.approvalOverUnits)} by user ${actor.id}`);
   return listBulkSettings(actor);
 };
 

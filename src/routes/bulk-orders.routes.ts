@@ -44,8 +44,8 @@ import { sendDocument } from './bulk-documents.send';
  *   POST /bulk-orders/:id/payment                         { action: verify | refuse | not_needed, note? } (special permission
  *                                                         "Bulk Orders: verify payments", 2026-11-13; was the approver)
  * Settings (admin = editor on /bulk-orders):
- *   GET  /bulk-orders/settings                            per type: paymentCheck
- *   PUT  /bulk-orders/settings/:type                      { paymentCheck: boolean } (orders created after it)
+ *   GET  /bulk-orders/settings                            per type: paymentCheck, approvalOverUnits
+ *   PUT  /bulk-orders/settings/:type                      { paymentCheck?, approvalOverUnits? } (orders created after it)
  */
 
 const router = Router();

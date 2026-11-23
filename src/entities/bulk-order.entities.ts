@@ -443,6 +443,10 @@ export class BulkTypeSetting {
   @Column({ name: 'payment_check', type: 'boolean', default: false })
   paymentCheck: boolean;
 
+  /** v2 1c (2026-11-23): an order with MORE units than this needs approval; NULL = never by units (BULK_APPROVAL). */
+  @Column({ name: 'approval_over_units', type: 'int', nullable: true })
+  approvalOverUnits: number | null;
+
   @Column({ name: 'updated_by', type: 'int', nullable: true })
   updatedBy: number | null;
 

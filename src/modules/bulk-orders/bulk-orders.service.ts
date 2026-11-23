@@ -10,7 +10,11 @@ import {
   BulkEventAction,
   BULK_ORDER_STATUS,
   BULK_ORDER_STATUSES,
+  BULK_APPROVAL,
+  BULK_EDITABLE_STATUSES,
+  BULK_LIST_READY,
   BULK_ORDER_TYPE,
+  BULK_PROCESSABLE_STATUSES,
   isMarketingLike,
   BULK_ORDER_TYPES,
   BULK_ORDERS,
@@ -428,25 +432,43 @@ const whereTo = async (m: EntityManager, o: OrderIn, userId: number) => {
 export const addEvent = (m: EntityManager, orderId: string, action: BulkEventAction, by: number, note: string | null, changes: unknown = null) =>
   m.getRepository(BulkOrderEvent).insert({ orderId, action, byUserId: by, note, changes: changes as object | null });
 
-/** Creates a bulk order (editor on its type): prices from the PEP SKU master, a new PO number, pending approval. */
+/**
+ * Does an order need approval (v2 1c, BULK_APPROVAL)? More units than the type's threshold, or a Porter delivery
+ * (Marketing-like types). `why` = the reasons for the timeline / API, empty when not needed.
+ */
+const approvalNeed = (setting: BulkTypeSetting | null, type: BulkOrderType, units: number, mode: string | null): { needed: boolean; why: string[] } => {
+  const why: string[] = [];
+  const over = setting?.approvalOverUnits ?? null;
+  if (over !== null && units > over) why.push(BULK_APPROVAL.WHY_UNITS(units, over));
+  if (isMarketingLike(type) && mode && BULK_APPROVAL.MODES.includes(mode)) why.push(BULK_APPROVAL.WHY_MODE(mode));
+  return { needed: why.length > 0, why };
+};
+const settingOf = (type: BulkOrderType) => AppDataSource.getRepository(BulkTypeSetting).findOneBy({ orderType: type });
+
+/**
+ * Creates a bulk order (editor on its type): prices from the PEP SKU master, a new PO number; pending approval when the
+ * approval rules say so (v2 1c), else submitted (straight to our team).
+ */
 export const createBulkOrder = async (actor: BulkActor, body: Record<string, unknown>) => {
   const o = parseOrder(body);
   needType(await bulkRights(actor), o.type, ACCESS_LEVEL.EDITOR);
   const priced = await priceLines(o.type, o.lines);
-  const paymentCheck = (await AppDataSource.getRepository(BulkTypeSetting).findOneBy({ orderType: o.type }))?.paymentCheck === true;
+  const setting = await settingOf(o.type);
+  const paymentCheck = setting?.paymentCheck === true;
+  const approval = approvalNeed(setting, o.type, totalsOf(priced).totalUnits, o.mode);
 
   const id = await withDeadlockRetry(() => AppDataSource.transaction(async (m) => {
     const where = await whereTo(m, o, actor.id);
     const poNumber = await takeBulkPoNumber(m, o.type);
     const res = await m.getRepository(BulkOrder).insert({
-      poNumber, orderType: o.type, status: BULK_ORDER_STATUS.PENDING_APPROVAL, orderedBy: o.orderedBy, receiverName: o.receiverName,
+      poNumber, orderType: o.type, status: approval.needed ? BULK_ORDER_STATUS.PENDING_APPROVAL : BULK_ORDER_STATUS.SUBMITTED, orderedBy: o.orderedBy, receiverName: o.receiverName,
       receiverPhone: o.phone, ...where, neededBy: o.neededBy, deliveryMode: o.mode, priority: o.priority, note: o.note,
       ...institutionCols(o.institution, where), ...totalsOf(priced), createdBy: actor.id, paymentStatus: paymentCheck ? BULK_PAYMENT_STATUS.AWAITING_PROOF : null,
     });
     const orderId = String(res.identifiers[0].id);
     await m.getRepository(BulkOrderLine).insert(priced.map((l) => ({ ...l, orderId })));
-    await addEvent(m, orderId, BULK_EVENT.CREATED, actor.id, o.note);
-    log.info(LOG_SOURCE.API, `[bulk-orders] ${poNumber} created (${o.type}, ${priced.length} SKUs) by user ${actor.id}`);
+    await addEvent(m, orderId, BULK_EVENT.CREATED, actor.id, o.note, { approval: approval.why });
+    log.info(LOG_SOURCE.API, `[bulk-orders] ${poNumber} created (${o.type}, ${priced.length} SKUs, ${approval.needed ? `approval: ${approval.why.join(', ')}` : 'no approval needed'}) by user ${actor.id}`);
     return orderId;
   }));
   return getBulkOrder(actor, id);
@@ -460,6 +482,17 @@ const lockPending = async (m: EntityManager, id: string): Promise<BulkOrder> => 
   const o = await m.getRepository(BulkOrder).findOne({ where: { id }, lock: { mode: 'pessimistic_write' } });
   if (!o) throw appError(ERROR_CODES.BULK_ORDER_NOT_FOUND, id);
   if (o.status !== BULK_ORDER_STATUS.PENDING_APPROVAL) throw appError(ERROR_CODES.BULK_ORDER_NOT_PENDING, o.poNumber, o.status);
+  return o;
+};
+
+/**
+ * The order locked for the requester's edit / cancel (v2 1c): pending approval, or submitted (no approval needed, sale
+ * order not made yet). 409 BULK_ORDER_NOT_EDITABLE otherwise.
+ */
+const lockEditable = async (m: EntityManager, id: string): Promise<BulkOrder> => {
+  const o = await m.getRepository(BulkOrder).findOne({ where: { id }, lock: { mode: 'pessimistic_write' } });
+  if (!o) throw appError(ERROR_CODES.BULK_ORDER_NOT_FOUND, id);
+  if (!BULK_EDITABLE_STATUSES.includes(o.status)) throw appError(ERROR_CODES.BULK_ORDER_NOT_EDITABLE, o.poNumber, o.status);
   return o;
 };
 
@@ -484,8 +517,11 @@ export const updateBulkOrder = async (actor: BulkActor, id: string, body: Record
   needType(r, t, ACCESS_LEVEL.EDITOR);
   const o = parseOrder(body, t);
   const priced = await priceLines(t, o.lines);
+  const approval = approvalNeed(await settingOf(t), t, totalsOf(priced).totalUnits, o.mode);
   await AppDataSource.transaction(async (m) => {
-    const cur = await lockPending(m, id);
+    const cur = await lockEditable(m, id);
+    // the rules again (v2 1c): an edit may need approval now, or no longer
+    const status = approval.needed ? BULK_ORDER_STATUS.PENDING_APPROVAL : BULK_ORDER_STATUS.SUBMITTED;
     const before = await m.getRepository(BulkOrderLine).find({ where: { orderId: id }, order: { lineNo: 'ASC' } });
     const where = await whereTo(m, o, actor.id);
     const next = {
@@ -495,8 +531,11 @@ export const updateBulkOrder = async (actor: BulkActor, id: string, body: Record
     const fields = (Object.keys(next) as (keyof typeof next)[]).filter((k) => String(cur[k] ?? '') !== String(next[k] ?? ''));
     await m.getRepository(BulkOrderLine).delete({ orderId: id });
     await m.getRepository(BulkOrderLine).insert(priced.map((l) => ({ ...l, orderId: id })));
-    await m.getRepository(BulkOrder).update({ id }, { ...next, ...totalsOf(priced), updatedAt: new Date() });
-    await addEvent(m, id, BULK_EVENT.EDITED, actor.id, null, { fields, linesBefore: lineSummary(before), linesAfter: lineSummary(priced) });
+    await m.getRepository(BulkOrder).update({ id }, { ...next, ...totalsOf(priced), status, updatedAt: new Date() });
+    await addEvent(m, id, BULK_EVENT.EDITED, actor.id, null, {
+      fields, linesBefore: lineSummary(before), linesAfter: lineSummary(priced),
+      ...(status !== cur.status ? { status: [cur.status, status], approval: approval.why } : {}),
+    });
     log.info(LOG_SOURCE.API, `[bulk-orders] ${cur.poNumber} edited by user ${actor.id}`);
   });
   return getBulkOrder(actor, id);
@@ -510,7 +549,7 @@ export const cancelBulkOrder = async (actor: BulkActor, id: string, body: Record
   const reason = c.text(body[F.REASON], F.REASON, BULK_ORDERS.NOTE_MAX, false) || null;
   c.fail();
   await AppDataSource.transaction(async (m) => {
-    const cur = await lockPending(m, id);
+    const cur = await lockEditable(m, id);
     await m.getRepository(BulkOrder).update({ id }, { status: BULK_ORDER_STATUS.CANCELLED, updatedAt: new Date() });
     await addEvent(m, id, BULK_EVENT.CANCELLED, actor.id, reason);
     log.info(LOG_SOURCE.API, `[bulk-orders] ${cur.poNumber} cancelled by user ${actor.id}`);
@@ -677,7 +716,8 @@ interface ListQuery { type: BulkOrderType | null; status: string | null; payment
 const parseListQuery = (q: Record<string, unknown>): ListQuery => {
   const c = new Checker();
   const type = q.type === undefined || q.type === '' ? null : typeParam(c, q.type);
-  const status = q.status === undefined || q.status === '' ? null : c.oneOf(q.status, 'status', BULK_ORDER_STATUSES);
+  // a status, or BULK_LIST_READY = approved + submitted (v2 1c: what our team may process)
+  const status = q.status === undefined || q.status === '' ? null : c.oneOf(q.status, 'status', [...BULK_ORDER_STATUSES, BULK_LIST_READY]);
   // payment status (2026-11-13: "Payments to verify" = proof_uploaded)
   const payment = q.payment === undefined || q.payment === '' ? null : c.oneOf(q.payment, 'payment', BULK_PAYMENT_STATUSES);
   const page = q.page === undefined ? 1 : Number(q.page);
@@ -693,7 +733,8 @@ const parseListQuery = (q: Record<string, unknown>): ListQuery => {
 const pageOfOrders = async (types: BulkOrderType[], l: ListQuery) => {
   if (!types.length) return { items: [], meta: { total: 0, page: l.page, pageSize: l.size } };
   const qb = AppDataSource.getRepository(BulkOrder).createQueryBuilder('o').where('o.orderType IN (:...types)', { types });
-  if (l.status) qb.andWhere('o.status = :status', { status: l.status });
+  if (l.status === BULK_LIST_READY) qb.andWhere('o.status IN (:...ready)', { ready: [...BULK_PROCESSABLE_STATUSES] });
+  else if (l.status) qb.andWhere('o.status = :status', { status: l.status });
   if (l.payment) qb.andWhere('o.paymentStatus = :payment', { payment: l.payment });
   if (l.search) {
     const like = `%${l.search.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
@@ -709,7 +750,14 @@ export const listBulkOrders = async (actor: BulkActor, q: Record<string, unknown
   const l = parseListQuery(q);
   const r = await needAnyBulk(actor);
   if (l.type) needType(r, l.type, ACCESS_LEVEL.VIEWER);
-  return pageOfOrders(l.type ? [l.type] : viewable(r), l);
+  const types = l.type ? [l.type] : viewable(r);
+  // v2 1c: the approval rules of the types I see, so the order form can say before Submit whether approval is needed
+  const [found, settings] = await Promise.all([pageOfOrders(types, l), AppDataSource.getRepository(BulkTypeSetting).find()]);
+  const approvalRules = Object.fromEntries(types.map((t) => [t, {
+    overUnits: settings.find((s) => s.orderType === t)?.approvalOverUnits ?? null,
+    modes: isMarketingLike(t) ? [...BULK_APPROVAL.MODES] : [],
+  }]));
+  return { ...found, meta: { ...found.meta, approvalRules } };
 };
 
 /** One order with lines + timeline (no access check: the callers check). */
@@ -754,8 +802,8 @@ export const teamBulkOrders = async (q: Record<string, unknown>) => {
   const [found, counts] = await Promise.all([
     pageOfOrders(l.type ? [l.type] : BULK_ORDER_TYPES, l),
     AppDataSource.getRepository(BulkOrder).createQueryBuilder('o').select('o.orderType', 'type')
-      .addSelect('SUM(o.status = :s)', 'n').addSelect('SUM(o.paymentStatus = :p AND o.status NOT IN (:...closed))', 'pay')
-      .where('(o.status = :s OR o.paymentStatus = :p)', { s: BULK_ORDER_STATUS.APPROVED, p: BULK_PAYMENT_STATUS.PROOF_UPLOADED, closed: [BULK_ORDER_STATUS.REJECTED, BULK_ORDER_STATUS.CANCELLED] })
+      .addSelect('SUM(o.status IN (:...ready))', 'n').addSelect('SUM(o.paymentStatus = :p AND o.status NOT IN (:...closed))', 'pay')
+      .where('(o.status IN (:...ready) OR o.paymentStatus = :p)', { ready: [...BULK_PROCESSABLE_STATUSES], p: BULK_PAYMENT_STATUS.PROOF_UPLOADED, closed: [BULK_ORDER_STATUS.REJECTED, BULK_ORDER_STATUS.CANCELLED] })
       .groupBy('o.orderType').getRawMany<{ type: string; n: string | null; pay: string | null }>(),
   ]);
   const per = (k: 'n' | 'pay') => Object.fromEntries(BULK_ORDER_TYPES.map((t) => [t, Number(counts.find((c) => c.type === t)?.[k] ?? 0)])) as Record<BulkOrderType, number>;
