@@ -1,5 +1,6 @@
 import { CHANNEL_MASTER_IDS, CHANNELS } from '../../src/constants';
 import type { ProcessedLine, ProcessedPo } from '../../src/modules/po-processing/common/processed-po';
+import { FUTURE_EXPIRY } from './dates';
 import { insert } from './db';
 
 /*
@@ -63,7 +64,7 @@ const line = (m: Masters, overrides: Partial<ProcessedLine> = {}): ProcessedLine
 export const bigBasketPo = (m: Masters, overrides: Partial<ProcessedPo> = {}): ProcessedPo => ({
   channel_name: CHANNELS.BIGBASKET, input_type: 'sheet', ref_file_urls: [], po_number: 'IRA90000001', po_date: '2026-10-26',
   type_delivery_facility: '', delivery_facility_code: m.locationCode, delivery_pincode: '400001', total_line_items: 1, total_qty: 10,
-  po_value: 3493, expected_date: '2026-11-05', appointment_date: '', expiry_date: '2026-12-31', delivery_gstin: '27AAACI1234A1Z5', vendor_gstin: '',
+  po_value: 3493, expected_date: '2026-11-05', appointment_date: '', expiry_date: FUTURE_EXPIRY, delivery_gstin: '27AAACI1234A1Z5', vendor_gstin: '',
   cart_discount: 0, net_amount: 3493, po_type: '', revised: false, revision_of: '', line_items: [line(m)], unmapped: {},
   ...overrides,
 } as ProcessedPo);

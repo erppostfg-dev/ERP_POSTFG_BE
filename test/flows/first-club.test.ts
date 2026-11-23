@@ -9,6 +9,7 @@ import { api, loginAs } from '../helpers/auth';
 import { closeDb, db, insert, resetDb, rows } from '../helpers/db';
 import { s3Objects } from '../helpers/fake-s3';
 import { seedMasters } from '../helpers/fixtures';
+import { FUTURE_EXPIRY } from '../helpers/dates';
 import { FC, fcRaw as raw, seedFirstClub } from '../helpers/first-club';
 
 /*
@@ -46,7 +47,7 @@ describe('First Club PDF -> processed.json (first-club.handler)', () => {
   it('reads the header (PO No. as printed), the lines (SKU Code = channel code, IGST %, price with tax = Unit Cost x 1.18) and the Grand Total', async () => {
     const po = await process();
     expect(po).toMatchObject({
-      channel_name: 'first_club', po_number: 'PO-199751-FRHHYDMDL01', po_date: '2026-10-18', expected_date: '2026-11-17', expiry_date: '2026-11-22',
+      channel_name: 'first_club', po_number: 'PO-199751-FRHHYDMDL01', po_date: '2026-10-18', expected_date: '2026-11-17', expiry_date: FUTURE_EXPIRY,
       delivery_pincode: '500078', delivery_gstin: '36AAGCF0834Q1Z9', vendor_gstin: '27AAICP2804J1ZC',
       total_line_items: 6, total_qty: 290, po_value: 88312.47, cart_discount: 0, net_amount: 88312.47,
     });
