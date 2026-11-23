@@ -11,6 +11,7 @@ import {
   BULK_ORDER_STATUS,
   BULK_ORDER_STATUSES,
   BULK_ORDER_TYPE,
+  isMarketingLike,
   BULK_ORDER_TYPES,
   BULK_ORDERS,
   BULK_PAGE,
@@ -330,8 +331,8 @@ const parseOrder = (body: Record<string, unknown>, fixedType?: BulkOrderType): O
   if (neededBy && !isDay(neededBy)) c.add(F.NEEDED_BY, errorMessage(ERROR_CODES.FIELD_NOT_DAY, F.NEEDED_BY));
   else if (neededBy && neededBy < todayIst()) c.add(F.NEEDED_BY, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.NEEDED_BY, 'today or later'));
   const priority = c.oneOf(body[F.PRIORITY] ?? BULK_PRIORITIES[0], F.PRIORITY, BULK_PRIORITIES);
-  // delivery mode: Marketing only (the design shows it only there)
-  const mode = type === BULK_ORDER_TYPE.MARKETING ? c.oneOf(body[F.MODE], F.MODE, BULK_DELIVERY_MODES) : null;
+  // delivery mode: Marketing (and Head office, which works like it) only (the design shows it only there)
+  const mode = isMarketingLike(type) ? c.oneOf(body[F.MODE], F.MODE, BULK_DELIVERY_MODES) : null;
   const note = c.text(body[F.NOTE], F.NOTE, BULK_ORDERS.NOTE_MAX, false) || null;
   // where: a saved location (its id) or an address typed now (+ optional name to save it under)
   const rawLocation = body[F.LOCATION_ID];

@@ -17,17 +17,29 @@
  * payment, timeline, M1 (Uniware customer code).
  */
 
-/** The two kinds of bulk order (stored value). */
+/** The kinds of bulk order (stored value). */
 export const BULK_ORDER_TYPE = {
   MARKETING: 'marketing',
+  /** Head office (office use; Bulk Orders Portal v2, 2026-11-23): works exactly like Marketing (MARKETING_LIKE_TYPES). */
+  HEAD_OFFICE: 'head_office',
   INSTITUTIONAL: 'institutional',
 } as const;
 export type BulkOrderType = (typeof BULK_ORDER_TYPE)[keyof typeof BULK_ORDER_TYPE];
 export const BULK_ORDER_TYPES = Object.values(BULK_ORDER_TYPE) as BulkOrderType[];
 
-/** PO number prefix per type: MKT-2026-0001. */
+/**
+ * Types that behave like Marketing (user 2026-11-23: "if it works like marketing then build like marketing"): same
+ * people (the Marketing page / role raises both), same approvers, fixed unit price (no amounts on the portal), delivery
+ * mode, no institution details, no payment check, the saved PO in channel "Bulk Marketing" (group Marketing). A rule
+ * written for Marketing uses isMarketingLike() so it covers Head office too.
+ */
+export const MARKETING_LIKE_TYPES: readonly BulkOrderType[] = [BULK_ORDER_TYPE.MARKETING, BULK_ORDER_TYPE.HEAD_OFFICE];
+export const isMarketingLike = (type: string | null | undefined): boolean => MARKETING_LIKE_TYPES.includes(type as BulkOrderType);
+
+/** PO number prefix per type: MKT-2026-0001, HO-2026-0001, INST-2026-0001. */
 export const BULK_PO_PREFIX: Record<BulkOrderType, string> = {
   [BULK_ORDER_TYPE.MARKETING]: 'MKT',
+  [BULK_ORDER_TYPE.HEAD_OFFICE]: 'HO',
   [BULK_ORDER_TYPE.INSTITUTIONAL]: 'INST',
 };
 
@@ -39,9 +51,10 @@ export const BULK_PAGE = {
   APPROVE: '/bulk-orders/approve',
 } as const;
 
-/** The page that gives access to a type's orders. */
+/** The page that gives access to a type's orders (Head office = the Marketing page: the same people, user 2026-11-23). */
 export const BULK_TYPE_PAGE: Record<BulkOrderType, string> = {
   [BULK_ORDER_TYPE.MARKETING]: BULK_PAGE.MARKETING,
+  [BULK_ORDER_TYPE.HEAD_OFFICE]: BULK_PAGE.MARKETING,
   [BULK_ORDER_TYPE.INSTITUTIONAL]: BULK_PAGE.INSTITUTIONAL,
 };
 
@@ -154,7 +167,7 @@ export const BULK_ORDERS = {
    * same for everything, no discounts"): every unit at this price (with GST), no discount (a discount sent = 400), the
    * Uniware CSV Selling Price = this; the portal shows no money on these orders. A type not listed = MRP less discount %.
    */
-  FIXED_UNIT_PRICE: { [BULK_ORDER_TYPE.MARKETING]: 1 } as Partial<Record<BulkOrderType, number>>,
+  FIXED_UNIT_PRICE: { [BULK_ORDER_TYPE.MARKETING]: 1, [BULK_ORDER_TYPE.HEAD_OFFICE]: 1 } as Partial<Record<BulkOrderType, number>>,
   /** SKU search: at least this many characters, at most this many answers. */
   SKU_QUERY_MIN: 2,
   SKU_RESULTS_MAX: 20,
@@ -211,9 +224,9 @@ export const BULK_ORDERS_TEAM = {
  */
 export const BULK_SALE = {
   /** Order types our team can process now (Institutional 2026-11-12, Marketing 2026-11-13). */
-  TYPES: [BULK_ORDER_TYPE.INSTITUTIONAL, BULK_ORDER_TYPE.MARKETING] as BulkOrderType[],
+  TYPES: [BULK_ORDER_TYPE.INSTITUTIONAL, BULK_ORDER_TYPE.MARKETING, BULK_ORDER_TYPE.HEAD_OFFICE] as BulkOrderType[],
   /** Types whose processed address + code goes into the customer book (bulk_customers): both since 2026-11-13 (user). */
-  CUSTOMER_BOOK_TYPES: [BULK_ORDER_TYPE.INSTITUTIONAL, BULK_ORDER_TYPE.MARKETING] as BulkOrderType[],
+  CUSTOMER_BOOK_TYPES: [BULK_ORDER_TYPE.INSTITUTIONAL, BULK_ORDER_TYPE.MARKETING, BULK_ORDER_TYPE.HEAD_OFFICE] as BulkOrderType[],
   /** po_uploads.source_system; external_id = the saved PO's number (SALE_PO). */
   SOURCE_SYSTEM: 'bulk_orders',
   /**
@@ -222,14 +235,19 @@ export const BULK_SALE = {
    */
   SALE_PO: (poNumber: string, n: number) => (n <= 1 ? poNumber : `${poNumber}-${n}`),
   /** master_purchase_orders.channel / po_uploads.channel (our name; the Uniware channel is typed per order). */
-  CHANNEL: { [BULK_ORDER_TYPE.MARKETING]: 'Bulk Marketing', [BULK_ORDER_TYPE.INSTITUTIONAL]: 'Bulk Institutional' } as Record<BulkOrderType, string>,
+  /** Head office shares Marketing's channel (and so group Marketing in PO Overview; user 2026-11-23). */
+  CHANNEL: {
+    [BULK_ORDER_TYPE.MARKETING]: 'Bulk Marketing', [BULK_ORDER_TYPE.HEAD_OFFICE]: 'Bulk Marketing', [BULK_ORDER_TYPE.INSTITUTIONAL]: 'Bulk Institutional',
+  } as Record<BulkOrderType, string>,
   /**
    * master_channels ids of those two names (migration BulkOrderProcessing, switched OFF): there only for the saved PO's
    * channel FK; the Masters pages / forms leave them out (not a channel the masters team keeps).
    */
   CHANNEL_IDS: [9101, 9102] as number[],
   /** processed.json channel_name. */
-  CHANNEL_NAME: { [BULK_ORDER_TYPE.MARKETING]: 'bulk_marketing', [BULK_ORDER_TYPE.INSTITUTIONAL]: 'bulk_institutional' } as Record<BulkOrderType, string>,
+  CHANNEL_NAME: {
+    [BULK_ORDER_TYPE.MARKETING]: 'bulk_marketing', [BULK_ORDER_TYPE.HEAD_OFFICE]: 'bulk_marketing', [BULK_ORDER_TYPE.INSTITUTIONAL]: 'bulk_institutional',
+  } as Record<BulkOrderType, string>,
   /** S3: bulk-orders/<PO number>/sale-order-<n>/ (order.json = the "PO file", processed.json, the Uniware CSV). */
   S3_SUB: (n: number) => `sale-order-${n}`,
   ORDER_FILE: 'order.json',

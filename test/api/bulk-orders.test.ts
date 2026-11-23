@@ -375,7 +375,7 @@ describe('bulk orders: payment check + documents + settings (2026-11-12)', () =>
     for (const who of [mkt, approver, opsExec]) expect((await api().get(`${V}/settings`).set('Cookie', who.cookie).expect(403)).body.error.code).toBe('BULK_NOT_SETTINGS_ADMIN');
     const admin = await loginAs('admin');
     expect((await api().get(`${V}/settings`).set('Cookie', admin.cookie).expect(200)).body.data.map((x: { type: string; paymentCheck: boolean }) => [x.type, x.paymentCheck]))
-      .toEqual([['marketing', false], ['institutional', true]]);
+      .toEqual([['marketing', false], ['head_office', false], ['institutional', true]]); // head_office: v2 1a, no row = off
     await api().put(`${V}/settings/marketing`).set('Cookie', admin.cookie).send({ paymentCheck: 'yes' }).expect(400);
     await api().put(`${V}/settings/other`).set('Cookie', admin.cookie).send({ paymentCheck: true }).expect(400);
     await api().put(`${V}/settings/marketing`).set('Cookie', mkt.cookie).send({ paymentCheck: true }).expect(403);
@@ -465,7 +465,7 @@ describe('bulk orders: payment check + documents + settings (2026-11-12)', () =>
 
     const toVerify = (await api().get(`${T}?type=institutional&payment=proof_uploaded`).set('Cookie', opsExec.cookie).expect(200)).body;
     expect(toVerify.data.map((o: { id: string }) => o.id)).toEqual([b.id, a.id]);
-    expect(toVerify.meta.paymentsToVerify).toEqual({ marketing: 0, institutional: 1 });
+    expect(toVerify.meta.paymentsToVerify).toEqual({ marketing: 0, head_office: 0, institutional: 1 });
     expect(fields(await api().get(`${T}?payment=paid`).set('Cookie', opsExec.cookie).expect(400))).toEqual(['payment']);
 
     // PO review editor without the permission: refused; portal-only people: no PO review page
@@ -698,5 +698,57 @@ describe('bulk orders step 3b: Institutional requester details + our team create
     expect(again.status).toBe('processing');
     expect((await rows<{ external_id: string }>('SELECT external_id FROM po_uploads ORDER BY id')).map((r) => r.external_id)).toEqual([i.poNumber, `${i.poNumber}-2`]);
     expect([...s3Objects(`bulk-orders/${i.poNumber}/sale-order-2/`).keys()].some((k) => k.endsWith('order.json'))).toBe(true);
+  });
+});
+
+/*
+ * Bulk Orders Portal v2, piece 1a (2026-11-23, user: "if it works like marketing then build like marketing"): Head office
+ * orders = the Marketing people (Marketing page / role), the same approvers, HO-<year>-NNNN, ₹1 a unit with no discount,
+ * no institution details / payment check, the saved PO in channel Bulk Marketing (group Marketing).
+ */
+describe('bulk orders v2: Head office works like Marketing', () => {
+  const T = '/api/v1/po-review/bulk-orders';
+  const WH = 'MUM_WAREHOUSE2';
+  const HO = { type: 'head_office' };
+
+  it('Marketing people create it (HO- series of its own), ₹1 a unit, a discount refused, delivery mode kept; Institutional people cannot', async () => {
+    const o = (await create(mkt, order(HO)).expect(201)).body.data;
+    expect(o).toMatchObject({ poNumber: `HO-${YEAR}-0001`, type: 'head_office', mode: 'Courier', totalUnits: 13, totalValue: 13, payment: null });
+    expect(o.lines.map((l: Record<string, unknown>) => [l.pepCode, l.discountPct, l.unitPrice])).toEqual([['SKU_A', 0, 1], ['SKU_B', 0, 1]]);
+    const m = (await create(mkt, order()).expect(201)).body.data;
+    expect(m.poNumber).toBe(`MKT-${YEAR}-0001`); // Marketing's own series is untouched
+    expect((await create(mkt, order({ ...HO, poNumber: undefined })).expect(201)).body.data.poNumber).toBe(`HO-${YEAR}-0002`);
+    expect(fields(await create(mkt, order({ ...HO, lines: [{ pepCode: 'SKU_A', qty: 1, discountPct: 10 }] })).expect(400))).toEqual(['lines[0].discountPct']);
+    expect((await create(inst, order(HO)).expect(403)).body.error.code).toBe('BULK_TYPE_NOT_ALLOWED');
+    await create(approver, order(HO)).expect(403);
+  });
+
+  it('seen by Marketing people and approvers (not Institutional); approved like Marketing', async () => {
+    const o = (await create(mkt, order(HO)).expect(201)).body.data as { id: string };
+    expect((await api().get(`${V}?type=head_office`).set('Cookie', mkt.cookie).expect(200)).body.meta.total).toBe(1);
+    await api().get(`${V}/${o.id}`).set('Cookie', inst.cookie).expect(404);
+    await api().get(`${V}?type=head_office`).set('Cookie', inst.cookie).expect(403);
+    const done = (await api().post(`${V}/${o.id}/approve`).set('Cookie', approver.cookie).send({}).expect(200)).body.data;
+    expect(done).toMatchObject({ status: 'approved', totalValue: 13 });
+  });
+
+  it('our team processes it like Marketing: saved PO in Bulk Marketing (group Marketing), CSV at ₹1, its own address book', async () => {
+    await insert('master_facilities', { code: WH, name: 'Bhiwandi', entity: 'PEP', state: 'Maharashtra', is_active: 1, source: 'manual', uniware_export: 0 });
+    const o = (await create(mkt, order(HO)).expect(201)).body.data as { id: string; poNumber: string };
+    await api().post(`${V}/${o.id}/approve`).set('Cookie', approver.cookie).send({}).expect(200);
+    const SALE = { facilityCode: WH, uniwareChannel: 'JIVA', customerCode: 'CUST_HO_01' };
+    const done = (await api().post(`${T}/${o.id}/process`).set('Cookie', opsExec.cookie).send(SALE).expect(200)).body.data;
+    expect(done).toMatchObject({ status: 'processing', totalValue: 13, saleOrder: SALE });
+    const [po] = await rows<{ channel: string; poGroup: string; poNumber: string }>('SELECT channel, poGroup, poNumber FROM master_purchase_orders');
+    expect(po).toEqual({ channel: 'Bulk Marketing', poGroup: 'Marketing', poNumber: o.poNumber });
+    const csv = [...s3Objects(`bulk-orders/${o.poNumber}/sale-order-1/`).entries()].find(([k]) => k.endsWith('.csv'))![1];
+    expect(csv).toContain(',1.00,FALSE,10,CUST_HO_01,');
+    expect(await rows('SELECT order_type, customer_code FROM bulk_customers')).toEqual([{ order_type: 'head_office', customer_code: 'CUST_HO_01' }]);
+  });
+
+  it('settings list Head office (payment check off; no row needed)', async () => {
+    const admin = await loginAs('admin');
+    const list = (await api().get(`${V}/settings`).set('Cookie', admin.cookie).expect(200)).body.data as { type: string; paymentCheck: boolean }[];
+    expect(list.find((s) => s.type === 'head_office')).toMatchObject({ paymentCheck: false });
   });
 });
