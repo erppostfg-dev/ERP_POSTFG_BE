@@ -1,5 +1,6 @@
 import { CHANNEL_MASTER_IDS, CHANNELS } from '../../src/constants';
 import type { RawOcr } from '../../src/modules/po-processing/common/raw-reader';
+import { FUTURE_EXPIRY } from './dates';
 import { insert } from './db';
 
 /*
@@ -17,7 +18,7 @@ export const HYD = '1-8/74/3, MEDCHAL MALKAJGIRI THUMKUNTA MUNICIPALITY DEVRAYAM
 export const fcRaw: RawOcr = {
   header: {
     'PO Number': 'PO-199751-FRHHYDMDL01', 'PO Date': '2026-10-18', 'PO Release Date': '2026-10-18', 'Expected Delivery Date': '2026-11-17',
-    'PO Expiry Date': '2026-11-22', 'Payment Terms': 'As per agreed terms', Status: 'APPROVED',
+    'PO Expiry Date': FUTURE_EXPIRY, 'Payment Terms': 'As per agreed terms', Status: 'APPROVED',
     'Vendor Name': 'PEP TECHNOLOGIES PRIVATE LIMITED', 'Vendor GSTIN': '27AAICP2804J1ZC',
     'Billing Name': 'Firstclub Technology PVT. LTD', 'Billing GSTIN': '36AAGCF0834Q1Z9', 'Billing Address': HYD,
     'Shipping Name': 'Firstclub Technology PVT. LTD', 'Shipping GSTIN': '36AAGCF0834Q1Z9', 'Shipping Address': HYD,

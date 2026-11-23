@@ -6,6 +6,7 @@ import type { RawOcr } from '../../src/modules/po-processing/common/raw-reader';
 import { MasterDataReader } from '../../src/modules/po-validation/master-data';
 import { validatePo } from '../../src/modules/po-validation/validate-po';
 import { api, loginAs } from '../helpers/auth';
+import { dmy, FUTURE_EXPIRY } from '../helpers/dates';
 import { closeDb, db, insert, resetDb, rows } from '../helpers/db';
 import { seedMasters } from '../helpers/fixtures';
 
@@ -80,7 +81,7 @@ const validate = async (po: ProcessedPo) => validatePo(po, await new MasterDataR
 /** The daily summary (EXECL_ATTACHED.XLS) as the OCR's sheet pipeline returns it: one row per PO line. */
 const summaryRow = (po: string, item: string, ean: string, sku: string, mrp: string, price: string, qty: string) => ({
   'PO Document Number': po, 'Item No': item, 'EAN Number': ean, Sku: sku, 'Material long text': `${sku} product`, MRP: mrp, Price: price, Qty: qty,
-  Plant: 'W512', Address: 'Plot No. B1A,B2-B5, Khurda Khordha 752055', 'Storage location': 'S001', 'Purchasing Group': 'TPB', 'PO Date': '06.11.2026', 'Expiry Date': '06.12.2026',
+  Plant: 'W512', Address: 'Plot No. B1A,B2-B5, Khurda Khordha 752055', 'Storage location': 'S001', 'Purchasing Group': 'TPB', 'PO Date': '06.11.2026', 'Expiry Date': dmy(FUTURE_EXPIRY),
 });
 const summary = (lines: Record<string, string>[]) => ({
   channel: 'purplle', input: 'sheet', pdf: null, sheet: 'EXECL_ATTACHED.XLS', header: {}, line_item_columns: Object.keys(lines[0]), line_items: lines, warnings: [],
