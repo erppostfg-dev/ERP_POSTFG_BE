@@ -227,6 +227,7 @@ export const ERRORS = {
   REVIEW_RETURNED: define(409, (count: number) => `The PO no longer passes the checks (${count} issue(s)); it went back to In Review with the reason`),
   MASTER_UPDATE_NOT_CONFIRMED: define(409, (count: number) => `${count} of the selected approval(s) update the master on approval: confirm to go on`),
   ISSUE_REMARK_REQUIRED: define(422, (issueId: string, type: string) => `Issue ${issueId} (${type}) is accepted only with a remark: say why`),
+  TOTAL_REMARK_REQUIRED: define(422, () => 'The PO total difference is accepted only with a remark: say why'),
   PRICE_DIFF_IDS_REQUIRED: define(400, () => 'Send the ids of the price difference lines to mark as sent'),
   PRICE_DIFF_SCOPE_REQUIRED: define(400, () => 'Name a PO (uploadId) or a channel'),
   ISSUE_NOT_ACCEPTABLE: define(422, (issueId: string, type: string) => `Issue ${issueId} (${type}) cannot be accepted: correct it or reject the PO`),

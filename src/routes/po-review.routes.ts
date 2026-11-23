@@ -49,7 +49,7 @@ import { dismissFailed, reopenMany, rereadUploads, retryFailed } from '../module
  *   POST /po-review/line-items   { uploadIds }   every line of processed POs, for a CSV / Excel download (read-only).
  *   GET /po-review/:uploadId/file   the PO file itself, streamed from S3 (for the panel's PDF viewer). Viewer.
  *   POST /po-review/:uploadId/submit   { location?: { detailsChannelId }, lines?: [{ lineNo, pepCode?, qty?, mrp?, rate? }],
- *                                        accept?: [{ issueId, remark? }], remark? }   corrections -> validate -> must pass
+ *                                        accept?: [{ issueId, remark? }], acceptTotal?, remark? }   corrections -> validate -> must pass
  *                                        completely -> pending_approval (Approvals page; 2026-10-15, replaces /resubmit,
  *                                        which saved the PO at once).
  *   POST /po-review/:uploadId/reject   { remark }   the reviewer rejects directly (kept in po_review_submissions).
@@ -317,9 +317,12 @@ const parseResubmit = (body: unknown): ResubmitBody => {
     return { issueId, remark: r.remark(a[B.REMARK], `${B.ACCEPT}[${i}].${B.REMARK}`, false) };
   });
   const remark = r.remark(b[B.REMARK], B.REMARK, false);
+  const acceptTotal = b[B.ACCEPT_TOTAL];
+  if (acceptTotal !== undefined && typeof acceptTotal !== 'boolean') r.bad(B.ACCEPT_TOTAL, 'FIELD_NOT_BOOLEAN', B.ACCEPT_TOTAL);
 
   if (problems.length) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails(problems);
   return {
+    acceptTotal: acceptTotal === true || undefined,
     locationId,
     lines: lines.filter((l): l is LineCorrection => !!l),
     accept: accept.filter((a): a is { issueId: string; remark: string | undefined } => !!a),

@@ -50,6 +50,8 @@ export const PO_REVIEW_BODY = {
   MRP_FROM: 'mrpFrom',
   UPDATE_MASTER: 'updateMaster',
   ACCEPT: 'accept',
+  /** 2026-11-23: accept a PO total difference that only appears after the price check choices (needs the remark). */
+  ACCEPT_TOTAL: 'acceptTotal',
   ISSUE_ID: 'issueId',
   REMARK: 'remark',
 } as const;

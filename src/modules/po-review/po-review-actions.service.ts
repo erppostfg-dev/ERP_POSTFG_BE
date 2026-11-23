@@ -7,6 +7,7 @@ import {
   FILES,
   ISSUE_ACTION,
   ISSUE_STATUS,
+  ISSUE_TYPE,
   SYSTEM_ACTOR,
   PO_REVIEW_REMARK_MAX,
   PRICE_CHOICE,
@@ -42,7 +43,7 @@ import { AppError, appError } from '../../utils/AppError';
 import { readS3Json, siblingS3Url, writeS3Text } from '../email-intake/s3-mirror.service';
 import { ProcessedPo } from '../po-processing/common/processed-po';
 import { csvOf, poRows, takeSerial } from '../po-pipeline/po-save.service';
-import { issueKey } from '../po-pipeline/po-uploads.service';
+import { issueKey, originalValues } from '../po-pipeline/po-uploads.service';
 import { MasterDataReader, matchKey } from '../po-validation/master-data';
 import { todayIst, validatePo, ValidationResult } from '../po-validation/validate-po';
 import { LOG_SOURCE } from '../../constants/logging';
@@ -86,6 +87,11 @@ export interface ResubmitBody {
   locationId?: string;
   lines: LineCorrection[];
   accept: { issueId: string; remark?: string }[];
+  /**
+   * 2026-11-23 (bug ND226208): accept a PO total difference that is NOT an open issue of the PO but appears only after
+   * the price check choices (a decided line no longer offsets small differences on other lines). Needs `remark`.
+   */
+  acceptTotal?: boolean;
   remark?: string;
 }
 
@@ -166,13 +172,22 @@ const prepare = async (uploadId: string, body: ResubmitBody, status: UploadStatu
   const now = new Date();
   const v = await validatePo(fixedPo, master, now, { locationId: body.locationId, pepCodeByLine, priceFromByLine, mrpFromByLine });
   const acceptedKeys = new Set(accepted.map(({ issue }) => issueKey(issue.issueType, issue.lineNo, issue.fieldName)));
-  const left = v.issues.filter((i) => !acceptedKeys.has(issueKey(i.type, i.lineNo, i.field)));
+  let left = v.issues.filter((i) => !acceptedKeys.has(issueKey(i.type, i.lineNo, i.field)));
+  // A total difference raised only now (no open total issue to accept by id): accepted with the flag + a remark, and
+  // recorded as an accepted issue when the PO is saved (raisedTotal), so the approver and History see it.
+  const raisedTotal = body.acceptTotal && !open.some((i) => i.issueType === ISSUE_TYPE.TOTAL_MISMATCH)
+    ? left.find((i) => i.type === ISSUE_TYPE.TOTAL_MISMATCH)
+    : undefined;
+  if (raisedTotal) {
+    if (!body.remark?.trim()) throw appError(ERROR_CODES.TOTAL_REMARK_REQUIRED);
+    left = left.filter((i) => i !== raisedTotal);
+  }
   if (left.length || !v.location) {
     throw appError(ERROR_CODES.REVIEW_INCOMPLETE, Math.max(left.length, 1)).withDetails({
       openIssues: left.map((i) => ({ type: i.type, field: i.field, lineNo: i.lineNo === '' ? null : (i.lineNo ?? null), message: i.message })),
     });
   }
-  return { upload, po, processedUrl, master, open, accepted, fixedPo, v, now };
+  return { upload, po, processedUrl, master, open, accepted, fixedPo, v, now, raisedTotal };
 };
 type Prepared = Awaited<ReturnType<typeof prepare>>;
 
@@ -203,7 +218,7 @@ const fixesOf = (p: Prepared, body: ResubmitBody): ReviewFixes => {
         from ? [{ lineNo: String(l.lineNo), channelSku: l.channelSkuCode || null, description: l.skuName || null, field, from, ours: Number(ours), channel: Number(channel), updateMaster: from === PRICE_CHOICE.CHANNEL && !!c?.updateMaster }] : [];
       return [...one(PRICE_DIFF_FIELD.PRICE, l.priceFrom, l.masterRate, l.poUnitPrice), ...one(PRICE_DIFF_FIELD.MRP, l.mrpFrom, l.masterMrp, l.poMrp)];
     }),
-    issues: p.open.map((i) => ({
+    issues: p.open.map((i): ReviewFixes['issues'][number] => ({
       issueId: String(i.id),
       type: i.issueType,
       lineNo: i.lineNo === null ? null : String(i.lineNo),
@@ -211,7 +226,9 @@ const fixesOf = (p: Prepared, body: ResubmitBody): ReviewFixes => {
       message: i.details,
       how: acceptedRemark.has(String(i.id)) ? 'accepted' : 'fixed',
       remark: acceptedRemark.get(String(i.id)) ?? null,
-    })),
+    })).concat(p.raisedTotal ? [{
+      issueId: '', type: p.raisedTotal.type, lineNo: null, field: p.raisedTotal.field ?? null, message: p.raisedTotal.message, how: 'accepted' as const, remark: body.remark ?? null,
+    }] : []),
   };
 };
 
@@ -260,6 +277,16 @@ const savePo = async (
       await actions.save(
         actions.create({ issueId: issue.id, action: ISSUE_ACTION.APPROVED, actionBy: reviewer, remark, beforeValue: issue.originalValues, afterValue: resolvedValues }),
       );
+    }
+    if (p.raisedTotal) {
+      const t = p.raisedTotal;
+      const remark = body.remark ?? null;
+      const resolvedValues = { accepted: true, raisedAtReview: true };
+      const row = await issues.save(issues.create({
+        uploadId, lineNo: null, issueType: t.type, fieldName: t.field, details: t.message.slice(0, 500), originalValues: originalValues(t, v),
+        status: ISSUE_STATUS.APPROVED, resolvedBy: reviewer, resolvedAt: now, remark, resolvedValues,
+      }));
+      await actions.save(actions.create({ issueId: row.id, action: ISSUE_ACTION.APPROVED, actionBy: reviewer, remark, beforeValue: row.originalValues, afterValue: resolvedValues }));
     }
     if (also) await also(m, { poUid, code });
 
