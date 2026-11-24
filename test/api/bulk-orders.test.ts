@@ -1131,7 +1131,7 @@ describe('bulk orders v2: several receivers per order', () => {
     await insert('master_facilities', { code: 'MUM_WAREHOUSE2', name: 'Bhiwandi', entity: 'PEP', state: 'Maharashtra', is_active: 1, intransit_type: 'MWH', source: 'manual', uniware_export: 0 });
     const done = (await api().post(`/api/v1/po-review/bulk-orders/${big.id}/process`).set('Cookie', opsExec.cookie).send({ facilityCode: 'MUM_WAREHOUSE2', uniwareChannel: 'JIVA', customerCode: 'C1' }).expect(200)).body.data as Full & { saleOrder: { code: string } };
     expect(done.receivers.map((r) => [r.receiverNo, (r as unknown as { saleOrderCode: string }).saleOrderCode])).toEqual([[1, done.saleOrder.code], [2, done.saleOrder.code]]);
-    const file = JSON.parse([...s3Objects().entries()].find(([k]) => k.endsWith('order.json'))![1]) as { receivers: { name: string; lines: unknown[] }[] };
+    const file = JSON.parse([...s3Objects().entries()].find(([k]) => k.includes(`/${big.poNumber}/`) && k.endsWith('order.json'))![1]) as { receivers: { name: string; lines: unknown[] }[] };
     expect(file.receivers.map((r) => [r.name, r.lines.length])).toEqual([['Ravi Kumar', 1], ['Meera Shah', 1]]);
   });
 
