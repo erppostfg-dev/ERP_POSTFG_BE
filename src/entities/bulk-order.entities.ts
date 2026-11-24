@@ -77,6 +77,10 @@ export class BulkOrder {
   @Column({ name: 'fast_track_remarks', type: 'varchar', length: 500, nullable: true })
   fastTrackRemarks: string | null;
 
+  /** v2 1f: the brand of every line (PEP SKU master brand_name, as chosen); NULL on orders made before 1f. */
+  @Column({ name: 'brand', type: 'varchar', length: 100, nullable: true })
+  brand: string | null;
+
   /** v2 1d: Marketing only, optional (e.g. influencer seeding, an event name). */
   @Column({ name: 'purpose', type: 'varchar', length: 200, nullable: true })
   purpose: string | null;

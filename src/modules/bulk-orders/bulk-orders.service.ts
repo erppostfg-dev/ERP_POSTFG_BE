@@ -188,7 +188,7 @@ export const isId = (v: unknown): v is string | number => (typeof v === 'number'
 
 // ---- SKUs ----------------------------------------------------------------------------------------------------------
 
-export interface BulkSku { pepCode: string; name: string | null; mrp: number; ean: string | null }
+export interface BulkSku { pepCode: string; name: string | null; mrp: number; ean: string | null; brand: string | null }
 
 /**
  * Active SKUs with an MRP whose code starts with / name contains / EAN equals the text (at most SKU_RESULTS_MAX), code
@@ -196,18 +196,41 @@ export interface BulkSku { pepCode: string; name: string | null; mrp: number; ea
  * per keystroke; a Masters save drops it at once, anything else within CACHE_TTL_SECONDS. Display only: the price of an
  * order is read fresh from the DB on submit.
  */
-export const searchBulkSkus = async (q: unknown): Promise<BulkSku[]> => {
+/** v2 1f: a SKU's brand key (lower case, trimmed) or '' = no brand (empty / "0" in the master). */
+export const brandKey = (b: string | null | undefined): string => {
+  const k = (b ?? '').trim();
+  return BULK_ORDERS.NO_BRAND.includes(k) ? '' : k.toLowerCase();
+};
+const orderable = (s: MasterSku) => s.isActive !== false && Number(s.mrp) > 0;
+
+/** v2 1f: the brands of the orderable SKUs (from the cached list), each in its most used spelling, A-Z. */
+export const bulkBrands = async (): Promise<string[]> => {
+  const seen = new Map<string, Map<string, number>>();
+  for (const s of await cachedPepSkus()) {
+    const k = brandKey(s.brandName);
+    if (!k || !orderable(s)) continue;
+    const m = seen.get(k) ?? new Map<string, number>();
+    const shown = (s.brandName ?? '').trim();
+    m.set(shown, (m.get(shown) ?? 0) + 1);
+    seen.set(k, m);
+  }
+  return [...seen.values()].map((m) => [...m.entries()].sort((a, b) => b[1] - a[1])[0][0]).sort((a, b) => a.localeCompare(b));
+};
+
+export const searchBulkSkus = async (q: unknown, brand?: unknown): Promise<BulkSku[]> => {
   const text = typeof q === 'string' ? q.trim().toLowerCase() : '';
-  if (text.length < BULK_ORDERS.SKU_QUERY_MIN) return [];
+  // v2 1f: SKUs of the chosen brand only; no brand chosen = nothing (the form says "Select the brand")
+  const want = typeof brand === 'string' ? brandKey(brand) : '';
+  if (text.length < BULK_ORDERS.SKU_QUERY_MIN || !want) return [];
   const hits: { s: MasterSku; codeFirst: boolean }[] = [];
   for (const s of await cachedPepSkus()) {
-    if (s.isActive === false || !(Number(s.mrp) > 0)) continue;
+    if (!orderable(s) || brandKey(s.brandName) !== want) continue;
     const code = s.pepCode.toLowerCase();
     const codeFirst = code.startsWith(text);
     if (codeFirst || (s.productName ?? '').toLowerCase().includes(text) || (s.eanCode ?? '').toLowerCase() === text) hits.push({ s, codeFirst });
   }
   hits.sort((a, b) => Number(b.codeFirst) - Number(a.codeFirst) || a.s.pepCode.localeCompare(b.s.pepCode));
-  return hits.slice(0, BULK_ORDERS.SKU_RESULTS_MAX).map(({ s }) => ({ pepCode: s.pepCode, name: s.productName, mrp: Number(s.mrp), ean: s.eanCode }));
+  return hits.slice(0, BULK_ORDERS.SKU_RESULTS_MAX).map(({ s }) => ({ pepCode: s.pepCode, name: s.productName, mrp: Number(s.mrp), ean: s.eanCode, brand: s.brandName }));
 };
 
 // ---- locations -----------------------------------------------------------------------------------------------------
@@ -321,6 +344,8 @@ interface OrderIn {
   priority: string;
   fastTrackRemarks: string | null;
   purpose: string | null;
+  /** v2 1f. */
+  brand: string;
   mode: string | null;
   note: string | null;
   locationId: string | null;
@@ -365,18 +390,20 @@ const parseOrder = (body: Record<string, unknown>, fixedType?: BulkOrderType, mo
     address = checkAddress(c, body[F.ADDRESS]);
     saveAs = c.text(body[F.SAVE_LOCATION_AS], F.SAVE_LOCATION_AS, BULK_ORDERS.LABEL_MAX, false);
   }
+  // v2 1f: one brand per order (every line is checked against it when priced)
+  const brand = c.text(body[F.BRAND], F.BRAND, BULK_ORDERS.BRAND_MAX);
   const lines = checkLines(c, body[F.LINES], type);
   const institution = type === BULK_ORDER_TYPE.INSTITUTIONAL ? checkInstitution(c, body) : null;
   more?.(c);
   c.fail();
-  return { type: type!, orderedBy, receiverName, phone: phone!, neededBy, priority: priority!, fastTrackRemarks, purpose, mode, note, locationId, address, saveAs, lines, institution };
+  return { type: type!, orderedBy, receiverName, phone: phone!, neededBy, priority: priority!, fastTrackRemarks, purpose, mode, note, locationId, address, saveAs, lines, institution, brand };
 };
 
 /** Today's MRP / name / active of SKUs from OUR master (one read; never the cache, never the request). */
 const skusNow = async (codes: string[]): Promise<Map<string, MasterSku>> => {
   if (!codes.length) return new Map();
   const skus = await AppDataSource.getRepository(MasterSku).find({
-    select: { pepCode: true, productName: true, mrp: true, isActive: true },
+    select: { pepCode: true, productName: true, mrp: true, isActive: true, brandName: true },
     where: { pepCode: In(codes) },
   });
   return new Map(skus.map((s) => [s.pepCode.toUpperCase(), s]));
@@ -393,12 +420,18 @@ interface PricedLine {
 }
 
 /** The lines priced on today's MRP (requested = what is asked now); 400 naming each SKU that cannot be sold. */
-const priceLines = async (type: BulkOrderType, lines: LineIn[]): Promise<PricedLine[]> => {
+const priceLines = async (type: BulkOrderType, lines: LineIn[], brand?: string): Promise<PricedLine[]> => {
   const byCode = await skusNow(lines.map((l) => l.pepCode));
   const c = new Checker();
   lines.forEach((l, i) => {
-    const why = notSellable(l.pepCode, byCode.get(l.pepCode.toUpperCase()));
+    const s = byCode.get(l.pepCode.toUpperCase());
+    const why = notSellable(l.pepCode, s);
     if (why) c.add(`${F.LINES}[${i}].${F.PEP_CODE}`, why);
+    // v2 1f: one brand per order (the master's brand_name)
+    else if (brand !== undefined && brandKey(s?.brandName) !== brandKey(brand)) {
+      const has = (s?.brandName ?? '').trim();
+      c.add(`${F.LINES}[${i}].${F.PEP_CODE}`, `${l.pepCode} is not a ${brand} SKU (its brand in the PEP SKU master: ${brandKey(has) ? has : 'none: ask the masters team'})`);
+    }
   });
   c.fail();
   const priced = lines.map((l, i) => {
@@ -462,7 +495,7 @@ const settingOf = (type: BulkOrderType) => AppDataSource.getRepository(BulkTypeS
 export const createBulkOrder = async (actor: BulkActor, body: Record<string, unknown>) => {
   const o = parseOrder(body);
   needType(await bulkRights(actor), o.type, ACCESS_LEVEL.EDITOR);
-  const priced = await priceLines(o.type, o.lines);
+  const priced = await priceLines(o.type, o.lines, o.brand);
   const setting = await settingOf(o.type);
   const paymentCheck = setting?.paymentCheck === true;
   const approval = approvalNeed(setting, o.type, totalsOf(priced).totalUnits, o.mode);
@@ -473,7 +506,7 @@ export const createBulkOrder = async (actor: BulkActor, body: Record<string, unk
     const res = await m.getRepository(BulkOrder).insert({
       poNumber, orderType: o.type, status: approval.needed ? BULK_ORDER_STATUS.PENDING_APPROVAL : BULK_ORDER_STATUS.SUBMITTED, orderedBy: o.orderedBy, receiverName: o.receiverName,
       receiverPhone: o.phone, ...where, neededBy: o.neededBy, deliveryMode: o.mode, priority: o.priority, note: o.note,
-      fastTrackRemarks: o.fastTrackRemarks, purpose: o.purpose,
+      fastTrackRemarks: o.fastTrackRemarks, purpose: o.purpose, brand: o.brand,
       ...institutionCols(o.institution, where), ...totalsOf(priced), createdBy: actor.id, paymentStatus: paymentCheck ? BULK_PAYMENT_STATUS.AWAITING_PROOF : null,
     });
     const orderId = String(res.identifiers[0].id);
@@ -547,7 +580,7 @@ export const updateBulkOrder = async (actor: BulkActor, id: string, body: Record
   // v2 1e: every edit says why (kept with the change); checked with the rest of the body (all problems in one 400)
   let remark = '';
   const o = parseOrder(body, t, (c) => { remark = c.text(body[F.EDIT_REMARK], F.EDIT_REMARK, BULK_ORDERS.EDIT_REMARK_MAX); });
-  const priced = await priceLines(t, o.lines);
+  const priced = await priceLines(t, o.lines, o.brand);
   const approval = approvalNeed(await settingOf(t), t, totalsOf(priced).totalUnits, o.mode);
   await AppDataSource.transaction(async (m) => {
     const cur = await lockEditable(m, id);
@@ -557,7 +590,7 @@ export const updateBulkOrder = async (actor: BulkActor, id: string, body: Record
     const where = await whereTo(m, o, actor.id);
     const next = {
       orderedBy: o.orderedBy, receiverName: o.receiverName, receiverPhone: o.phone, ...where, neededBy: o.neededBy,
-      fastTrackRemarks: o.fastTrackRemarks, purpose: o.purpose,
+      fastTrackRemarks: o.fastTrackRemarks, purpose: o.purpose, brand: o.brand,
       deliveryMode: o.mode, priority: o.priority, note: o.note, ...institutionCols(o.institution, where),
     };
     const fields = (Object.keys(next) as (keyof typeof next)[]).filter((k) => String(cur[k] ?? '') !== String(next[k] ?? ''));
@@ -720,7 +753,7 @@ const orderOut = (o: BulkOrder, names: Map<number, string>, editCount = 0) => ({
   editCount,
   orderedBy: o.orderedBy, receiverName: o.receiverName, receiverPhone: o.receiverPhone,
   location: { id: o.locationId ? String(o.locationId) : null, label: o.locationLabel, address: { line: o.addressLine, city: o.city, state: o.state, pincode: o.pincode } },
-  neededBy: o.neededBy, mode: o.deliveryMode, priority: o.priority, note: o.note, fastTrackRemarks: o.fastTrackRemarks, purpose: o.purpose,
+  neededBy: o.neededBy, mode: o.deliveryMode, priority: o.priority, note: o.note, fastTrackRemarks: o.fastTrackRemarks, purpose: o.purpose, brand: o.brand,
   // Institutional requester details (null on Marketing orders)
   institution: o.institutionName ? {
     name: o.institutionName, gstin: o.gstin, email: o.contactEmail,
@@ -799,12 +832,12 @@ export const listBulkOrders = async (actor: BulkActor, q: Record<string, unknown
   if (l.type) needType(r, l.type, ACCESS_LEVEL.VIEWER);
   const types = l.type ? [l.type] : viewable(r);
   // v2 1c: the approval rules of the types I see, so the order form can say before Submit whether approval is needed
-  const [found, settings] = await Promise.all([pageOfOrders(types, l), AppDataSource.getRepository(BulkTypeSetting).find()]);
+  const [found, settings, brands] = await Promise.all([pageOfOrders(types, l), AppDataSource.getRepository(BulkTypeSetting).find(), bulkBrands()]);
   const approvalRules = Object.fromEntries(types.map((t) => [t, {
     overUnits: settings.find((s) => s.orderType === t)?.approvalOverUnits ?? null,
     modes: isMarketingLike(t) ? [...BULK_APPROVAL.MODES] : [],
   }]));
-  return { ...found, meta: { ...found.meta, approvalRules } };
+  return { ...found, meta: { ...found.meta, approvalRules, brands } };
 };
 
 /** One order with lines + timeline (no access check: the callers check). */

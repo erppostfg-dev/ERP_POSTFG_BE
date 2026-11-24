@@ -72,7 +72,7 @@ router.get(BULK_ORDERS.ROUTES.LIST, requireAuth, async (req, res, next) => {
 router.post(BULK_ORDERS.ROUTES.CREATE, requireAuth, send((req) => createBulkOrder(actor(req), body(req)), 201));
 router.get(BULK_ORDERS.ROUTES.SKUS, requireAuth, send(async (req) => {
   await needAnyBulk(actor(req));
-  return searchBulkSkus(req.query.q);
+  return searchBulkSkus(req.query.q, req.query.brand);
 }));
 router.get(BULK_ORDERS.ROUTES.LOCATIONS, requireAuth, send((req) => listBulkLocations(actor(req), req.query.type)));
 router.post(BULK_ORDERS.ROUTES.LOCATIONS, requireAuth, send((req) => addBulkLocation(actor(req), body(req)), 201));

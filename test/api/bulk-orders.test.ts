@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { BulkCustomerAddresses1795300000000 } from '../../src/migrations/1795300000000-BulkCustomerAddresses';
 import { BulkOrderFields1795800000000 } from '../../src/migrations/1795800000000-BulkOrderFields';
+import { BulkOrderBrand1795900000000 } from '../../src/migrations/1795900000000-BulkOrderBrand';
 import { MARKETING_UNIT_PRICE } from '../../src/constants';
 import { api, loginAs, type TestLogin } from '../helpers/auth';
 import { closeDb, count, db, insert, resetDb, rows } from '../helpers/db';
@@ -37,7 +38,7 @@ const INSTITUTION = { institutionName: 'Sunrise Public School', gstin: '27AAACS1
 const order = (over: Record<string, unknown> = {}) => {
   const discounted = over.type === 'institutional';
   const o: Record<string, unknown> = {
-    type: 'marketing', orderedBy: 'Brand team', receiverName: 'Ravi Kumar', receiverPhone: '+91 98765-43210',
+    type: 'marketing', brand: 'mCaffeine', orderedBy: 'Brand team', receiverName: 'Ravi Kumar', receiverPhone: '+91 98765-43210',
     address: ADDRESS, neededBy: TOMORROW, mode: 'Regular', priority: 'Normal',
     lines: discounted ? [{ pepCode: 'SKU_A', qty: 10, discountPct: 30 }, { pepCode: 'SKU_B', qty: 3, discountPct: 12.5 }] : [{ pepCode: 'SKU_A', qty: 10 }, { pepCode: 'SKU_B', qty: 3 }],
     ...over,
@@ -52,10 +53,10 @@ const fields = (res: { body: { error: { details: { field: string }[] } } }) => r
 beforeEach(async () => {
   await resetDb();
   const now = new Date();
-  skuA = await insert('master_skus', { pep_code: 'SKU_A', product_name: 'Coffee Body Scrub 100g', mrp: 100, ean_code: '8900000000011', is_active: 1, created_at: now, updated_at: now });
-  await insert('master_skus', { pep_code: 'SKU_B', product_name: 'Coffee Face Wash 100ml', mrp: 349, ean_code: '8900000000028', is_active: 1, created_at: now, updated_at: now });
-  await insert('master_skus', { pep_code: 'SKU_OFF', product_name: 'Coffee Old Pack', mrp: 199, is_active: 0, created_at: now, updated_at: now });
-  await insert('master_skus', { pep_code: 'SKU_NOMRP', product_name: 'Coffee Tester', mrp: null, is_active: 1, created_at: now, updated_at: now });
+  skuA = await insert('master_skus', { pep_code: 'SKU_A', brand_name: 'mCaffeine', product_name: 'Coffee Body Scrub 100g', mrp: 100, ean_code: '8900000000011', is_active: 1, created_at: now, updated_at: now });
+  await insert('master_skus', { pep_code: 'SKU_B', brand_name: 'mCaffeine', product_name: 'Coffee Face Wash 100ml', mrp: 349, ean_code: '8900000000028', is_active: 1, created_at: now, updated_at: now });
+  await insert('master_skus', { pep_code: 'SKU_OFF', brand_name: 'mCaffeine', product_name: 'Coffee Old Pack', mrp: 199, is_active: 0, created_at: now, updated_at: now });
+  await insert('master_skus', { pep_code: 'SKU_NOMRP', brand_name: 'mCaffeine', product_name: 'Coffee Tester', mrp: null, is_active: 1, created_at: now, updated_at: now });
   mkt = await loginAs('bulk-marketing');
   inst = await loginAs('bulk-institutional');
   approver = await loginAs('bulk-approver');
@@ -109,16 +110,16 @@ describe('bulk orders: access', () => {
 
 describe('bulk orders: SKU search', () => {
   it('active SKUs with an MRP by code start / name / EAN; short text = nothing', async () => {
-    const q = async (text: string) => (await api().get(`${V}/skus`).query({ q: text }).set('Cookie', mkt.cookie).expect(200)).body.data as { pepCode: string; mrp: number }[];
+    const q = async (text: string) => (await api().get(`${V}/skus`).query({ q: text, brand: 'mCaffeine' }).set('Cookie', mkt.cookie).expect(200)).body.data as { pepCode: string; mrp: number }[];
     expect((await q('SKU')).map((s) => s.pepCode)).toEqual(['SKU_A', 'SKU_B']);
-    expect(await q('face wash')).toEqual([{ pepCode: 'SKU_B', name: 'Coffee Face Wash 100ml', mrp: 349, ean: '8900000000028' }]);
+    expect(await q('face wash')).toEqual([{ pepCode: 'SKU_B', name: 'Coffee Face Wash 100ml', mrp: 349, ean: '8900000000028', brand: 'mCaffeine' }]);
     expect((await q('8900000000011')).map((s) => s.pepCode)).toEqual(['SKU_A']);
     expect(await q('S')).toEqual([]);
     expect(await q('100%')).toEqual([]);
   });
 
   it('searches the shared cached SKU list: a Masters save shows at once; the order price is always read fresh', async () => {
-    const mrpOf = async () => (await api().get(`${V}/skus?q=SKU_A`).set('Cookie', mkt.cookie).expect(200)).body.data[0].mrp as number;
+    const mrpOf = async () => (await api().get(`${V}/skus?q=SKU_A&brand=mCaffeine`).set('Cookie', mkt.cookie).expect(200)).body.data[0].mrp as number;
     expect(await mrpOf()).toBe(100);
     // changed outside the Masters page (in-transit upload, script, SQL): the search may show the old MRP (cache, <= 60 s) ...
     await rows('UPDATE master_skus SET mrp = 120 WHERE id = ?', [skuA]);
@@ -194,7 +195,7 @@ describe('bulk orders: create', () => {
     }).expect(400);
     expect(fields(res).sort()).toEqual([
       'address.pincode', 'lines[0].discountPct', 'lines[0].qty', 'lines[1].discountPct', 'lines[1].pepCode', 'lines[1].qty',
-      'mode', 'neededBy', 'orderedBy', 'receiverName', 'receiverPhone',
+      'brand', 'mode', 'neededBy', 'orderedBy', 'receiverName', 'receiverPhone',
     ].sort());
     expect(fields(await create(mkt, order({ lines: [] })).expect(400))).toEqual(['lines']);
     expect(fields(await create(mkt, order({ type: 'shop' })).expect(400))).toContain('type');
@@ -946,7 +947,7 @@ describe('bulk orders v2: edits with a remark and a field-by-field history', () 
   });
 
   it('the history keeps the remark, every field old -> new and every line change; lists show the edit count', async () => {
-    await insert('master_skus', { pep_code: 'SKU_C', product_name: 'Coffee Lip Balm', mrp: 199, is_active: 1, created_at: new Date(), updated_at: new Date() });
+    await insert('master_skus', { pep_code: 'SKU_C', brand_name: 'mCaffeine', product_name: 'Coffee Lip Balm', mrp: 199, is_active: 1, created_at: new Date(), updated_at: new Date() });
     const o = (await create(mkt, order()).expect(201)).body.data as { id: string }; // SKU_A 10, SKU_B 3, Normal
     const e = (await edit(mkt, o.id, order({
       receiverName: 'Asha', neededBy: undefined, purpose: 'Diwali event',
@@ -974,5 +975,64 @@ describe('bulk orders v2: edits with a remark and a field-by-field history', () 
     const o = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data as { id: string }; // SKU_A @30, SKU_B @12.5
     const e = (await edit(inst, o.id, order({ type: 'institutional', lines: [{ pepCode: 'SKU_A', qty: 10, discountPct: 25 }, { pepCode: 'SKU_B', qty: 3, discountPct: 12.5 }] }), 'Agreed 25%').expect(200)).body.data;
     expect(e.events.at(-1).changes.lineChanges).toEqual([{ pepCode: 'SKU_A', change: 'changed', discountPct: [30, 25] }]);
+  });
+});
+
+/*
+ * Bulk Orders Portal v2, piece 1f (2026-11-24, user: "check the brand name from that column and show only one brand"):
+ * the brand = the PEP SKU master's brand_name (case ignored, empty / "0" = none); the form lists the brands, searches
+ * one brand's SKUs, and an order takes SKUs of its one brand only; the brand is kept on the order.
+ */
+describe('bulk orders v2: one brand per order, from the SKU master', () => {
+  const now = () => new Date();
+  beforeEach(async () => {
+    await insert('master_skus', { pep_code: 'HYP_SERUM', brand_name: 'HYPHEN', product_name: 'Hyphen Serum', mrp: 499, is_active: 1, created_at: now(), updated_at: now() });
+    await insert('master_skus', { pep_code: 'SKU_CAPS', brand_name: 'MCAFFEINE', product_name: 'Coffee Scrub caps spelling', mrp: 299, is_active: 1, created_at: now(), updated_at: now() });
+    await insert('master_skus', { pep_code: 'SKU_NOBRAND', brand_name: '0', product_name: 'Coffee Combo no brand', mrp: 599, is_active: 1, created_at: now(), updated_at: now() });
+    await insert('master_skus', { pep_code: 'DND_OFF', brand_name: 'Drip N Dip', product_name: 'Old DND', mrp: 199, is_active: 0, created_at: now(), updated_at: now() });
+  });
+  const skus = async (q: string, brand?: string) =>
+    ((await api().get(`${V}/skus`).query({ q, ...(brand !== undefined ? { brand } : {}) }).set('Cookie', mkt.cookie).expect(200)).body.data as { pepCode: string }[]).map((s) => s.pepCode);
+
+  it('brands = the orderable SKUs\' brand_name values (most used spelling, A-Z); empty / "0" / inactive left out', async () => {
+    expect((await api().get(V).set('Cookie', mkt.cookie).expect(200)).body.meta.brands).toEqual(['HYPHEN', 'mCaffeine']);
+  });
+
+  it('search shows only the chosen brand (case ignored); no brand chosen = nothing', async () => {
+    expect(await skus('coffee', 'mCaffeine')).toEqual(['SKU_A', 'SKU_B', 'SKU_CAPS']);
+    expect(await skus('coffee', 'MCAFFEINE')).toEqual(['SKU_A', 'SKU_B', 'SKU_CAPS']);
+    expect(await skus('serum', 'HYPHEN')).toEqual(['HYP_SERUM']);
+    expect(await skus('serum', 'mCaffeine')).toEqual([]);
+    expect(await skus('coffee')).toEqual([]);
+    expect(await skus('combo', 'mCaffeine')).toEqual([]); // no brand in the master: under no brand
+  });
+
+  it('an order takes its brand\'s SKUs only (named line + why), the brand is kept; brand required', async () => {
+    let res = await create(mkt, order({ lines: [{ pepCode: 'SKU_A', qty: 2 }, { pepCode: 'HYP_SERUM', qty: 1 }, { pepCode: 'SKU_NOBRAND', qty: 1 }] })).expect(400);
+    expect(fields(res)).toEqual(['lines[1].pepCode', 'lines[2].pepCode']);
+    expect(res.body.error.details[0].message).toContain('not a mCaffeine SKU (its brand in the PEP SKU master: HYPHEN)');
+    expect(res.body.error.details[1].message).toContain('none: ask the masters team');
+    res = await create(mkt, order({ brand: undefined })).expect(400);
+    expect(fields(res)).toEqual(['brand']);
+    const o = (await create(mkt, order({ lines: [{ pepCode: 'SKU_A', qty: 2 }, { pepCode: 'SKU_CAPS', qty: 1 }] })).expect(201)).body.data;
+    expect(o.brand).toBe('mCaffeine');
+    const h = (await create(mkt, order({ brand: 'HYPHEN', lines: [{ pepCode: 'HYP_SERUM', qty: 3 }] })).expect(201)).body.data;
+    expect(h.brand).toBe('HYPHEN');
+    // an edit is checked the same way
+    expect(fields(await edit(mkt, h.id, order({ brand: 'HYPHEN', lines: [{ pepCode: 'SKU_A', qty: 1 }] })).expect(400))).toEqual(['lines[0].pepCode']);
+  });
+
+  it('migration BulkOrderBrand fills old orders whose SKUs have one brand; mixed / unbranded stay empty', async () => {
+    const one = (await create(mkt, order()).expect(201)).body.data as { id: string };
+    const two = (await create(mkt, order()).expect(201)).body.data as { id: string };
+    await rows("UPDATE bulk_order_lines SET pep_code = 'SKU_NOBRAND' WHERE order_id = ? AND line_no = 2", [two.id]);
+    const qr = (await db()).createQueryRunner();
+    try {
+      await new BulkOrderBrand1795900000000().down(qr);
+      await new BulkOrderBrand1795900000000().up(qr);
+    } finally {
+      await qr.release();
+    }
+    expect(await rows('SELECT id, brand FROM bulk_orders ORDER BY id')).toEqual([{ id: one.id, brand: 'mCaffeine' }, { id: two.id, brand: null }]);
   });
 });

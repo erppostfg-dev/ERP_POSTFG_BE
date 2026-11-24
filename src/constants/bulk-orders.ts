@@ -228,6 +228,13 @@ export const BULK_ORDERS = {
   ADDRESS_MAX: 500,
   CITY_MAX: 100,
   NOTE_MAX: 1000,
+  /**
+   * v2 1f (2026-11-24, user: "check the brand name from that column and show only one brand"): the brand = the PEP SKU
+   * master's brand_name, as it is (no guessing from the code), compared without case; empty / "0" = no brand (such a SKU
+   * is offered under no brand until the masters team fills it). One brand per order.
+   */
+  NO_BRAND: ['', '0'] as readonly string[],
+  BRAND_MAX: 100,
   /** v2 1e: an edit's remark. */
   EDIT_REMARK_MAX: 500,
   /** v2 1d: Fast-track remarks + Marketing purpose (= their columns). */
@@ -345,6 +352,8 @@ export const BULK_BODY = {
   REASON: 'reason',
   /** v2 1e (2026-11-23): why the requester changes the order (required on every edit). */
   EDIT_REMARK: 'remark',
+  /** v2 1f: the order's brand (one per order; every line's SKU must be of it). */
+  BRAND: 'brand',
   LINE_NO: 'lineNo',
   REMOVE_LINES: 'removeLines',
   KIND: 'kind',
