@@ -12,6 +12,7 @@ import { decimal } from './transformers';
 @Index('uq_bulk_orders_po_number', ['poNumber'], { unique: true })
 @Index('idx_bulk_orders_type_status', ['orderType', 'status', 'createdAt'])
 @Index('idx_bulk_orders_inst_customer', ['institutionCustomerId'])
+@Index('idx_bulk_orders_buyer_org', ['buyerOrgId'])
 export class BulkOrder {
   @PrimaryGeneratedColumn({ name: 'id', type: 'bigint' })
   id: string;
@@ -239,6 +240,10 @@ export class BulkOrder {
   /** 2026-11-24 (migration BulkPaymentDetails): bank details text our team gives the buyer (with / instead of a link / QR). */
   @Column({ name: 'payment_bank_details', type: 'varchar', length: 1000, nullable: true })
   paymentBankDetails: string | null;
+
+  /** 2026-11-24 (migration BulkBuyerOrgs): the buyer organisation the order belongs to (NULL = ours / none). */
+  @Column({ name: 'buyer_org_id', type: 'bigint', nullable: true })
+  buyerOrgId: string | null;
 }
 
 /**
@@ -402,6 +407,7 @@ export class BulkOrderReceiver {
 @Entity({ name: TABLES.BULK_INSTITUTION_CUSTOMERS })
 @Index('uq_bulk_inst_customers_gstin', ['gstin'], { unique: true })
 @Index('idx_bulk_inst_customers_name', ['companyName'])
+@Index('idx_bulk_inst_customers_org', ['buyerOrgId'])
 export class BulkInstitutionCustomer {
   @PrimaryGeneratedColumn({ name: 'id', type: 'bigint' })
   id: string;
@@ -459,6 +465,52 @@ export class BulkInstitutionCustomer {
 
   @Column({ name: 'updated_at', type: 'datetime', precision: 6, default: () => 'CURRENT_TIMESTAMP(6)' })
   updatedAt: Date;
+
+  /** 2026-11-24 (migration BulkBuyerOrgs): the buyer organisation whose list it is in (NULL = ours). */
+  @Column({ name: 'buyer_org_id', type: 'bigint', nullable: true })
+  buyerOrgId: string | null;
+}
+
+/**
+ * 2026-11-24 (migration BulkBuyerOrgs): an outside buyer organisation. Its people see only its orders + customers.
+ */
+@Entity({ name: TABLES.BULK_BUYER_ORGS })
+@Index('uq_bulk_buyer_orgs_name', ['name'], { unique: true })
+export class BulkBuyerOrg {
+  @PrimaryGeneratedColumn({ name: 'id', type: 'bigint' })
+  id: string;
+
+  @Column({ name: 'name', type: 'varchar', length: 200 })
+  name: string;
+
+  @Column({ name: 'is_active', type: 'boolean', default: true })
+  isActive: boolean;
+
+  @Column({ name: 'created_by', type: 'int' })
+  createdBy: number;
+
+  @Column({ name: 'created_at', type: 'datetime', precision: 6, default: () => 'CURRENT_TIMESTAMP(6)' })
+  createdAt: Date;
+
+  @Column({ name: 'updated_at', type: 'datetime', precision: 6, default: () => 'CURRENT_TIMESTAMP(6)' })
+  updatedAt: Date;
+}
+
+/** A person of a buyer organisation (one organisation per person). */
+@Entity({ name: TABLES.BULK_BUYER_ORG_USERS })
+@Index('idx_bulk_buyer_org_users_org', ['orgId'])
+export class BulkBuyerOrgUser {
+  @PrimaryColumn({ name: 'user_id', type: 'int' })
+  userId: number;
+
+  @Column({ name: 'org_id', type: 'bigint' })
+  orgId: string;
+
+  @Column({ name: 'added_by', type: 'int' })
+  addedBy: number;
+
+  @Column({ name: 'added_at', type: 'datetime', precision: 6, default: () => 'CURRENT_TIMESTAMP(6)' })
+  addedAt: Date;
 }
 
 /** v2 piece 5a: a shipping address of an Institutional customer (picked on the order form; switched off, never deleted). */

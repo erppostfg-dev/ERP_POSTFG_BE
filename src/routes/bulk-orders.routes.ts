@@ -26,6 +26,7 @@ import {
 } from '../modules/bulk-orders/bulk-documents.service';
 import { readNotifySettings, saveNotifySettings } from '../modules/bulk-orders/bulk-notify.service';
 import { bulkOrderStock } from '../modules/bulk-orders/bulk-stock.service';
+import { addBuyerOrg, listBuyerOrgs, updateBuyerOrg } from '../modules/bulk-orders/bulk-buyer-orgs.service';
 import {
   addInstitutionCustomer, addInstitutionCustomerAddress, listInstitutionCustomers, updateInstitutionCustomer, updateInstitutionCustomerAddress,
   verifyInstitutionCustomerGstin,
@@ -101,6 +102,10 @@ router.get(BULK_ORDERS.ROUTES.LOCATIONS, requireAuth, send((req) => listBulkLoca
 router.post(BULK_ORDERS.ROUTES.LOCATIONS, requireAuth, send((req) => addBulkLocation(actor(req), body(req)), 201));
 // before '/:id', which would take "settings" as an id
 // v2 piece 3: email switches (admin; before SETTING)
+// 2026-11-24: buyer organisations (admin; before SETTING and the /:id routes)
+router.get(BULK_ORDERS.ROUTES.ORGS, requireAuth, send((req) => listBuyerOrgs(actor(req))));
+router.post(BULK_ORDERS.ROUTES.ORGS, requireAuth, send((req) => addBuyerOrg(actor(req), body(req)), 201));
+router.put(BULK_ORDERS.ROUTES.ORG, requireAuth, send((req) => updateBuyerOrg(actor(req), String(req.params.orgId), body(req))));
 router.get(BULK_ORDERS.ROUTES.NOTIFY_SETTINGS, requireAuth, send(async (req) => { await needSettingsAdmin(actor(req)); return readNotifySettings(); }));
 router.put(BULK_ORDERS.ROUTES.NOTIFY_SETTINGS, requireAuth, send(async (req) => { await needSettingsAdmin(actor(req)); return saveNotifySettings(body(req), actor(req).id); }));
 router.get(BULK_ORDERS.ROUTES.SETTINGS, requireAuth, send((req) => listBulkSettings(actor(req))));

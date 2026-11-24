@@ -7,6 +7,7 @@ import { BulkOrderReceivers1796200000000 } from '../../src/migrations/1796200000
 import { BulkInstitutionCustomers1796300000000 } from '../../src/migrations/1796300000000-BulkInstitutionCustomers';
 import { BulkFinance1796400000000 } from '../../src/migrations/1796400000000-BulkFinance';
 import { BulkPaymentDetails1796500000000 } from '../../src/migrations/1796500000000-BulkPaymentDetails';
+import { BulkBuyerOrgs1796600000000 } from '../../src/migrations/1796600000000-BulkBuyerOrgs';
 import { MARKETING_UNIT_PRICE } from '../../src/constants';
 import { runPoSyncPass } from '../../src/modules/po-uniware-sync/sync.service';
 import { api, loginAs, type TestLogin } from '../helpers/auth';
@@ -19,6 +20,7 @@ import { covers } from '../helpers/routes';
  * SKU search with MRP, price = MRP less discount % from OUR master (never the request's), unique PO numbers per type
  * and year (also under parallel creates), saved locations per type, validation, and nothing of the PO chain touched.
  */
+covers(['GET /bulk-orders/settings/orgs', 'POST /bulk-orders/settings/orgs', 'PUT /bulk-orders/settings/orgs/:orgId']);
 covers(['POST /bulk-orders/receivers/check', 'POST /bulk-orders/duplicate-check', 'GET /bulk-orders/:id/stock', 'GET /po-review/bulk-orders/:id/stock']);
 covers(['GET /bulk-orders/customers', 'POST /bulk-orders/customers', 'PUT /bulk-orders/customers/:customerId',
   'POST /bulk-orders/customers/:customerId/addresses', 'PUT /bulk-orders/customers/:customerId/addresses/:addressId', 'POST /bulk-orders/customers/:customerId/gstin']);
@@ -1276,8 +1278,11 @@ describe('bulk orders v2: Institutional customers', () => {
     const o = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
     const qr = (await db()).createQueryRunner();
     try {
+      // the later BulkBuyerOrgs adds a column to its table: undone first, done again after
+      await new BulkBuyerOrgs1796600000000().down(qr);
       await new BulkInstitutionCustomers1796300000000().down(qr);
       await new BulkInstitutionCustomers1796300000000().up(qr);
+      await new BulkBuyerOrgs1796600000000().up(qr);
     } finally {
       await qr.release();
     }
@@ -1496,6 +1501,65 @@ describe('bulk orders: stock at the mother warehouses on the approval screen', (
     snap.csv = 'x';
     const none = (await api().get(`${V}/${o.id}/stock`).set('Cookie', approver.cookie).expect(200)).body.data;
     expect([none.asOf, none.note, none.skus.SKU_A]).toEqual([null, 'No stock report available (the in-transit report has not been built yet)', null]);
+  });
+});
+
+/*
+ * Buyer organisations (2026-11-24, user "yes do this too"): an outside buyer sees only its organisation's orders +
+ * customers; our people (no organisation) see everything; admins set them up in POST_FG.
+ */
+describe('bulk orders: buyer organisations (outside buyers see only their own)', () => {
+  const O = `${V}/settings/orgs`;
+  const CUST = { companyName: 'Sunrise Public School', billingAddress: ADDRESS, contactName: 'Asha', contactPhone: '9820011223' };
+
+  it('admins add an organisation with its people (existing users, one organisation each); others cannot', async () => {
+    const admin = await loginAs('admin');
+    const buyer = await loginAs('bulk-institutional');
+    await api().get(O).set('Cookie', inst.cookie).expect(403);
+    expect(fields(await api().post(O).set('Cookie', admin.cookie).send({ name: 'Sunrise Group', emails: ['nobody@x.com'] }).expect(400))).toEqual(['emails']);
+    const org = (await api().post(O).set('Cookie', admin.cookie).send({ name: 'Sunrise Group', emails: [buyer.email] }).expect(201)).body.data;
+    expect(org).toMatchObject({ name: 'Sunrise Group', active: true, members: [{ userId: buyer.userId, email: buyer.email }] });
+    expect((await api().post(O).set('Cookie', admin.cookie).send({ name: 'sunrise group' }).expect(409)).body.error.code).toBe('BULK_ORG_EXISTS');
+    const other = (await api().post(O).set('Cookie', admin.cookie).send({ name: 'Other Co' }).expect(201)).body.data;
+    expect((await api().put(`${O}/${other.id}`).set('Cookie', admin.cookie).send({ emails: [buyer.email] }).expect(409)).body.error.code).toBe('BULK_ORG_USER_TAKEN');
+    const off = (await api().put(`${O}/${org.id}`).set('Cookie', admin.cookie).send({ active: false, emails: [] }).expect(200)).body.data;
+    expect([off.active, off.members]).toEqual([false, []]);
+    await api().put(`${O}/999999`).set('Cookie', admin.cookie).send({ active: true }).expect(404);
+  });
+
+  it("an outside buyer sees and uses only its organisation's customers and orders; our people see all", async () => {
+    const admin = await loginAs('admin');
+    const buyer = await loginAs('bulk-institutional');
+    await api().post(O).set('Cookie', admin.cookie).send({ name: 'Sunrise Group', emails: [buyer.email] }).expect(201);
+    const ours = (await api().post(`${V}/customers`).set('Cookie', inst.cookie).send({ ...CUST, companyName: 'Our Customer' }).expect(201)).body.data;
+    const theirs = (await api().post(`${V}/customers`).set('Cookie', buyer.cookie).send(CUST).expect(201)).body.data;
+    expect(((await api().get(`${V}/customers`).set('Cookie', buyer.cookie).expect(200)).body.data as { id: string }[]).map((c) => c.id)).toEqual([theirs.id]);
+    expect(((await api().get(`${V}/customers`).set('Cookie', inst.cookie).expect(200)).body.data as { id: string }[]).map((c) => c.id).sort()).toEqual([ours.id, theirs.id].sort());
+    await api().put(`${V}/customers/${ours.id}`).set('Cookie', buyer.cookie).send(CUST).expect(404);
+
+    const { institutionName: _n, gstin: _g, contactEmail: _e, billingSameAsDelivery: _b, ...noInst } = order({ type: 'institutional' });
+    expect(fields(await create(buyer, { ...noInst, customerId: ours.id }).expect(400))).toEqual(['customerId']); // not its customer
+    const mine = (await create(buyer, { ...noInst, customerId: theirs.id }).expect(201)).body.data;
+    const ourOrder = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
+    const forThem = (await create(inst, { ...noInst, customerId: theirs.id }).expect(201)).body.data; // our team orders for their customer
+    expect(((await api().get(V).set('Cookie', buyer.cookie).expect(200)).body.data as { id: string }[]).map((x) => x.id).sort()).toEqual([mine.id, forThem.id].sort());
+    await api().get(`${V}/${ourOrder.id}`).set('Cookie', buyer.cookie).expect(404);
+    await api().post(`${V}/${ourOrder.id}/cancel`).set('Cookie', buyer.cookie).send({}).expect(404);
+    expect(((await api().get(V).set('Cookie', inst.cookie).expect(200)).body.data as unknown[]).length).toBe(3);
+    expect(await rows('SELECT id, buyer_org_id IS NOT NULL org FROM bulk_orders ORDER BY id')).toEqual([
+      { id: mine.id, org: '1' }, { id: ourOrder.id, org: '0' }, { id: forThem.id, org: '1' },
+    ]);
+  });
+
+  it('migration BulkBuyerOrgs: down + up', async () => {
+    const qr = (await db()).createQueryRunner();
+    try {
+      await new BulkBuyerOrgs1796600000000().down(qr);
+      await new BulkBuyerOrgs1796600000000().up(qr);
+    } finally {
+      await qr.release();
+    }
+    expect(await count('bulk_buyer_orgs')).toBe(0);
   });
 });
 

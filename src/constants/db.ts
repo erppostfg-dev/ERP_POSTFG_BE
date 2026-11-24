@@ -100,6 +100,8 @@ export const TABLES = {
   BULK_ORDER_RECEIVERS: 'bulk_order_receivers',
   BULK_INSTITUTION_CUSTOMERS: 'bulk_institution_customers',
   BULK_INSTITUTION_CUSTOMER_ADDRESSES: 'bulk_institution_customer_addresses',
+  BULK_BUYER_ORGS: 'bulk_buyer_orgs',
+  BULK_BUYER_ORG_USERS: 'bulk_buyer_org_users',
   BULK_LOCATIONS: 'bulk_locations',
   BULK_ORDER_COUNTERS: 'bulk_order_counters',
   // Bulk Orders step 2 (2026-11-11): the timeline of an order (created, edited, cancelled, approved with changes, rejected).

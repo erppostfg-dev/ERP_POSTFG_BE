@@ -116,6 +116,10 @@ export const ERRORS = {
   /** v2 piece 5b: GSTIN verify on a customer without one. */
   /** 2026-11-24: payment details (link / QR / bank details) need the special permission. */
   BULK_NOT_PAYMENT_DETAILS: define(403, () => 'Adding payment details needs the permission "Bulk Orders: add payment details" (ask an admin)'),
+  /** 2026-11-24: buyer organisations. */
+  BULK_ORG_NOT_FOUND: define(404, (id: string) => `No buyer organisation ${id}`),
+  BULK_ORG_EXISTS: define(409, (name: string) => `A buyer organisation named ${name} already exists`),
+  BULK_ORG_USER_TAKEN: define(409, (email: string, org: string) => `${email} already belongs to the buyer organisation ${org}: remove them there first`),
   BULK_INST_CUSTOMER_NO_GSTIN: define(409, (name: string) => `${name} has no GSTIN to verify`),
   BULK_INST_CUSTOMER_EXISTS: define(409, (what: string) => `A customer with this ${what} already exists: open it instead`),
   BULK_UPLOAD_NOT_REOPENABLE: define(409, (po: string) => `${po} came from a bulk order: process it again in PO Processing & Review > Bulk Orders`),

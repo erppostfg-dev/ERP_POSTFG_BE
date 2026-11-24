@@ -6,7 +6,7 @@ import { BulkInstitutionCustomer, BulkInstitutionCustomerAddress } from '../../e
 import { appError } from '../../utils/AppError';
 import { log } from '../../utils/logger';
 import { accessFrom, allows, hasCapability, loadAccess } from '../auth/access.service';
-import { BulkActor, Checker, checkAddress, isId, normalPhone, userNames } from './bulk-orders.service';
+import { BulkActor, buyerOrgOf, Checker, checkAddress, inOrg, isId, normalPhone, userNames } from './bulk-orders.service';
 
 /*
  * Bulk Orders Portal v2 piece 5a (2026-11-24, user "GO"; PRD "Customers page"): the customers Institutional orders are
@@ -18,11 +18,13 @@ import { BulkActor, Checker, checkAddress, isId, normalPhone, userNames } from '
  * DB load: list = 2 queries (+ names); a change = a few single-row reads + writes.
  */
 
-const needInstitutional = async (actor: BulkActor, level: AccessLevel): Promise<void> => {
-  const rows = await loadAccess(actor.id, actor.roles);
+/** 403 unless the person has `level` on the Institutional page; returns their buyer organisation (null = ours). */
+const needInstitutional = async (actor: BulkActor, level: AccessLevel): Promise<string | null> => {
+  const [rows, org] = await Promise.all([loadAccess(actor.id, actor.roles), buyerOrgOf(actor.id)]);
   if (!allows(accessFrom(rows, BULK_PAGE.INSTITUTIONAL), level)) {
     throw appError(ERROR_CODES.BULK_TYPE_NOT_ALLOWED, BULK_ORDER_TYPE.INSTITUTIONAL, level === ACCESS_LEVEL.EDITOR ? 'manage the customers of' : 'see the customers of');
   }
+  return org;
 };
 
 const addressOut = (a: BulkInstitutionCustomerAddress) => ({
@@ -82,9 +84,10 @@ const noTwin = async (x: CustomerIn, selfId: string | null): Promise<void> => {
   if (sameName) throw appError(ERROR_CODES.BULK_INST_CUSTOMER_EXISTS, `company name (${x.companyName})`);
 };
 
-const loadCustomer = async (id: string): Promise<BulkInstitutionCustomer> => {
+/** One customer; 404 when missing or of another buyer organisation (an outside buyer sees only its own). */
+const loadCustomer = async (id: string, org: string | null = null): Promise<BulkInstitutionCustomer> => {
   const c = isId(id) ? await AppDataSource.getRepository(BulkInstitutionCustomer).findOneBy({ id }) : null;
-  if (!c) throw appError(ERROR_CODES.BULK_INST_CUSTOMER_NOT_FOUND, String(id));
+  if (!c || !inOrg({ org }, c.buyerOrgId)) throw appError(ERROR_CODES.BULK_INST_CUSTOMER_NOT_FOUND, String(id));
   return c;
 };
 
@@ -97,8 +100,8 @@ const oneOut = async (id: string) => {
 
 /** Every customer (company A-Z) with its addresses: viewer on the Institutional page. */
 export const listInstitutionCustomers = async (actor: BulkActor) => {
-  await needInstitutional(actor, ACCESS_LEVEL.VIEWER);
-  const all = await AppDataSource.getRepository(BulkInstitutionCustomer).find({ order: { companyName: 'ASC' }, take: BULK_ORDERS.CUSTOMERS_LIST_MAX });
+  const org = await needInstitutional(actor, ACCESS_LEVEL.VIEWER);
+  const all = await AppDataSource.getRepository(BulkInstitutionCustomer).find({ where: org ? { buyerOrgId: org } : {}, order: { companyName: 'ASC' }, take: BULK_ORDERS.CUSTOMERS_LIST_MAX });
   const addresses = all.length ? await AppDataSource.getRepository(BulkInstitutionCustomerAddress).find({ where: { customerId: In(all.map((c) => String(c.id))) }, order: { id: 'ASC' } }) : [];
   const names = await userNames(all.flatMap((c) => [c.createdBy, c.gstinVerifiedBy ?? 0]));
   return all.map((c) => customerOut(c, addresses, names));
@@ -106,7 +109,7 @@ export const listInstitutionCustomers = async (actor: BulkActor) => {
 
 /** A new customer (+ optional shipping addresses): editor on the Institutional page. */
 export const addInstitutionCustomer = async (actor: BulkActor, body: Record<string, unknown>) => {
-  await needInstitutional(actor, ACCESS_LEVEL.EDITOR);
+  const org = await needInstitutional(actor, ACCESS_LEVEL.EDITOR);
   const c = new Checker();
   const x = parseCustomer(c, body);
   const raw = body[F.ADDRESSES] ?? [];
@@ -118,6 +121,7 @@ export const addInstitutionCustomer = async (actor: BulkActor, body: Record<stri
     const res = await m.getRepository(BulkInstitutionCustomer).insert({
       companyName: x.companyName, gstin: x.gstin, billingAddressLine: x.billing.line, billingCity: x.billing.city, billingState: x.billing.state, billingPincode: x.billing.pincode,
       contactName: x.contactName, contactPhone: x.contactPhone, contactEmail: x.contactEmail, defaultDiscountPct: x.defaultDiscountPct, createdBy: actor.id,
+      buyerOrgId: org, // an outside buyer's customer is in its organisation's list
     });
     const customerId = String(res.identifiers[0].id);
     if (addresses.length) {
@@ -133,8 +137,8 @@ export const addInstitutionCustomer = async (actor: BulkActor, body: Record<stri
 
 /** A change (every field again; `active` to switch it off / on). A new GSTIN = not verified any more. */
 export const updateInstitutionCustomer = async (actor: BulkActor, id: string, body: Record<string, unknown>) => {
-  await needInstitutional(actor, ACCESS_LEVEL.EDITOR);
-  const cur = await loadCustomer(id);
+  const org = await needInstitutional(actor, ACCESS_LEVEL.EDITOR);
+  const cur = await loadCustomer(id, org);
   const c = new Checker();
   const x = parseCustomer(c, body);
   c.fail();
@@ -153,8 +157,8 @@ export const updateInstitutionCustomer = async (actor: BulkActor, id: string, bo
 
 /** A new shipping address of a customer. */
 export const addInstitutionCustomerAddress = async (actor: BulkActor, id: string, body: Record<string, unknown>) => {
-  await needInstitutional(actor, ACCESS_LEVEL.EDITOR);
-  const cur = await loadCustomer(id);
+  const org = await needInstitutional(actor, ACCESS_LEVEL.EDITOR);
+  const cur = await loadCustomer(id, org);
   const c = new Checker();
   const a = parseAddress(c, body);
   c.fail();
@@ -169,8 +173,8 @@ export const addInstitutionCustomerAddress = async (actor: BulkActor, id: string
 
 /** A shipping address changed ({ label, address }) and / or switched off / on ({ active }). */
 export const updateInstitutionCustomerAddress = async (actor: BulkActor, id: string, addressId: string, body: Record<string, unknown>) => {
-  await needInstitutional(actor, ACCESS_LEVEL.EDITOR);
-  const cur = await loadCustomer(id);
+  const org = await needInstitutional(actor, ACCESS_LEVEL.EDITOR);
+  const cur = await loadCustomer(id, org);
   const repo = AppDataSource.getRepository(BulkInstitutionCustomerAddress);
   const a = isId(addressId) ? await repo.findOneBy({ id: addressId, customerId: String(cur.id) }) : null;
   if (!a) throw appError(ERROR_CODES.BULK_INST_CUSTOMER_NOT_FOUND, `${id} address ${addressId}`);

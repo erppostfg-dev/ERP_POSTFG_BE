@@ -37,6 +37,7 @@
   "GET /bulk-orders/locations",
   "GET /bulk-orders/settings",
   "GET /bulk-orders/settings/notifications",
+  "GET /bulk-orders/settings/orgs",
   "GET /bulk-orders/skus",
   "GET /channel-pulls",
   "GET /channel-pulls/:key/items",
@@ -166,6 +167,7 @@
   "POST /bulk-orders/duplicate-check",
   "POST /bulk-orders/locations",
   "POST /bulk-orders/receivers/check",
+  "POST /bulk-orders/settings/orgs",
   "POST /channel-pulls/:key/process",
   "POST /channel-pulls/:key/robot",
   "POST /d2c-transfers",
@@ -243,5 +245,6 @@
   "PUT /bulk-orders/customers/:customerId/addresses/:addressId",
   "PUT /bulk-orders/settings/:type",
   "PUT /bulk-orders/settings/notifications",
+  "PUT /bulk-orders/settings/orgs/:orgId",
   "PUT /notices/settings"
 ]

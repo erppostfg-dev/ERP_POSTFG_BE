@@ -321,6 +321,9 @@ export const BULK_ORDERS = {
     SETTING: '/settings/:type',
     /** v2 piece 3: the requester nudges our team. */
     REMIND: '/:id/remind',
+    /** 2026-11-24: buyer organisations (admin = editor on BULK_PAGE.ROOT). Before SETTING / '/:id'. */
+    ORGS: '/settings/orgs',
+    ORG: '/settings/orgs/:orgId',
     /** v2 piece 2: checks the rows of an uploaded receivers file (nothing saved). Before '/:id' in the router. */
     RECEIVERS_CHECK: '/receivers/check',
     /** v2 piece 5a: Institutional customers (before '/:id' in the router). */
@@ -503,6 +506,9 @@ export const BULK_BODY = {
   PINCODES: 'pincodes',
   EXCLUDE_ID: 'excludeId',
   WAITING_DAYS: 'waitingDays',
+  /** 2026-11-24: buyer organisation { name, active?, emails? }. */
+  NAME: 'name',
+  EMAILS: 'emails',
   VERIFIED: 'verified',
   ADDRESSES: 'addresses',
   ACTIVE: 'active',
