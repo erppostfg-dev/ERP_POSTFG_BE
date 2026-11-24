@@ -74,6 +74,11 @@ export const BULK_ORDER_STATUS = {
    * sale order is made, like a pending one; processed like an approved one.
    */
   SUBMITTED: 'submitted',
+  /**
+   * v2 1g (2026-11-24, user "1G A"): saved before submitting, in the app (only its creator sees it), number DRAFT-<id>,
+   * fields may be empty; Submit checks everything, applies the approval rules and gives it its real number.
+   */
+  DRAFT: 'draft',
 } as const;
 export type BulkOrderStatus = (typeof BULK_ORDER_STATUS)[keyof typeof BULK_ORDER_STATUS];
 export const BULK_ORDER_STATUSES = Object.values(BULK_ORDER_STATUS) as BulkOrderStatus[];
@@ -83,7 +88,20 @@ export const BULK_PROCESSABLE_STATUSES: readonly string[] = [BULK_ORDER_STATUS.A
 /** List filter `status=ready` (v2 1c): every order our team may process (BULK_PROCESSABLE_STATUSES), the team tab's default. */
 export const BULK_LIST_READY = 'ready';
 /** Statuses the requester may still edit / cancel (before approval, or before the sale order when none is needed). */
-export const BULK_EDITABLE_STATUSES: readonly string[] = [BULK_ORDER_STATUS.PENDING_APPROVAL, BULK_ORDER_STATUS.SUBMITTED];
+export const BULK_EDITABLE_STATUSES: readonly string[] = [BULK_ORDER_STATUS.PENDING_APPROVAL, BULK_ORDER_STATUS.SUBMITTED, BULK_ORDER_STATUS.DRAFT];
+/** List filter `status=active` (v2 1g): open orders (submitted, pending approval, approved): the worklist's "Active" card. */
+export const BULK_LIST_ACTIVE = 'active';
+export const BULK_ACTIVE_STATUSES: readonly string[] = [BULK_ORDER_STATUS.SUBMITTED, BULK_ORDER_STATUS.PENDING_APPROVAL, BULK_ORDER_STATUS.APPROVED];
+/**
+ * Archive (v2 1g): closed orders (rejected, cancelled; delivered once tracking comes) not changed for DAYS leave the
+ * normal lists; `archived=1` lists only them (search + CSV export in the portal).
+ */
+export const BULK_ARCHIVE = {
+  DAYS: 30,
+  STATUSES: ['rejected', 'cancelled', 'delivered'] as readonly string[],
+  /** Draft numbers until Submit gives the real one (DRAFT-<id>). */
+  DRAFT_PREFIX: 'DRAFT-',
+} as const;
 
 /**
  * Approval rules (Bulk Orders Portal v2 piece 1c, 2026-11-23; user: "go with the suggestions"). An order needs approval
@@ -116,6 +134,8 @@ export const BULK_EVENT = {
   PAYMENT: 'payment',
   /** Our team created the sale order (changes: { saleOrderCode, facilityCode, uniwareChannel, customerCode, uploadId }). */
   PROCESSED: 'processed',
+  /** v2 1g: a draft was submitted (changes: { approval: why[] , poNumber }). */
+  SUBMITTED: 'submitted',
   /** The Verify step sent the sale order back (cancelled, kept): the order is approved again, to be processed again. */
   SENT_BACK: 'sent_back',
 } as const;
@@ -352,6 +372,10 @@ export const BULK_BODY = {
   REASON: 'reason',
   /** v2 1e (2026-11-23): why the requester changes the order (required on every edit). */
   EDIT_REMARK: 'remark',
+  /** v2 1g: true = save as a draft (empty fields allowed); left out on Submit. */
+  DRAFT: 'draft',
+  /** v2 1g list filter: 1 = only the archive. */
+  ARCHIVED: 'archived',
   /** v2 1f: the order's brand (one per order; every line's SKU must be of it). */
   BRAND: 'brand',
   LINE_NO: 'lineNo',

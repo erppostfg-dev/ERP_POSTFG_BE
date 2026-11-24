@@ -1036,3 +1036,65 @@ describe('bulk orders v2: one brand per order, from the SKU master', () => {
     expect(await rows('SELECT id, brand FROM bulk_orders ORDER BY id')).toEqual([{ id: one.id, brand: 'mCaffeine' }, { id: two.id, brand: null }]);
   });
 });
+
+/*
+ * Bulk Orders Portal v2, piece 1g (2026-11-24, user "1G A"): drafts saved in the app (only their creator sees them;
+ * empty fields allowed, wrong values still refused; Submit = every check + approval rules + the real number), the
+ * "active" list filter, and the archive (closed orders not changed for 30 days leave the normal lists).
+ */
+describe('bulk orders v2: drafts, active filter, archive', () => {
+  const T = '/api/v1/po-review/bulk-orders';
+
+  it('a draft needs only its type: DRAFT-<id>, no number taken, only its creator sees it (not other people, not our team)', async () => {
+    const d = (await create(mkt, { type: 'marketing', draft: true, receiverName: 'Asha', lines: [{ pepCode: 'SKU_A', qty: 2 }] }).expect(201)).body.data;
+    expect(d).toMatchObject({ status: 'draft', poNumber: `DRAFT-${d.id}`, receiverName: 'Asha', orderedBy: '', lineCount: 1, payment: null });
+    expect(await count('bulk_order_counters')).toBe(0);
+    const mkt2 = await loginAs('bulk-marketing');
+    for (const who of [mkt2, approver]) {
+      await api().get(`${V}/${d.id}`).set('Cookie', who.cookie).expect(404);
+      expect((await api().get(V).set('Cookie', who.cookie).expect(200)).body.meta.total).toBe(0);
+    }
+    expect((await api().get(V).set('Cookie', mkt.cookie).expect(200)).body.data.map((o: { id: string }) => o.id)).toEqual([d.id]);
+    expect((await api().get(T).set('Cookie', opsExec.cookie).expect(200)).body.meta.total).toBe(0);
+    await api().put(`${V}/${d.id}`).set('Cookie', mkt2.cookie).send({ draft: true }).expect(404);
+    await api().post(`${V}/${d.id}/cancel`).set('Cookie', mkt2.cookie).send({}).expect(404);
+    expect((await create(mkt, { draft: true }).expect(400)).body.error.details.map((x: { field: string }) => x.field)).toEqual(['type']);
+    expect(fields(await create(mkt, { type: 'marketing', draft: true, receiverPhone: '12' }).expect(400))).toEqual(['receiverPhone']);
+  });
+
+  it('save again (no history row, no remark), then Submit: incomplete = every missing field, complete = real number + approval rules', async () => {
+    const d = (await create(mkt, { type: 'marketing', draft: true }).expect(201)).body.data as { id: string };
+    const again = (await api().put(`${V}/${d.id}`).set('Cookie', mkt.cookie).send({ draft: true, orderedBy: 'Brand team', lines: [{ pepCode: 'SKU_B', qty: 3 }] }).expect(200)).body.data;
+    expect(again).toMatchObject({ status: 'draft', orderedBy: 'Brand team', lineCount: 1 });
+    expect(again.events.map((e: { action: string }) => e.action)).toEqual(['created']);
+    const missing = await api().put(`${V}/${d.id}`).set('Cookie', mkt.cookie).send({ orderedBy: 'Brand team', lines: [{ pepCode: 'SKU_B', qty: 3 }] }).expect(400);
+    expect(fields(missing)).toEqual(expect.arrayContaining(['brand', 'receiverName', 'receiverPhone', 'address']));
+    const sent = (await api().put(`${V}/${d.id}`).set('Cookie', mkt.cookie).send(order()).expect(200)).body.data;
+    expect(sent).toMatchObject({ status: 'pending_approval', poNumber: `MKT-${YEAR}-0001` }); // this file's v1 setting: every order needs approval
+    expect(sent.events.at(-1)).toMatchObject({ action: 'submitted', changes: { poNumber: `MKT-${YEAR}-0001` } });
+    expect((await api().get(V).set('Cookie', approver.cookie).expect(200)).body.meta.total).toBe(1);
+    // once sent it is a normal order: an edit needs a remark again
+    expect(fields(await api().put(`${V}/${d.id}`).set('Cookie', mkt.cookie).send(order()).expect(400))).toEqual(['remark']);
+    expect((await api().put(`${V}/${d.id}`).set('Cookie', mkt.cookie).send({ ...order(), draft: true }).expect(409)).body.error.code).toBe('BULK_ORDER_NOT_EDITABLE');
+  });
+
+  it('a draft can be discarded (cancel) by its creator', async () => {
+    const d = (await create(mkt, { type: 'marketing', draft: true }).expect(201)).body.data as { id: string };
+    expect((await api().post(`${V}/${d.id}/cancel`).set('Cookie', mkt.cookie).send({}).expect(200)).body.data.status).toBe('cancelled');
+  });
+
+  it('status=active = submitted + pending + approved; closed orders not changed for 30 days are only in the archive', async () => {
+    const a = (await create(mkt, order()).expect(201)).body.data as { id: string };
+    const b = (await create(mkt, order()).expect(201)).body.data as { id: string };
+    const c = (await create(mkt, order()).expect(201)).body.data as { id: string };
+    await api().post(`${V}/${b.id}/reject`).set('Cookie', approver.cookie).send({ reason: 'No budget' }).expect(200);
+    await api().post(`${V}/${c.id}/cancel`).set('Cookie', mkt.cookie).send({}).expect(200);
+    const ids = async (q: string) => ((await api().get(`${V}?${q}`).set('Cookie', mkt.cookie).expect(200)).body.data as { id: string }[]).map((o) => o.id).sort();
+    expect(await ids('status=active')).toEqual([a.id]);
+    expect(await ids('')).toEqual([a.id, b.id, c.id].sort()); // closed today: still in the normal list
+    await rows('UPDATE bulk_orders SET updated_at = NOW() - INTERVAL 31 DAY WHERE id IN (?, ?)', [b.id, a.id]);
+    expect(await ids('')).toEqual([a.id, c.id].sort()); // the old OPEN one stays; the old closed one leaves
+    expect(await ids('archived=1')).toEqual([b.id]);
+    expect(await ids('archived=1&q=MKT')).toEqual([b.id]);
+  });
+});

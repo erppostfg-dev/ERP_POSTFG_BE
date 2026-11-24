@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { EntityManager, In } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
 import {
@@ -11,7 +12,10 @@ import {
   BULK_ORDER_STATUS,
   BULK_ORDER_STATUSES,
   BULK_APPROVAL,
+  BULK_ACTIVE_STATUSES,
+  BULK_ARCHIVE,
   BULK_EDITABLE_STATUSES,
+  BULK_LIST_ACTIVE,
   BULK_LIST_READY,
   BULK_ORDER_TYPE,
   BULK_PRIORITY,
@@ -82,6 +86,8 @@ interface Issue { field: string; code: string; message: string }
 
 export class Checker {
   issues: Issue[] = [];
+  /** v2 1g: a draft = "required" problems are dropped on fail(); wrong values (format, length, choice) still count. */
+  constructor(readonly lenient = false) {}
   add(field: string, message: string): void {
     this.issues.push({ field, code: ERROR_CODES.VALIDATION_FAILED, message });
   }
@@ -104,7 +110,8 @@ export class Checker {
     return null;
   }
   fail(): void {
-    if (this.issues.length) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails(this.issues);
+    const issues = this.lenient ? this.issues.filter((i) => i.message !== errorMessage(ERROR_CODES.FIELD_REQUIRED, i.field)) : this.issues;
+    if (issues.length) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails(issues);
   }
 }
 
@@ -357,8 +364,8 @@ interface OrderIn {
 }
 
 /** Checks a create / edit body; `fixedType` = an edit (the type never changes). Throws 400 with every wrong field. */
-const parseOrder = (body: Record<string, unknown>, fixedType?: BulkOrderType, more?: (c: Checker) => void): OrderIn => {
-  const c = new Checker();
+const parseOrder = (body: Record<string, unknown>, fixedType?: BulkOrderType, more?: (c: Checker) => void, lenient = false): OrderIn => {
+  const c = new Checker(lenient);
   const type = fixedType ?? typeParam(c, body[F.TYPE]);
   const orderedBy = c.text(body[F.ORDERED_BY], F.ORDERED_BY, BULK_ORDERS.NAME_MAX);
   const receiverName = c.text(body[F.RECEIVER_NAME], F.RECEIVER_NAME, BULK_ORDERS.NAME_MAX);
@@ -396,7 +403,7 @@ const parseOrder = (body: Record<string, unknown>, fixedType?: BulkOrderType, mo
   const institution = type === BULK_ORDER_TYPE.INSTITUTIONAL ? checkInstitution(c, body) : null;
   more?.(c);
   c.fail();
-  return { type: type!, orderedBy, receiverName, phone: phone!, neededBy, priority: priority!, fastTrackRemarks, purpose, mode, note, locationId, address, saveAs, lines, institution, brand };
+  return { type: type!, orderedBy, receiverName, phone: phone ?? (lenient ? phoneText : ''), neededBy, priority: priority!, fastTrackRemarks, purpose, mode, note, locationId, address, saveAs, lines, institution, brand };
 };
 
 /** Today's MRP / name / active of SKUs from OUR master (one read; never the cache, never the request). */
@@ -493,6 +500,7 @@ const settingOf = (type: BulkOrderType) => AppDataSource.getRepository(BulkTypeS
  * approval rules say so (v2 1c), else submitted (straight to our team).
  */
 export const createBulkOrder = async (actor: BulkActor, body: Record<string, unknown>) => {
+  if (body[F.DRAFT] === true) return createDraft(actor, body);
   const o = parseOrder(body);
   needType(await bulkRights(actor), o.type, ACCESS_LEVEL.EDITOR);
   const priced = await priceLines(o.type, o.lines, o.brand);
@@ -533,9 +541,10 @@ const lockPending = async (m: EntityManager, id: string): Promise<BulkOrder> => 
  * The order locked for the requester's edit / cancel (v2 1c): pending approval, or submitted (no approval needed, sale
  * order not made yet). 409 BULK_ORDER_NOT_EDITABLE otherwise.
  */
-const lockEditable = async (m: EntityManager, id: string): Promise<BulkOrder> => {
+const lockEditable = async (m: EntityManager, id: string, actorId?: number): Promise<BulkOrder> => {
   const o = await m.getRepository(BulkOrder).findOne({ where: { id }, lock: { mode: 'pessimistic_write' } });
-  if (!o) throw appError(ERROR_CODES.BULK_ORDER_NOT_FOUND, id);
+  // a draft belongs to its creator alone (v2 1g)
+  if (!o || (o.status === BULK_ORDER_STATUS.DRAFT && o.createdBy !== actorId)) throw appError(ERROR_CODES.BULK_ORDER_NOT_FOUND, id);
   if (!BULK_EDITABLE_STATUSES.includes(o.status)) throw appError(ERROR_CODES.BULK_ORDER_NOT_EDITABLE, o.poNumber, o.status);
   return o;
 };
@@ -577,6 +586,13 @@ export const updateBulkOrder = async (actor: BulkActor, id: string, body: Record
   const r = await needAnyBulk(actor);
   const t = await typeOfOrder(r, id);
   needType(r, t, ACCESS_LEVEL.EDITOR);
+  // v2 1g: a draft is saved again (draft: true) or submitted (no remark needed: nothing was sent before)
+  const now = await AppDataSource.getRepository(BulkOrder).findOne({ select: { id: true, status: true, createdBy: true }, where: { id } });
+  if (now?.status === BULK_ORDER_STATUS.DRAFT) {
+    if (now.createdBy !== actor.id) throw appError(ERROR_CODES.BULK_ORDER_NOT_FOUND, id);
+    return body[F.DRAFT] === true ? saveDraft(actor, id, t, body) : submitDraft(actor, id, t, body);
+  }
+  if (body[F.DRAFT] === true) throw appError(ERROR_CODES.BULK_ORDER_NOT_EDITABLE, id, now?.status ?? 'gone');
   // v2 1e: every edit says why (kept with the change); checked with the rest of the body (all problems in one 400)
   let remark = '';
   const o = parseOrder(body, t, (c) => { remark = c.text(body[F.EDIT_REMARK], F.EDIT_REMARK, BULK_ORDERS.EDIT_REMARK_MAX); });
@@ -609,6 +625,75 @@ export const updateBulkOrder = async (actor: BulkActor, id: string, body: Record
   return getBulkOrder(actor, id);
 };
 
+// ---- drafts (v2 1g) -------------------------------------------------------------------------------------------------
+
+/** The order columns of a parsed order (a draft's may be empty: NOT NULL text columns take ''). */
+const orderCols = (o: OrderIn) => ({
+  orderedBy: o.orderedBy, receiverName: o.receiverName, receiverPhone: o.phone, neededBy: o.neededBy, deliveryMode: o.mode,
+  priority: o.priority, note: o.note, fastTrackRemarks: o.fastTrackRemarks, purpose: o.purpose, brand: o.brand || null,
+});
+
+/** A new draft: only the type is needed (and editor on it); what is filled is checked as usual. */
+const createDraft = async (actor: BulkActor, body: Record<string, unknown>) => {
+  const tc = new Checker();
+  const type = typeParam(tc, body[F.TYPE]);
+  tc.fail();
+  needType(await bulkRights(actor), type!, ACCESS_LEVEL.EDITOR);
+  const o = parseOrder(body, type!, undefined, true);
+  const priced = await priceLines(o.type, o.lines, o.brand || undefined);
+  const id = await AppDataSource.transaction(async (m) => {
+    const where = await whereTo(m, o, actor.id);
+    const res = await m.getRepository(BulkOrder).insert({
+      poNumber: `${BULK_ARCHIVE.DRAFT_PREFIX}${randomUUID().slice(0, 20)}`, orderType: o.type, status: BULK_ORDER_STATUS.DRAFT,
+      ...orderCols(o), ...where, ...institutionCols(o.institution, where), ...totalsOf(priced), createdBy: actor.id, paymentStatus: null,
+    });
+    const orderId = String(res.identifiers[0].id);
+    await m.getRepository(BulkOrder).update({ id: orderId }, { poNumber: `${BULK_ARCHIVE.DRAFT_PREFIX}${orderId}` });
+    if (priced.length) await m.getRepository(BulkOrderLine).insert(priced.map((l) => ({ ...l, orderId })));
+    await addEvent(m, orderId, BULK_EVENT.CREATED, actor.id, null, { draft: true });
+    return orderId;
+  });
+  log.info(LOG_SOURCE.API, `[bulk-orders] draft ${id} (${o.type}) saved by user ${actor.id}`);
+  return getBulkOrder(actor, id);
+};
+
+/** A draft saved again: everything replaced, no history row (nothing was sent yet). */
+const saveDraft = async (actor: BulkActor, id: string, type: BulkOrderType, body: Record<string, unknown>) => {
+  const o = parseOrder(body, type, undefined, true);
+  const priced = await priceLines(type, o.lines, o.brand || undefined);
+  await AppDataSource.transaction(async (m) => {
+    await lockEditable(m, id, actor.id);
+    const where = await whereTo(m, o, actor.id);
+    await m.getRepository(BulkOrderLine).delete({ orderId: id });
+    if (priced.length) await m.getRepository(BulkOrderLine).insert(priced.map((l) => ({ ...l, orderId: id })));
+    await m.getRepository(BulkOrder).update({ id }, { ...orderCols(o), ...where, ...institutionCols(o.institution, where), ...totalsOf(priced), updatedAt: new Date() });
+  });
+  return getBulkOrder(actor, id);
+};
+
+/** Submit a draft: every check of a new order, the approval rules, its real PO number, the payment check of today. */
+const submitDraft = async (actor: BulkActor, id: string, type: BulkOrderType, body: Record<string, unknown>) => {
+  const o = parseOrder(body, type);
+  const priced = await priceLines(type, o.lines, o.brand);
+  const setting = await settingOf(type);
+  const approval = approvalNeed(setting, type, totalsOf(priced).totalUnits, o.mode);
+  await withDeadlockRetry(() => AppDataSource.transaction(async (m) => {
+    await lockEditable(m, id, actor.id);
+    const where = await whereTo(m, o, actor.id);
+    const poNumber = await takeBulkPoNumber(m, type);
+    await m.getRepository(BulkOrderLine).delete({ orderId: id });
+    await m.getRepository(BulkOrderLine).insert(priced.map((l) => ({ ...l, orderId: id })));
+    await m.getRepository(BulkOrder).update({ id }, {
+      poNumber, status: approval.needed ? BULK_ORDER_STATUS.PENDING_APPROVAL : BULK_ORDER_STATUS.SUBMITTED, createdAt: new Date(), updatedAt: new Date(),
+      ...orderCols(o), ...where, ...institutionCols(o.institution, where), ...totalsOf(priced),
+      paymentStatus: setting?.paymentCheck === true ? BULK_PAYMENT_STATUS.AWAITING_PROOF : null,
+    });
+    await addEvent(m, id, BULK_EVENT.SUBMITTED, actor.id, o.note, { approval: approval.why, poNumber });
+    log.info(LOG_SOURCE.API, `[bulk-orders] draft ${id} submitted as ${poNumber} by user ${actor.id}`);
+  }));
+  return getBulkOrder(actor, id);
+};
+
 /** Cancels an order still waiting for approval (editor on its type); `reason` optional. */
 export const cancelBulkOrder = async (actor: BulkActor, id: string, body: Record<string, unknown>) => {
   const r = await needAnyBulk(actor);
@@ -617,7 +702,7 @@ export const cancelBulkOrder = async (actor: BulkActor, id: string, body: Record
   const reason = c.text(body[F.REASON], F.REASON, BULK_ORDERS.NOTE_MAX, false) || null;
   c.fail();
   await AppDataSource.transaction(async (m) => {
-    const cur = await lockEditable(m, id);
+    const cur = await lockEditable(m, id, actor.id);
     await m.getRepository(BulkOrder).update({ id }, { status: BULK_ORDER_STATUS.CANCELLED, updatedAt: new Date() });
     await addEvent(m, id, BULK_EVENT.CANCELLED, actor.id, reason);
     log.info(LOG_SOURCE.API, `[bulk-orders] ${cur.poNumber} cancelled by user ${actor.id}`);
@@ -780,14 +865,16 @@ export const userNames = async (ids: number[]): Promise<Map<number, string>> => 
   return new Map(us.map((u) => [u.id, u.name || u.email]));
 };
 
-interface ListQuery { type: BulkOrderType | null; status: string | null; payment: string | null; page: number; size: number; search: string }
+interface ListQuery { type: BulkOrderType | null; status: string | null; payment: string | null; page: number; size: number; search: string; archived: boolean }
 
 /** Checks a list query (type, status, q, page, pageSize); 400 with every wrong one. */
 const parseListQuery = (q: Record<string, unknown>): ListQuery => {
   const c = new Checker();
   const type = q.type === undefined || q.type === '' ? null : typeParam(c, q.type);
   // a status, or BULK_LIST_READY = approved + submitted (v2 1c: what our team may process)
-  const status = q.status === undefined || q.status === '' ? null : c.oneOf(q.status, 'status', [...BULK_ORDER_STATUSES, BULK_LIST_READY]);
+  const status = q.status === undefined || q.status === '' ? null : c.oneOf(q.status, 'status', [...BULK_ORDER_STATUSES, BULK_LIST_READY, BULK_LIST_ACTIVE]);
+  // v2 1g: 1 / true = only the archive (closed orders not changed for BULK_ARCHIVE.DAYS); else they are left out
+  const archived = q[F.ARCHIVED] === '1' || q[F.ARCHIVED] === 'true';
   // payment status (2026-11-13: "Payments to verify" = proof_uploaded)
   const payment = q.payment === undefined || q.payment === '' ? null : c.oneOf(q.payment, 'payment', BULK_PAYMENT_STATUSES);
   const page = q.page === undefined ? 1 : Number(q.page);
@@ -796,7 +883,7 @@ const parseListQuery = (q: Record<string, unknown>): ListQuery => {
   if (!Number.isInteger(size) || size < 1 || size > BULK_ORDERS.PAGE_SIZE_MAX) c.add('pageSize', errorMessage(ERROR_CODES.FIELD_NOT_INT_RANGE, 'pageSize', 1, BULK_ORDERS.PAGE_SIZE_MAX));
   const search = c.text(q.q, 'q', 100, false);
   c.fail();
-  return { type, status, payment, page, size, search };
+  return { type, status, payment, page, size, search, archived };
 };
 
 /** One page of orders of these types (newest first) + the total: 1 count + 1 page query, no lines. */
@@ -807,10 +894,16 @@ const editCounts = async (ids: string[]): Promise<Map<string, number>> => {
     .where('e.orderId IN (:...ids) AND e.action = :a', { ids, a: BULK_EVENT.EDITED }).groupBy('e.orderId').getRawMany<{ id: string; n: string }>();
   return new Map(rows.map((r) => [String(r.id), Number(r.n)]));
 };
-const pageOfOrders = async (types: BulkOrderType[], l: ListQuery) => {
+const pageOfOrders = async (types: BulkOrderType[], l: ListQuery, me: number | null = null) => {
   if (!types.length) return { items: [], meta: { total: 0, page: l.page, pageSize: l.size } };
   const qb = AppDataSource.getRepository(BulkOrder).createQueryBuilder('o').where('o.orderType IN (:...types)', { types });
+  // v2 1g: a draft is seen by its creator only (our team never sees drafts: me = null)
+  qb.andWhere(me === null ? 'o.status <> :draft' : '(o.status <> :draft OR o.createdBy = :me)', { draft: BULK_ORDER_STATUS.DRAFT, me });
+  // v2 1g: the archive = closed orders not changed for BULK_ARCHIVE.DAYS
+  const cutoff = new Date(Date.now() - BULK_ARCHIVE.DAYS * 86_400_000);
+  qb.andWhere(l.archived ? '(o.status IN (:...closed) AND o.updatedAt < :cutoff)' : 'NOT (o.status IN (:...closed) AND o.updatedAt < :cutoff)', { closed: [...BULK_ARCHIVE.STATUSES], cutoff });
   if (l.status === BULK_LIST_READY) qb.andWhere('o.status IN (:...ready)', { ready: [...BULK_PROCESSABLE_STATUSES] });
+  else if (l.status === BULK_LIST_ACTIVE) qb.andWhere('o.status IN (:...active)', { active: [...BULK_ACTIVE_STATUSES] });
   else if (l.status) qb.andWhere('o.status = :status', { status: l.status });
   if (l.payment) qb.andWhere('o.paymentStatus = :payment', { payment: l.payment });
   if (l.search) {
@@ -832,7 +925,7 @@ export const listBulkOrders = async (actor: BulkActor, q: Record<string, unknown
   if (l.type) needType(r, l.type, ACCESS_LEVEL.VIEWER);
   const types = l.type ? [l.type] : viewable(r);
   // v2 1c: the approval rules of the types I see, so the order form can say before Submit whether approval is needed
-  const [found, settings, brands] = await Promise.all([pageOfOrders(types, l), AppDataSource.getRepository(BulkTypeSetting).find(), bulkBrands()]);
+  const [found, settings, brands] = await Promise.all([pageOfOrders(types, l, actor.id), AppDataSource.getRepository(BulkTypeSetting).find(), bulkBrands()]);
   const approvalRules = Object.fromEntries(types.map((t) => [t, {
     overUnits: settings.find((s) => s.orderType === t)?.approvalOverUnits ?? null,
     modes: isMarketingLike(t) ? [...BULK_APPROVAL.MODES] : [],
@@ -870,6 +963,7 @@ export const getBulkOrder = async (actor: BulkActor, id: string) => {
   const o = await AppDataSource.getRepository(BulkOrder).findOneBy({ id });
   const r = await needAnyBulk(actor);
   if (!o || !allows(r.types[o.orderType as BulkOrderType] ?? ACCESS_LEVEL.NONE, ACCESS_LEVEL.VIEWER)) throw appError(ERROR_CODES.BULK_ORDER_NOT_FOUND, id);
+  if (o.status === BULK_ORDER_STATUS.DRAFT && o.createdBy !== actor.id) throw appError(ERROR_CODES.BULK_ORDER_NOT_FOUND, id);
   return orderFull(o);
 };
 
@@ -880,7 +974,7 @@ export const teamBulkOrders = async (q: Record<string, unknown>) => {
   const l = parseListQuery(q);
   // per type: approved orders waiting to be processed + proofs of payment waiting to be checked (open orders); 1 GROUP BY
   const [found, counts] = await Promise.all([
-    pageOfOrders(l.type ? [l.type] : BULK_ORDER_TYPES, l),
+    pageOfOrders(l.type ? [l.type] : BULK_ORDER_TYPES, l, null),
     AppDataSource.getRepository(BulkOrder).createQueryBuilder('o').select('o.orderType', 'type')
       .addSelect('SUM(o.status IN (:...ready))', 'n').addSelect('SUM(o.paymentStatus = :p AND o.status NOT IN (:...closed))', 'pay')
       .where('(o.status IN (:...ready) OR o.paymentStatus = :p)', { ready: [...BULK_PROCESSABLE_STATUSES], p: BULK_PAYMENT_STATUS.PROOF_UPLOADED, closed: [BULK_ORDER_STATUS.REJECTED, BULK_ORDER_STATUS.CANCELLED] })
