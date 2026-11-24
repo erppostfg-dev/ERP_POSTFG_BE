@@ -107,6 +107,43 @@ export const BULK_TRACKING = {
   TEXT_MAX: 255,
 } as const;
 
+/**
+ * Notifications (v2 piece 3, 2026-11-24; modules/bulk-orders/bulk-notify.service.ts). Bell always (notices); email per
+ * event behind switches (POST_FG Users & Roles > Settings > Bulk Orders > Notifications; app_state SETTINGS_KEY).
+ * Remind: the requester nudges our team (COPT) REMIND_AFTER_H after the request (after the approval when one was
+ * needed) while not placed, then at most every REMIND_COOLDOWN_H.
+ */
+export type BulkNotifyEvent = 'approval_needed' | 'approved' | 'rejected' | 'for_team' | 'remind';
+export interface BulkNotifySettings { emails: boolean; approvalNeeded: boolean; decision: boolean; remind: boolean }
+/** The settings' body fields (booleans). */
+export const BULK_ORDERS_BODY_NOTIFY = ['emails', 'approvalNeeded', 'decision', 'remind'] as const;
+export const BULK_NOTIFY = {
+  SETTINGS_KEY: 'bulk-notify:settings',
+  DEFAULTS: { emails: true, approvalNeeded: true, decision: true, remind: true } as BulkNotifySettings,
+  /** Which switch sends an event's email (none = bell only: our team works in POST_FG all day). */
+  EMAIL_SWITCH: { approval_needed: 'approvalNeeded', approved: 'decision', rejected: 'decision', for_team: null, remind: 'remind' } as Record<BulkNotifyEvent, 'approvalNeeded' | 'decision' | 'remind' | null>,
+  APPROVER_ROLE: 'bulk-approver',
+  /** POST_FG page of our team's Bulk Orders tab (the bell link + email link for COPT). */
+  TEAM_LINK: '/operations/po-review?tab=bulk',
+  REMIND_AFTER_H: 6,
+  REMIND_COOLDOWN_H: 6,
+  REMIND_STATUSES: ['submitted', 'approved'] as readonly string[],
+  TEXT: {
+    approval_needed: (po: string, units: number) => `Bulk order ${po} (${units} units) needs your approval in the Bulk Orders portal.`,
+    approved: (po: string) => `Your bulk order ${po} was approved. Our team will place it.`,
+    rejected: (po: string, _u: number, why: string) => `Your bulk order ${po} was rejected${why ? `: ${why}` : '.'}`,
+    for_team: (po: string, units: number) => `New bulk order ${po} (${units} units) to place: Bulk Orders tab.`,
+    remind: (po: string, units: number) => `Reminder: bulk order ${po} (${units} units) is still waiting to be placed.`,
+  } as Record<BulkNotifyEvent, (po: string, units: number, extra: string) => string>,
+  SUBJECT: {
+    approval_needed: (po: string) => `Bulk order ${po} needs your approval`,
+    approved: (po: string) => `Bulk order ${po} approved`,
+    rejected: (po: string) => `Bulk order ${po} rejected`,
+    for_team: (po: string) => `New bulk order ${po} to place`,
+    remind: (po: string) => `Reminder: bulk order ${po} waiting to be placed`,
+  } as Record<BulkNotifyEvent, (po: string) => string>,
+} as const;
+
 /** List filter `status=active` (v2 1g): open orders (submitted, pending approval, approved): the worklist's "Active" card. */
 export const BULK_LIST_ACTIVE = 'active';
 export const BULK_ACTIVE_STATUSES: readonly string[] = [BULK_ORDER_STATUS.SUBMITTED, BULK_ORDER_STATUS.PENDING_APPROVAL, BULK_ORDER_STATUS.APPROVED];
@@ -152,6 +189,8 @@ export const BULK_EVENT = {
   PAYMENT: 'payment',
   /** Our team created the sale order (changes: { saleOrderCode, facilityCode, uniwareChannel, customerCode, uploadId }). */
   PROCESSED: 'processed',
+  /** v2 piece 3: the requester reminded our team to place it. */
+  REMINDED: 'reminded',
   /** v2 piece 4: Uniware moved the order (changes: { status: [old, new], awb, courier }). */
   TRACKING: 'tracking',
   /** v2 1g: a draft was submitted (changes: { approval: why[] , poNumber }). */
@@ -238,7 +277,11 @@ export const BULK_ORDERS = {
     PAYMENT: '/:id/payment',
     /** Per-type settings (admin: editor on BULK_PAGE.ROOT). Before '/:id' in the router. */
     SETTINGS: '/settings',
+    /** v2 piece 3: email switches (before SETTING, which would take "notifications" as a type). */
+    NOTIFY_SETTINGS: '/settings/notifications',
     SETTING: '/settings/:type',
+    /** v2 piece 3: the requester nudges our team. */
+    REMIND: '/:id/remind',
   },
   /** Lines per order. */
   LINES_MAX: 200,

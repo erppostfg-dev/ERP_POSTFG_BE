@@ -193,7 +193,7 @@ export const teamSetBulkPayment = async (actor: BulkActor, id: string, body: Rec
 
 // ---- settings (admin) ----------------------------------------------------------------------------------------------
 
-const needSettingsAdmin = async (actor: BulkActor): Promise<void> => {
+export const needSettingsAdmin = async (actor: BulkActor): Promise<void> => {
   const rows = await loadAccess(actor.id, actor.roles);
   if (!allows(accessFrom(rows, BULK_PAGE.ROOT), ACCESS_LEVEL.EDITOR)) throw appError(ERROR_CODES.BULK_NOT_SETTINGS_ADMIN);
 };

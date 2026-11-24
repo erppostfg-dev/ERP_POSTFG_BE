@@ -107,6 +107,8 @@ export const ERRORS = {
   BULK_NOT_SETTINGS_ADMIN: define(403, () => 'Only an admin can change the Bulk Orders settings'),
   BULK_ORDER_NOT_APPROVED: define(409, (po: string, status: string) => `${po} is ${status.replace(/_/g, ' ')}: only an approved or submitted order can be processed (reload it)`),
   /** v2 1c (2026-11-23): edit / cancel only while pending approval or submitted (before the sale order). */
+  /** v2 piece 3: Remind not possible now (not waiting / too early / just reminded). */
+  BULK_REMIND_NOT_NOW: define(409, (po: string, why: string) => `${po}: no reminder now (${why})`),
   BULK_ORDER_NOT_EDITABLE: define(409, (po: string, status: string) => `${po} can no longer be changed (now ${status.replace(/_/g, ' ')}): reload it`),
   BULK_PROCESS_TYPE_LATER: define(409, (type: string) => `${type} orders cannot be processed in POST_FG yet`),
   BULK_UPLOAD_NOT_REOPENABLE: define(409, (po: string) => `${po} came from a bulk order: process it again in PO Processing & Review > Bulk Orders`),

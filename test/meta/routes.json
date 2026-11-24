@@ -34,6 +34,7 @@
   "GET /bulk-orders/:id/documents/:docId",
   "GET /bulk-orders/locations",
   "GET /bulk-orders/settings",
+  "GET /bulk-orders/settings/notifications",
   "GET /bulk-orders/skus",
   "GET /channel-pulls",
   "GET /channel-pulls/:key/items",
@@ -155,6 +156,7 @@
   "POST /bulk-orders/:id/documents",
   "POST /bulk-orders/:id/payment",
   "POST /bulk-orders/:id/reject",
+  "POST /bulk-orders/:id/remind",
   "POST /bulk-orders/locations",
   "POST /channel-pulls/:key/process",
   "POST /channel-pulls/:key/robot",
@@ -230,5 +232,6 @@
   "PUT /admin/mail-lists/:key",
   "PUT /bulk-orders/:id",
   "PUT /bulk-orders/settings/:type",
+  "PUT /bulk-orders/settings/notifications",
   "PUT /notices/settings"
 ]

@@ -16,6 +16,7 @@ import {
   BULK_ARCHIVE,
   BULK_EDITABLE_STATUSES,
   BULK_LIST_ACTIVE,
+  BULK_NOTIFY,
   BULK_LIST_READY,
   BULK_ORDER_TYPE,
   BULK_PRIORITY,
@@ -41,6 +42,7 @@ import { log } from '../../utils/logger';
 import { LOG_SOURCE } from '../../constants/logging';
 import { accessFrom, allows, loadAccess } from '../auth/access.service';
 import { cachedPepSkus } from '../masters/masters.cache';
+import { notifyBulk } from './bulk-notify.service';
 
 /*
  * Bulk Orders portal step 1 (2026-11-11, constants/bulk-orders.ts): create an order, list / open orders, SKU search
@@ -523,7 +525,9 @@ export const createBulkOrder = async (actor: BulkActor, body: Record<string, unk
     log.info(LOG_SOURCE.API, `[bulk-orders] ${poNumber} created (${o.type}, ${priced.length} SKUs, ${approval.needed ? `approval: ${approval.why.join(', ')}` : 'no approval needed'}) by user ${actor.id}`);
     return orderId;
   }));
-  return getBulkOrder(actor, id);
+  const made = await getBulkOrder(actor, id);
+  await notifyNew(made, approval.needed, actor.id);
+  return made;
 };
 
 /**
@@ -598,6 +602,7 @@ export const updateBulkOrder = async (actor: BulkActor, id: string, body: Record
   const o = parseOrder(body, t, (c) => { remark = c.text(body[F.EDIT_REMARK], F.EDIT_REMARK, BULK_ORDERS.EDIT_REMARK_MAX); });
   const priced = await priceLines(t, o.lines, o.brand);
   const approval = approvalNeed(await settingOf(t), t, totalsOf(priced).totalUnits, o.mode);
+  let moved = false;
   await AppDataSource.transaction(async (m) => {
     const cur = await lockEditable(m, id);
     // the rules again (v2 1c): an edit may need approval now, or no longer
@@ -621,8 +626,47 @@ export const updateBulkOrder = async (actor: BulkActor, id: string, body: Record
       ...(status !== cur.status ? { status: [cur.status, status], approval: approval.why } : {}),
     });
     log.info(LOG_SOURCE.API, `[bulk-orders] ${cur.poNumber} edited by user ${actor.id}`);
+    moved = status !== cur.status;
   });
-  return getBulkOrder(actor, id);
+  const after = await getBulkOrder(actor, id);
+  if (moved) await notifyNew(after, after.status === BULK_ORDER_STATUS.PENDING_APPROVAL, actor.id);
+  return after;
+};
+
+// ---- notifications + remind (v2 piece 3) ----------------------------------------------------------------------------
+
+type OrderOut = Awaited<ReturnType<typeof getBulkOrder>>;
+const notifyOrder = (o: OrderOut) => ({ id: o.id, poNumber: o.poNumber, createdBy: o.createdBy.id, orderType: o.type, totalUnits: o.totalUnits });
+
+/** A new / sent / re-ruled order: the approvers (approval needed) or our team (straight to the team). */
+const notifyNew = (o: OrderOut, needsApproval: boolean, actor: number) =>
+  notifyBulk(needsApproval ? 'approval_needed' : 'for_team', notifyOrder(o), actor);
+
+/** When the requester may remind our team (null = not now: not waiting to be placed). */
+export const remindAvailableAt = (status: string, createdAt: Date, decidedAt: Date | null, lastRemind: Date | null): Date | null => {
+  if (!BULK_NOTIFY.REMIND_STATUSES.includes(status)) return null;
+  const since = status === BULK_ORDER_STATUS.APPROVED && decidedAt ? decidedAt : createdAt;
+  const first = since.getTime() + BULK_NOTIFY.REMIND_AFTER_H * 3_600_000;
+  const again = lastRemind ? lastRemind.getTime() + BULK_NOTIFY.REMIND_COOLDOWN_H * 3_600_000 : 0;
+  return new Date(Math.max(first, again));
+};
+
+/** The requester (editor on the type) nudges our team: bell (+ email if on) to COPT, logged on the timeline. */
+export const remindBulkOrder = async (actor: BulkActor, id: string) => {
+  const r = await needAnyBulk(actor);
+  needType(r, await typeOfOrder(r, id), ACCESS_LEVEL.EDITOR);
+  await AppDataSource.transaction(async (m) => {
+    const o = await m.getRepository(BulkOrder).findOne({ where: { id }, lock: { mode: 'pessimistic_write' } });
+    if (!o) throw appError(ERROR_CODES.BULK_ORDER_NOT_FOUND, id);
+    const last = await m.getRepository(BulkOrderEvent).findOne({ where: { orderId: id, action: BULK_EVENT.REMINDED }, order: { id: 'DESC' } });
+    const at = remindAvailableAt(o.status, o.createdAt, o.decidedAt, last?.createdAt ?? null);
+    if (!at) throw appError(ERROR_CODES.BULK_REMIND_NOT_NOW, o.poNumber, `it is ${o.status.replace(/_/g, ' ')}`);
+    if (at.getTime() > Date.now()) throw appError(ERROR_CODES.BULK_REMIND_NOT_NOW, o.poNumber, `possible from ${at.toISOString()}`);
+    await addEvent(m, id, BULK_EVENT.REMINDED, actor.id, null);
+  });
+  const o = await getBulkOrder(actor, id);
+  await notifyBulk('remind', notifyOrder(o), actor.id);
+  return o;
 };
 
 // ---- drafts (v2 1g) -------------------------------------------------------------------------------------------------
@@ -691,7 +735,9 @@ const submitDraft = async (actor: BulkActor, id: string, type: BulkOrderType, bo
     await addEvent(m, id, BULK_EVENT.SUBMITTED, actor.id, o.note, { approval: approval.why, poNumber });
     log.info(LOG_SOURCE.API, `[bulk-orders] draft ${id} submitted as ${poNumber} by user ${actor.id}`);
   }));
-  return getBulkOrder(actor, id);
+  const sent = await getBulkOrder(actor, id);
+  await notifyNew(sent, approval.needed, actor.id);
+  return sent;
 };
 
 /** Cancels an order still waiting for approval (editor on its type); `reason` optional. */
@@ -811,7 +857,11 @@ export const approveBulkOrder = async (actor: BulkActor, id: string, body: Recor
     await addEvent(m, id, BULK_EVENT.APPROVED, actor.id, d.note, changed.length ? { lines: changed } : null);
     log.info(LOG_SOURCE.API, `[bulk-orders] ${cur.poNumber} approved by user ${actor.id} (${changed.length} line changes)`);
   });
-  return getBulkOrder(actor, id);
+  const done = await getBulkOrder(actor, id);
+  // v2 piece 3: the requester hears it, our team gets it to place
+  await notifyBulk('approved', notifyOrder(done), actor.id);
+  await notifyBulk('for_team', notifyOrder(done), actor.id);
+  return done;
 };
 
 /** Rejects an order (editor on Approve bulk orders); `reason` required. */
@@ -829,7 +879,9 @@ export const rejectBulkOrder = async (actor: BulkActor, id: string, body: Record
     await addEvent(m, id, BULK_EVENT.REJECTED, actor.id, reason);
     log.info(LOG_SOURCE.API, `[bulk-orders] ${cur.poNumber} rejected by user ${actor.id}`);
   });
-  return getBulkOrder(actor, id);
+  const done = await getBulkOrder(actor, id);
+  await notifyBulk('rejected', notifyOrder(done), actor.id, done.decisionNote ?? '');
+  return done;
 };
 
 const orderOut = (o: BulkOrder, names: Map<number, string>, editCount = 0) => ({
@@ -949,6 +1001,8 @@ export const orderFull = async (o: BulkOrder) => {
   const names = await userNames([o.createdBy, o.decidedBy ?? 0, o.paymentBy ?? 0, o.processedBy ?? 0, ...events.map((e) => e.byUserId), ...docs.map((d) => d.uploadedBy)]);
   return {
     ...orderOut(o, names, events.filter((e) => e.action === BULK_EVENT.EDITED).length),
+    // v2 piece 3: when the requester may remind our team (null = not waiting to be placed)
+    remindAt: remindAvailableAt(o.status, o.createdAt, o.decidedAt, [...events].reverse().find((e) => e.action === BULK_EVENT.REMINDED)?.createdAt ?? null),
     // newest first; replaced ones kept (replacedAt set)
     documents: docs.map((d) => ({
       id: String(d.id), kind: d.kind, fileName: d.fileName, contentType: d.contentType, sizeBytes: d.sizeBytes,

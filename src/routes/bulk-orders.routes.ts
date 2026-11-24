@@ -13,12 +13,14 @@ import {
   listBulkOrders,
   needAnyBulk,
   rejectBulkOrder,
+  remindBulkOrder,
   searchBulkSkus,
   updateBulkOrder,
 } from '../modules/bulk-orders/bulk-orders.service';
 import {
-  DocFile, listBulkSettings, openBulkDocument, setBulkPayment, updateBulkSetting, uploadBulkDocument,
+  DocFile, listBulkSettings, needSettingsAdmin, openBulkDocument, setBulkPayment, updateBulkSetting, uploadBulkDocument,
 } from '../modules/bulk-orders/bulk-documents.service';
+import { readNotifySettings, saveNotifySettings } from '../modules/bulk-orders/bulk-notify.service';
 import { sendDocument } from './bulk-documents.send';
 
 /*
@@ -77,8 +79,13 @@ router.get(BULK_ORDERS.ROUTES.SKUS, requireAuth, send(async (req) => {
 router.get(BULK_ORDERS.ROUTES.LOCATIONS, requireAuth, send((req) => listBulkLocations(actor(req), req.query.type)));
 router.post(BULK_ORDERS.ROUTES.LOCATIONS, requireAuth, send((req) => addBulkLocation(actor(req), body(req)), 201));
 // before '/:id', which would take "settings" as an id
+// v2 piece 3: email switches (admin; before SETTING)
+router.get(BULK_ORDERS.ROUTES.NOTIFY_SETTINGS, requireAuth, send(async (req) => { await needSettingsAdmin(actor(req)); return readNotifySettings(); }));
+router.put(BULK_ORDERS.ROUTES.NOTIFY_SETTINGS, requireAuth, send(async (req) => { await needSettingsAdmin(actor(req)); return saveNotifySettings(body(req), actor(req).id); }));
 router.get(BULK_ORDERS.ROUTES.SETTINGS, requireAuth, send((req) => listBulkSettings(actor(req))));
 router.put(BULK_ORDERS.ROUTES.SETTING, requireAuth, send((req) => updateBulkSetting(actor(req), String(req.params.type), body(req))));
+// v2 piece 3: the requester reminds our team to place it
+router.post(BULK_ORDERS.ROUTES.REMIND, requireAuth, send((req) => remindBulkOrder(actor(req), String(req.params.id))));
 router.get(BULK_ORDERS.ROUTES.ONE, requireAuth, send((req) => getBulkOrder(actor(req), String(req.params.id))));
 router.put(BULK_ORDERS.ROUTES.EDIT, requireAuth, send((req) => updateBulkOrder(actor(req), String(req.params.id), body(req))));
 router.post(BULK_ORDERS.ROUTES.CANCEL, requireAuth, send((req) => cancelBulkOrder(actor(req), String(req.params.id), body(req))));

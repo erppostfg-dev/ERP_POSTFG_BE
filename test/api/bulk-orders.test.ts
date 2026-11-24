@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BulkCustomerAddresses1795300000000 } from '../../src/migrations/1795300000000-BulkCustomerAddresses';
 import { BulkOrderFields1795800000000 } from '../../src/migrations/1795800000000-BulkOrderFields';
 import { BulkOrderBrand1795900000000 } from '../../src/migrations/1795900000000-BulkOrderBrand';
@@ -14,6 +14,7 @@ import { covers } from '../helpers/routes';
  * SKU search with MRP, price = MRP less discount % from OUR master (never the request's), unique PO numbers per type
  * and year (also under parallel creates), saved locations per type, validation, and nothing of the PO chain touched.
  */
+covers(['GET /bulk-orders/settings/notifications', 'PUT /bulk-orders/settings/notifications', 'POST /bulk-orders/:id/remind']);
 covers(['GET /bulk-orders', 'POST /bulk-orders', 'GET /bulk-orders/skus', 'GET /bulk-orders/locations', 'POST /bulk-orders/locations', 'GET /bulk-orders/:id',
   'PUT /bulk-orders/:id', 'POST /bulk-orders/:id/cancel', 'POST /bulk-orders/:id/approve', 'POST /bulk-orders/:id/reject',
   'GET /po-review/bulk-orders', 'GET /po-review/bulk-orders/:id',
@@ -22,6 +23,12 @@ covers(['GET /bulk-orders', 'POST /bulk-orders', 'GET /bulk-orders/skus', 'GET /
   'GET /po-review/bulk-orders/:id/process-options', 'POST /po-review/bulk-orders/:id/process', 'POST /po-review/bulk-orders/:id/payment',
   'POST /po-review/bulk-orders/customers/:customerId/hide']);
 
+// v2 piece 3: the mail sender is a recorder (bulk notifications)
+const mailbox = vi.hoisted(() => ({ sent: [] as { to: string[]; subject: string; text: string }[] }));
+vi.mock('../../src/modules/mail/mailer.service', async (orig) => ({
+  ...(await orig<object>()),
+  sendMail: vi.fn(async (m: { to: string[]; subject: string; text: string }) => { mailbox.sent.push(m); }),
+}));
 const V = '/api/v1/bulk-orders';
 const YEAR = new Date(Date.now() + 5.5 * 3600_000).getUTCFullYear();
 const TOMORROW = new Date(Date.now() + 5.5 * 3600_000 + 86_400_000).toISOString().slice(0, 10);
@@ -1150,5 +1157,80 @@ describe('bulk orders v2: courier tracking from Uniware (sync)', () => {
     pkgs = [pkg({ status: 'DISPATCHED', trackingNumber: 'A1' })];
     await runPoSyncPass({ manual: true }, fakeUniware);
     expect((await one(id)).status).toBe('delivered');
+  });
+});
+
+/*
+ * Bulk Orders Portal v2, piece 3 (2026-11-24): notifications (bell always; email per event behind the switches in
+ * Settings > Bulk Orders > Notifications) and Remind (the requester nudges our team: COPT people in Users & Roles).
+ */
+describe('bulk orders v2: notifications + remind', () => {
+  let copt: TestLogin;
+  const N = '/api/v1/bulk-orders/settings/notifications';
+  // what the person RECEIVED (the bell also lists what was sent in their name: the requester's own "needs approval")
+  const bell = async (who: TestLogin) => ((await api().get('/api/v1/notices').set('Cookie', who.cookie).expect(200)).body.data.items as { text: string; link: string | null; from: { id: number }; sent: boolean }[])
+    .filter((n) => !n.sent).map(({ sent: _s, ...n }) => n);
+  beforeEach(async () => {
+    mailbox.sent.length = 0;
+    copt = await loginAs('operations-executive');
+    await rows("UPDATE users SET po_team = 'copt' WHERE id = ?", [copt.userId]);
+    await rows("UPDATE bulk_type_settings SET approval_over_units = CASE order_type WHEN 'institutional' THEN NULL ELSE 100 END");
+  });
+
+  it('needs approval -> approvers: bell (portal bell readable) + email; not the requester, not our team', async () => {
+    const o = (await create(mkt, order({ lines: [{ pepCode: 'SKU_A', qty: 150 }] })).expect(201)).body.data as { poNumber: string };
+    expect((await bell(approver)).map((n) => n.text)).toEqual([expect.stringContaining(`${o.poNumber} (150 units) needs your approval`)]);
+    expect((await bell(approver))[0].from.id).toBe(mkt.userId);
+    expect(await bell(mkt)).toEqual([]);
+    expect(await bell(copt)).toEqual([]);
+    expect(mailbox.sent.map((m) => [m.to, m.subject])).toEqual([[[approver.email], `Bulk order ${o.poNumber} needs your approval`]]);
+  });
+
+  it('straight to the team -> COPT bell with the Bulk Orders tab link, no email; approve -> requester (bell + email) + team; reject -> requester with the reason', async () => {
+    const s = (await create(mkt, order()).expect(201)).body.data as { poNumber: string };
+    expect(await bell(copt)).toEqual([expect.objectContaining({ text: expect.stringContaining(`New bulk order ${s.poNumber}`), link: '/operations/po-review?tab=bulk' })]);
+    expect(mailbox.sent).toEqual([]);
+    const p = (await create(mkt, order({ mode: 'Porter' })).expect(201)).body.data as { id: string; poNumber: string };
+    mailbox.sent.length = 0;
+    await api().post(`${V}/${p.id}/approve`).set('Cookie', approver.cookie).send({}).expect(200);
+    expect((await bell(mkt)).map((n) => n.text)).toEqual([expect.stringContaining(`${p.poNumber} was approved`)]);
+    expect((await bell(copt)).map((n) => n.text)).toEqual(expect.arrayContaining([expect.stringContaining(`New bulk order ${p.poNumber}`)]));
+    expect(mailbox.sent.map((m) => m.subject)).toEqual([`Bulk order ${p.poNumber} approved`]);
+    const q = (await create(mkt, order({ mode: 'Porter' })).expect(201)).body.data as { id: string; poNumber: string };
+    await api().post(`${V}/${q.id}/reject`).set('Cookie', approver.cookie).send({ reason: 'No budget this month' }).expect(200);
+    expect((await bell(mkt)).map((n) => n.text)).toEqual(expect.arrayContaining([`Your bulk order ${q.poNumber} was rejected: No budget this month`]));
+  });
+
+  it('remind: not before 6 h, then bell + email to our team and a timeline row; again only after 6 h; never on a pending order', async () => {
+    const o = (await create(mkt, order()).expect(201)).body.data as { id: string; poNumber: string; remindAt: string };
+    expect(new Date(o.remindAt).getTime()).toBeGreaterThan(Date.now() + 5.9 * 3_600_000);
+    expect((await api().post(`${V}/${o.id}/remind`).set('Cookie', mkt.cookie).send({}).expect(409)).body.error.code).toBe('BULK_REMIND_NOT_NOW');
+    await rows('UPDATE bulk_orders SET created_at = NOW() - INTERVAL 7 HOUR WHERE id = ?', [o.id]);
+    mailbox.sent.length = 0;
+    await api().post(`${V}/${o.id}/remind`).set('Cookie', approver.cookie).send({}).expect(403); // the requester's type only
+    const r = (await api().post(`${V}/${o.id}/remind`).set('Cookie', mkt.cookie).send({}).expect(200)).body.data;
+    expect(r.events.at(-1)).toMatchObject({ action: 'reminded' });
+    expect((await bell(copt)).map((n) => n.text)).toEqual(expect.arrayContaining([expect.stringContaining(`Reminder: bulk order ${o.poNumber}`)]));
+    expect(mailbox.sent.map((m) => [m.to, m.subject])).toEqual([[[copt.email], `Reminder: bulk order ${o.poNumber} waiting to be placed`]]);
+    await api().post(`${V}/${o.id}/remind`).set('Cookie', mkt.cookie).send({}).expect(409); // cooldown
+    const p = (await create(mkt, order({ mode: 'Porter' })).expect(201)).body.data as { id: string };
+    await rows('UPDATE bulk_orders SET created_at = NOW() - INTERVAL 7 HOUR WHERE id = ?', [p.id]);
+    await api().post(`${V}/${p.id}/remind`).set('Cookie', mkt.cookie).send({}).expect(409); // pending approval
+  });
+
+  it('email switches (one place): admin only, checked; master OFF = bell only; one event OFF = that email only', async () => {
+    const admin = await loginAs('admin');
+    expect((await api().get(N).set('Cookie', admin.cookie).expect(200)).body.data).toEqual({ emails: true, approvalNeeded: true, decision: true, remind: true });
+    await api().get(N).set('Cookie', mkt.cookie).expect(403);
+    await api().put(N).set('Cookie', admin.cookie).send({ emails: 'no' }).expect(400);
+    await api().put(N).set('Cookie', admin.cookie).send({}).expect(400);
+    expect((await api().put(N).set('Cookie', admin.cookie).send({ approvalNeeded: false }).expect(200)).body.data).toMatchObject({ emails: true, approvalNeeded: false, decision: true });
+    await create(mkt, order({ mode: 'Porter' })).expect(201);
+    expect(mailbox.sent).toEqual([]); // that email off
+    expect(await bell(approver)).toHaveLength(1); // the bell still
+    await api().put(N).set('Cookie', admin.cookie).send({ emails: false, approvalNeeded: true }).expect(200);
+    await create(mkt, order({ mode: 'Porter' })).expect(201);
+    expect(mailbox.sent).toEqual([]); // every email off
+    expect(await bell(approver)).toHaveLength(2);
   });
 });
