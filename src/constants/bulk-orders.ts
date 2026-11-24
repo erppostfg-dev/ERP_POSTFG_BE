@@ -154,6 +154,22 @@ export const BULK_NOTIFY = {
   } as Record<BulkNotifyEvent, (po: string) => string>,
 } as const;
 
+/**
+ * Stock on the approval screen (2026-11-24, backlog M5.4; bulk-stock.service): units ON HAND at the mother warehouses
+ * from the newest in-transit report's Daily Snapshot (read only). Column names as the report writes them.
+ */
+export const BULK_STOCK = {
+  SHEET: 'Sheet35(2)',
+  COL_SKU: 'Split2 SKU',
+  COL_TYPE: 'Channel type',
+  COL_STOCK_TYPE: 'Stock Type',
+  COL_UNITS: 'Final Units',
+  ON_HAND: 'SOH',
+  /** report channel type -> the warehouse shown */
+  WAREHOUSES: { GGNMWH: 'GGN', MUMMWH: 'MUM', KOLMWH: 'KOL' } as Record<string, string>,
+  NO_REPORT: 'No stock report available (the in-transit report has not been built yet)',
+} as const;
+
 /** List filter `status=active` (v2 1g): open orders (submitted, pending approval, approved): the worklist's "Active" card. */
 export const BULK_LIST_ACTIVE = 'active';
 export const BULK_ACTIVE_STATUSES: readonly string[] = [BULK_ORDER_STATUS.SUBMITTED, BULK_ORDER_STATUS.PENDING_APPROVAL, BULK_ORDER_STATUS.APPROVED];
@@ -316,6 +332,8 @@ export const BULK_ORDERS = {
     CUSTOMER_GSTIN: '/customers/:customerId/gstin',
     /** 2026-11-24: 'have I ordered this already?' before Submit (nothing saved). Before '/:id'. */
     DUPLICATE_CHECK: '/duplicate-check',
+    /** 2026-11-24: stock of the order's SKUs at the mother warehouses (approvers). */
+    STOCK: '/:id/stock',
   },
   /** Lines per order (per receiver on a several-receivers order). */
   LINES_MAX: 200,
@@ -390,6 +408,8 @@ export const BULK_ORDERS_TEAM = {
     PAYMENT: '/:id/payment',
     /** "Don't suggest again" on a saved address of the customer book (2026-11-13). */
     CUSTOMER_HIDE: '/customers/:customerId/hide',
+    /** 2026-11-24: stock of the order's SKUs at the mother warehouses. */
+    STOCK: '/:id/stock',
   },
 } as const;
 

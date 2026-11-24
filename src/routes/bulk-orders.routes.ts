@@ -14,6 +14,8 @@ import {
   listBulkLocations,
   listBulkOrders,
   needAnyBulk,
+  needApprover,
+  typeOfOrder,
   rejectBulkOrder,
   remindBulkOrder,
   searchBulkSkus,
@@ -23,6 +25,7 @@ import {
   DocFile, listBulkSettings, needSettingsAdmin, openBulkDocument, setBulkPayment, updateBulkSetting, uploadBulkDocument,
 } from '../modules/bulk-orders/bulk-documents.service';
 import { readNotifySettings, saveNotifySettings } from '../modules/bulk-orders/bulk-notify.service';
+import { bulkOrderStock } from '../modules/bulk-orders/bulk-stock.service';
 import {
   addInstitutionCustomer, addInstitutionCustomerAddress, listInstitutionCustomers, updateInstitutionCustomer, updateInstitutionCustomerAddress,
   verifyInstitutionCustomerGstin,
@@ -83,6 +86,8 @@ router.get(BULK_ORDERS.ROUTES.SKUS, requireAuth, send(async (req) => {
   return searchBulkSkus(req.query.q, req.query.brand);
 }));
 // v2 piece 2: an uploaded receivers file checked (nothing saved); before the /:id routes
+// 2026-11-24: the order's SKUs' stock at the mother warehouses: approvers (and admin / developer)
+router.get(BULK_ORDERS.ROUTES.STOCK, requireAuth, send(async (req) => { const r = await needAnyBulk(actor(req)); needApprover(r); await typeOfOrder(r, String(req.params.id)); return bulkOrderStock(String(req.params.id)); }));
 router.post(BULK_ORDERS.ROUTES.DUPLICATE_CHECK, requireAuth, send((req) => bulkDuplicateCheck(actor(req), body(req))));
 router.post(BULK_ORDERS.ROUTES.RECEIVERS_CHECK, requireAuth, send((req) => checkBulkReceiverRows(actor(req), body(req))));
 // v2 piece 5a: Institutional customers (before the /:id routes)

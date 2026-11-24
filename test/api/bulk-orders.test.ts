@@ -19,7 +19,7 @@ import { covers } from '../helpers/routes';
  * SKU search with MRP, price = MRP less discount % from OUR master (never the request's), unique PO numbers per type
  * and year (also under parallel creates), saved locations per type, validation, and nothing of the PO chain touched.
  */
-covers(['POST /bulk-orders/receivers/check', 'POST /bulk-orders/duplicate-check']);
+covers(['POST /bulk-orders/receivers/check', 'POST /bulk-orders/duplicate-check', 'GET /bulk-orders/:id/stock', 'GET /po-review/bulk-orders/:id/stock']);
 covers(['GET /bulk-orders/customers', 'POST /bulk-orders/customers', 'PUT /bulk-orders/customers/:customerId',
   'POST /bulk-orders/customers/:customerId/addresses', 'PUT /bulk-orders/customers/:customerId/addresses/:addressId', 'POST /bulk-orders/customers/:customerId/gstin']);
 covers(['GET /bulk-orders/settings/notifications', 'PUT /bulk-orders/settings/notifications', 'POST /bulk-orders/:id/remind']);
@@ -33,6 +33,18 @@ covers(['GET /bulk-orders', 'POST /bulk-orders', 'GET /bulk-orders/skus', 'GET /
 
 // v2 piece 3: the mail sender is a recorder (bulk notifications)
 const mailbox = vi.hoisted(() => ({ sent: [] as { to: string[]; subject: string; text: string }[] }));
+// 2026-11-24: the in-transit Daily Snapshot (stock on the approval screen) faked: its sheet text + whether a report exists
+const snap = vi.hoisted(() => ({ csv: '', shown: true }));
+vi.mock('../../src/modules/intransit/snapshot.service', async () => {
+  const { Readable } = await import('stream');
+  return {
+    getSnapshot: async () => ({
+      requested: '', latestMissing: false, shown: snap.shown ? { day: '2026-11-24', runId: '1', builtAt: '' } : null,
+      files: snap.shown ? [{ name: 'Sheet35(2)', key: 'k', etag: `e${snap.csv.length}`, size: snap.csv.length }] : [],
+    }),
+    snapshotFile: async () => ({ body: Readable.from([Buffer.from(snap.csv)]), etag: 'e' }),
+  };
+});
 vi.mock('../../src/modules/mail/mailer.service', async (orig) => ({
   ...(await orig<object>()),
   sendMail: vi.fn(async (m: { to: string[]; subject: string; text: string }) => { mailbox.sent.push(m); }),
@@ -1454,6 +1466,36 @@ describe('bulk orders: free orders without amounts in the portal, duplicate warn
     expect(await ids(10)).toEqual([]);
     expect(fields(await api().get(`${T}?waitingDays=0`).set('Cookie', opsExec.cookie).expect(400))).toEqual(['waitingDays']);
     expect(fresh.status).toBe('submitted');
+  });
+});
+
+/*
+ * Stock on the approval screen (2026-11-24, backlog M5.4): units on hand at the mother warehouses from the newest
+ * in-transit report (read only; the snapshot is faked here).
+ */
+describe('bulk orders: stock at the mother warehouses on the approval screen', () => {
+  const CSV = [
+    'Split2 SKU,Entity,SKU Name,Final Location,Channel Name,Channel type,Stock Type,Final Units',
+    'SKU_A,Pep,Scrub,Gurgaon,GGNMWH,GGNMWH,SOH,120',
+    'SKU_A,Pep,Scrub,Mumbai,MUMMWH,MUMMWH,SOH,30',
+    'SKU_A,Pep,Scrub,Mumbai,MUMMWH,MUMMWH,Intransit,500',
+    'SKU_A,Pep,Scrub,Gurgaon,Return,Return,SOH,7',
+    'SKU_A,Pep,Scrub,HYP_AHMD,D2C,D2C,SOH,99',
+    '"SKU_B","Pep","Wash, 100ml",Kolkata,KOLMWH,KOLMWH,SOH,4',
+  ].join('\n');
+
+  it('approvers and our team see on-hand units per mother warehouse (in-transit / returns / D2C left out); others cannot; no report = a note', async () => {
+    snap.csv = CSV;
+    snap.shown = true;
+    const o = (await create(mkt, order()).expect(201)).body.data;
+    const r = (await api().get(`${V}/${o.id}/stock`).set('Cookie', approver.cookie).expect(200)).body.data;
+    expect(r).toEqual({ asOf: '2026-11-24', warehouses: ['GGN', 'MUM', 'KOL'], note: null, skus: { SKU_A: { GGN: 120, MUM: 30 }, SKU_B: { KOL: 4 } } });
+    expect((await api().get(`/api/v1/po-review/bulk-orders/${o.id}/stock`).set('Cookie', opsExec.cookie).expect(200)).body.data.skus.SKU_A).toEqual({ GGN: 120, MUM: 30 });
+    await api().get(`${V}/${o.id}/stock`).set('Cookie', mkt.cookie).expect(403); // the requester: not an approver
+    snap.shown = false;
+    snap.csv = 'x';
+    const none = (await api().get(`${V}/${o.id}/stock`).set('Cookie', approver.cookie).expect(200)).body.data;
+    expect([none.asOf, none.note, none.skus.SKU_A]).toEqual([null, 'No stock report available (the in-transit report has not been built yet)', null]);
   });
 });
 

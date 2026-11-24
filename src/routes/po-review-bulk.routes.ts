@@ -3,6 +3,7 @@ import multer from 'multer';
 import { ACCESS_LEVEL, BULK_DOCS, BULK_ORDERS_TEAM, PAGE } from '../constants';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
 import { teamBulkOrder, teamBulkOrders } from '../modules/bulk-orders/bulk-orders.service';
+import { bulkOrderStock } from '../modules/bulk-orders/bulk-stock.service';
 import { teamOpenBulkDocument, teamSetBulkPayment, teamUploadBulkDocument } from '../modules/bulk-orders/bulk-documents.service';
 import { bulkProcessOptions, hideBulkCustomer, processBulkOrder } from '../modules/bulk-orders/bulk-process.service';
 import { sendDocument } from './bulk-documents.send';
@@ -34,6 +35,14 @@ router.get(BULK_ORDERS_TEAM.ROUTES.LIST, ...viewer, async (req, res, next) => {
   try {
     const { items, meta } = await teamBulkOrders(req.query);
     res.json({ data: items, meta });
+  } catch (err) {
+    next(err);
+  }
+});
+// 2026-11-24: the order's SKUs' stock at the mother warehouses (before ONE: '/:id/stock')
+router.get(BULK_ORDERS_TEAM.ROUTES.STOCK, ...viewer, async (req, res, next) => {
+  try {
+    res.json({ data: await bulkOrderStock(String(req.params.id)) });
   } catch (err) {
     next(err);
   }
