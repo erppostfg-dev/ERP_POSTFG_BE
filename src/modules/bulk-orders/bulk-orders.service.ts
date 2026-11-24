@@ -36,7 +36,7 @@ import {
   IST_OFFSET_MS,
   TABLES,
 } from '../../constants';
-import { BulkLocation, BulkOrder, BulkOrderDocument, BulkOrderEvent, BulkOrderLine, BulkOrderReceiver, BulkTypeSetting, MasterSku, User } from '../../entities';
+import { BulkInstitutionCustomer, BulkLocation, BulkOrder, BulkOrderDocument, BulkOrderEvent, BulkOrderLine, BulkOrderReceiver, BulkTypeSetting, MasterSku, User } from '../../entities';
 import { appError } from '../../utils/AppError';
 import { log } from '../../utils/logger';
 import { LOG_SOURCE } from '../../constants/logging';
@@ -118,7 +118,7 @@ export class Checker {
 }
 
 /** "+91 98765-43210" / "098765 43210" -> "9876543210"; null when not 10 digits. */
-const normalPhone = (v: string): string | null => {
+export const normalPhone = (v: string): string | null => {
   let d = v.replace(/[\s\-().]/g, '');
   if (d.startsWith('+91')) d = d.slice(3);
   else if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
@@ -152,7 +152,7 @@ const discountProblem = (d: unknown, type: BulkOrderType | null): string =>
 interface AddressIn { line: string; city: string; state: string; pincode: string }
 
 /** An address object under `field` (delivery `address`, Institutional `billingAddress`). */
-const checkAddress = (c: Checker, v: unknown, field: string = F.ADDRESS): AddressIn => {
+export const checkAddress = (c: Checker, v: unknown, field: string = F.ADDRESS): AddressIn => {
   const a = (v && typeof v === 'object' ? v : {}) as Record<string, unknown>;
   if (!v || typeof v !== 'object') c.add(field, errorMessage(ERROR_CODES.FIELD_REQUIRED, field));
   const out = {
@@ -185,10 +185,10 @@ const checkInstitution = (c: Checker, body: Record<string, unknown>): Institutio
 };
 
 /** The bulk_orders columns of the requester details (all NULL on a Marketing order). */
-const institutionCols = (i: InstitutionIn | null, delivery: { addressLine: string; city: string; state: string; pincode: string }) => {
+const institutionCols = (i: InstitutionIn | null, delivery: { addressLine: string; city: string; state: string; pincode: string }, customerId: string | null = null) => {
   const b = i ? (i.billingSame ? { line: delivery.addressLine, city: delivery.city, state: delivery.state, pincode: delivery.pincode } : i.billing!) : null;
   return {
-    institutionName: i?.name ?? null, gstin: i?.gstin ?? null, contactEmail: i?.email ?? null,
+    institutionName: i?.name ?? null, gstin: i?.gstin ?? null, contactEmail: i?.email ?? null, institutionCustomerId: customerId,
     billingAddressLine: b?.line ?? null, billingCity: b?.city ?? null, billingState: b?.state ?? null, billingPincode: b?.pincode ?? null,
   };
 };
@@ -421,6 +421,8 @@ interface OrderIn {
   receivers: ReceiverIn[];
   /** Institutional only (else null). */
   institution: InstitutionIn | null;
+  /** v2 piece 5a: Institutional, placed for this customer (institution filled from it by withCustomer). */
+  customerId: string | null;
 }
 
 /** Checks a create / edit body; `fixedType` = an edit (the type never changes). Throws 400 with every wrong field. */
@@ -444,10 +446,34 @@ const parseOrder = (body: Record<string, unknown>, fixedType?: BulkOrderType, mo
   // v2 1f: one brand per order (every line is checked against it when priced)
   const brand = c.text(body[F.BRAND], F.BRAND, BULK_ORDERS.BRAND_MAX);
   const receivers = checkReceivers(c, body, type, lenient);
-  const institution = type === BULK_ORDER_TYPE.INSTITUTIONAL ? checkInstitution(c, body) : null;
+  // v2 piece 5a: an Institutional order for a saved customer takes its company / GSTIN / email / billing (withCustomer)
+  const rawCustomer = type === BULK_ORDER_TYPE.INSTITUTIONAL ? body[F.CUSTOMER_ID] : undefined;
+  const customerId = rawCustomer === undefined || rawCustomer === null || rawCustomer === '' ? null : isId(rawCustomer) ? String(rawCustomer) : '';
+  if (customerId === '') c.add(F.CUSTOMER_ID, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.CUSTOMER_ID, 'a customer id'));
+  const institution = type === BULK_ORDER_TYPE.INSTITUTIONAL && customerId === null ? checkInstitution(c, body) : null;
   more?.(c);
   c.fail();
-  return { type: type!, orderedBy, neededBy, priority: priority!, fastTrackRemarks, purpose, mode, note, receivers, institution, brand };
+  return { type: type!, orderedBy, neededBy, priority: priority!, fastTrackRemarks, purpose, mode, note, receivers, institution, brand, customerId: customerId || null };
+};
+
+/** v2 piece 5a: the order's institution from its customer (active), else 400 customerId. Returns the order (same object). */
+const withCustomer = async (o: OrderIn): Promise<OrderIn> => {
+  if (!o.customerId) return o;
+  const cu = await AppDataSource.getRepository(BulkInstitutionCustomer).findOneBy({ id: o.customerId, isActive: true });
+  if (!cu) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails([{ field: F.CUSTOMER_ID, code: ERROR_CODES.VALIDATION_FAILED, message: `No active Institutional customer ${o.customerId}` }]);
+  o.institution = {
+    name: cu.companyName, gstin: cu.gstin, email: cu.contactEmail, billingSame: false,
+    billing: { line: cu.billingAddressLine, city: cu.billingCity, state: cu.billingState, pincode: cu.billingPincode },
+  };
+  return o;
+};
+
+/** v2 piece 5a: whether each customer's GSTIN is verified (orders show 'GSTIN unverified'): one query. */
+const customersVerified = async (ids: (string | null)[]): Promise<Map<string, boolean>> => {
+  const want = [...new Set(ids.filter((x): x is string => !!x).map(String))];
+  if (!want.length) return new Map();
+  const rows = await AppDataSource.getRepository(BulkInstitutionCustomer).find({ select: { id: true, gstinVerifiedAt: true }, where: { id: In(want) } });
+  return new Map(rows.map((r) => [String(r.id), r.gstinVerifiedAt !== null]));
 };
 
 /** Today's MRP / name / active of SKUs from OUR master (one read; never the cache, never the request). */
@@ -573,7 +599,7 @@ const settingOf = (type: BulkOrderType) => AppDataSource.getRepository(BulkTypeS
  */
 export const createBulkOrder = async (actor: BulkActor, body: Record<string, unknown>) => {
   if (body[F.DRAFT] === true) return createDraft(actor, body);
-  const o = parseOrder(body);
+  const o = await withCustomer(parseOrder(body));
   needType(await bulkRights(actor), o.type, ACCESS_LEVEL.EDITOR);
   const priced = await priceLines(o.type, o.receivers, o.brand);
   const setting = await settingOf(o.type);
@@ -587,7 +613,7 @@ export const createBulkOrder = async (actor: BulkActor, body: Record<string, unk
       poNumber, orderType: o.type, status: approval.needed ? BULK_ORDER_STATUS.PENDING_APPROVAL : BULK_ORDER_STATUS.SUBMITTED, orderedBy: o.orderedBy,
       ...cols, neededBy: o.neededBy, deliveryMode: o.mode, priority: o.priority, note: o.note,
       fastTrackRemarks: o.fastTrackRemarks, purpose: o.purpose, brand: o.brand,
-      ...institutionCols(o.institution, places[0]), ...totalsOf(priced), createdBy: actor.id, paymentStatus: paymentCheck ? BULK_PAYMENT_STATUS.AWAITING_PROOF : null,
+      ...institutionCols(o.institution, places[0], o.customerId), ...totalsOf(priced), createdBy: actor.id, paymentStatus: paymentCheck ? BULK_PAYMENT_STATUS.AWAITING_PROOF : null,
     });
     const orderId = String(res.identifiers[0].id);
     await m.getRepository(BulkOrderLine).insert(priced.map((l) => ({ ...l, orderId })));
@@ -697,7 +723,7 @@ export const updateBulkOrder = async (actor: BulkActor, id: string, body: Record
   if (body[F.DRAFT] === true) throw appError(ERROR_CODES.BULK_ORDER_NOT_EDITABLE, id, now?.status ?? 'gone');
   // v2 1e: every edit says why (kept with the change); checked with the rest of the body (all problems in one 400)
   let remark = '';
-  const o = parseOrder(body, t, (c) => { remark = c.text(body[F.EDIT_REMARK], F.EDIT_REMARK, BULK_ORDERS.EDIT_REMARK_MAX); });
+  const o = await withCustomer(parseOrder(body, t, (c) => { remark = c.text(body[F.EDIT_REMARK], F.EDIT_REMARK, BULK_ORDERS.EDIT_REMARK_MAX); }));
   const priced = await priceLines(t, o.receivers, o.brand);
   const approval = approvalNeed(await settingOf(t), t, totalsOf(priced).totalUnits, o.mode);
   let moved = false;
@@ -711,7 +737,7 @@ export const updateBulkOrder = async (actor: BulkActor, id: string, body: Record
     const next = {
       orderedBy: o.orderedBy, ...cols, neededBy: o.neededBy,
       fastTrackRemarks: o.fastTrackRemarks, purpose: o.purpose, brand: o.brand,
-      deliveryMode: o.mode, priority: o.priority, note: o.note, ...institutionCols(o.institution, places[0]),
+      deliveryMode: o.mode, priority: o.priority, note: o.note, ...institutionCols(o.institution, places[0], o.customerId),
     };
     const fields = (Object.keys(next) as (keyof typeof next)[]).filter((k) => String(cur[k] ?? '') !== String(next[k] ?? ''));
     // v2 1e: field by field, old -> new (dates / text as stored), and the lines added / removed / changed
@@ -866,13 +892,13 @@ const createDraft = async (actor: BulkActor, body: Record<string, unknown>) => {
   const type = typeParam(tc, body[F.TYPE]);
   tc.fail();
   needType(await bulkRights(actor), type!, ACCESS_LEVEL.EDITOR);
-  const o = parseOrder(body, type!, undefined, true);
+  const o = await withCustomer(parseOrder(body, type!, undefined, true));
   const priced = await priceLines(o.type, o.receivers, o.brand || undefined);
   const id = await AppDataSource.transaction(async (m) => {
     const { places, cols } = await placeAll(m, o, actor.id);
     const res = await m.getRepository(BulkOrder).insert({
       poNumber: `${BULK_ARCHIVE.DRAFT_PREFIX}${randomUUID().slice(0, 20)}`, orderType: o.type, status: BULK_ORDER_STATUS.DRAFT,
-      ...orderCols(o), ...cols, ...institutionCols(o.institution, places[0]), ...totalsOf(priced), createdBy: actor.id, paymentStatus: null,
+      ...orderCols(o), ...cols, ...institutionCols(o.institution, places[0], o.customerId), ...totalsOf(priced), createdBy: actor.id, paymentStatus: null,
     });
     const orderId = String(res.identifiers[0].id);
     await m.getRepository(BulkOrder).update({ id: orderId }, { poNumber: `${BULK_ARCHIVE.DRAFT_PREFIX}${orderId}` });
@@ -887,7 +913,7 @@ const createDraft = async (actor: BulkActor, body: Record<string, unknown>) => {
 
 /** A draft saved again: everything replaced, no history row (nothing was sent yet). */
 const saveDraft = async (actor: BulkActor, id: string, type: BulkOrderType, body: Record<string, unknown>) => {
-  const o = parseOrder(body, type, undefined, true);
+  const o = await withCustomer(parseOrder(body, type, undefined, true));
   const priced = await priceLines(type, o.receivers, o.brand || undefined);
   await AppDataSource.transaction(async (m) => {
     await lockEditable(m, id, actor.id);
@@ -895,14 +921,14 @@ const saveDraft = async (actor: BulkActor, id: string, type: BulkOrderType, body
     await m.getRepository(BulkOrderLine).delete({ orderId: id });
     if (priced.length) await m.getRepository(BulkOrderLine).insert(priced.map((l) => ({ ...l, orderId: id })));
     await writeReceivers(m, id, o, places, priced);
-    await m.getRepository(BulkOrder).update({ id }, { ...orderCols(o), ...cols, ...institutionCols(o.institution, places[0]), ...totalsOf(priced), updatedAt: new Date() });
+    await m.getRepository(BulkOrder).update({ id }, { ...orderCols(o), ...cols, ...institutionCols(o.institution, places[0], o.customerId), ...totalsOf(priced), updatedAt: new Date() });
   });
   return getBulkOrder(actor, id);
 };
 
 /** Submit a draft: every check of a new order, the approval rules, its real PO number, the payment check of today. */
 const submitDraft = async (actor: BulkActor, id: string, type: BulkOrderType, body: Record<string, unknown>) => {
-  const o = parseOrder(body, type);
+  const o = await withCustomer(parseOrder(body, type));
   const priced = await priceLines(type, o.receivers, o.brand);
   const setting = await settingOf(type);
   const approval = approvalNeed(setting, type, totalsOf(priced).totalUnits, o.mode);
@@ -915,7 +941,7 @@ const submitDraft = async (actor: BulkActor, id: string, type: BulkOrderType, bo
     await writeReceivers(m, id, o, places, priced);
     await m.getRepository(BulkOrder).update({ id }, {
       poNumber, status: approval.needed ? BULK_ORDER_STATUS.PENDING_APPROVAL : BULK_ORDER_STATUS.SUBMITTED, createdAt: new Date(), updatedAt: new Date(),
-      ...orderCols(o), ...cols, ...institutionCols(o.institution, places[0]), ...totalsOf(priced),
+      ...orderCols(o), ...cols, ...institutionCols(o.institution, places[0], o.customerId), ...totalsOf(priced),
       paymentStatus: setting?.paymentCheck === true ? BULK_PAYMENT_STATUS.AWAITING_PROOF : null,
     });
     await addEvent(m, id, BULK_EVENT.SUBMITTED, actor.id, o.note, { approval: approval.why, poNumber });
@@ -1081,7 +1107,7 @@ export const rejectBulkOrder = async (actor: BulkActor, id: string, body: Record
   return done;
 };
 
-const orderOut = (o: BulkOrder, names: Map<number, string>, editCount = 0) => ({
+const orderOut = (o: BulkOrder, names: Map<number, string>, editCount = 0, verified: Map<string, boolean> = new Map()) => ({
   id: String(o.id), poNumber: o.poNumber, type: o.orderType, status: o.status,
   /** v2 1e: how many times the requester changed it after submitting ("Edited" tag for approvers). */
   editCount,
@@ -1092,6 +1118,9 @@ const orderOut = (o: BulkOrder, names: Map<number, string>, editCount = 0) => ({
   neededBy: o.neededBy, mode: o.deliveryMode, priority: o.priority, note: o.note, fastTrackRemarks: o.fastTrackRemarks, purpose: o.purpose, brand: o.brand,
   // Institutional requester details (null on Marketing orders)
   institution: o.institutionName ? {
+    // v2 piece 5a: the saved customer it was placed for (null = typed by hand) + whether finance verified its GSTIN
+    customerId: o.institutionCustomerId ? String(o.institutionCustomerId) : null,
+    gstinVerified: o.institutionCustomerId ? verified.get(String(o.institutionCustomerId)) === true : null,
     name: o.institutionName, gstin: o.gstin, email: o.contactEmail,
     billingAddress: { line: o.billingAddressLine, city: o.billingCity, state: o.billingState, pincode: o.billingPincode },
   } : null,
@@ -1169,11 +1198,12 @@ const pageOfOrders = async (types: BulkOrderType[], l: ListQuery, me: number | n
       OR o.id IN (SELECT r.order_id FROM ${TABLES.BULK_ORDER_RECEIVERS} r WHERE r.receiver_name LIKE :like OR r.city LIKE :like))`, { like });
   }
   const [found, total] = await qb.orderBy('o.createdAt', 'DESC').addOrderBy('o.id', 'DESC').skip((l.page - 1) * l.size).take(l.size).getManyAndCount();
-  const [names, edits] = await Promise.all([
+  const [names, edits, verified] = await Promise.all([
     userNames(found.flatMap((o) => [o.createdBy, o.decidedBy ?? 0, o.paymentBy ?? 0, o.processedBy ?? 0])),
     editCounts(found.map((o) => String(o.id))),
+    customersVerified(found.map((o) => o.institutionCustomerId)),
   ]);
-  return { items: found.map((o) => orderOut(o, names, edits.get(String(o.id)) ?? 0)), meta: { total, page: l.page, pageSize: l.size } };
+  return { items: found.map((o) => orderOut(o, names, edits.get(String(o.id)) ?? 0, verified)), meta: { total, page: l.page, pageSize: l.size } };
 };
 
 /** Orders of the types the person may see (portal), newest first; filters type / status / search (PO number, ordered by, receiver, city). */
@@ -1202,7 +1232,7 @@ export const orderFull = async (o: BulkOrder) => {
   ]);
   const names = await userNames([o.createdBy, o.decidedBy ?? 0, o.paymentBy ?? 0, o.processedBy ?? 0, ...events.map((e) => e.byUserId), ...docs.map((d) => d.uploadedBy)]);
   return {
-    ...orderOut(o, names, events.filter((e) => e.action === BULK_EVENT.EDITED).length),
+    ...orderOut(o, names, events.filter((e) => e.action === BULK_EVENT.EDITED).length, await customersVerified([o.institutionCustomerId])),
     // v2 piece 3: when the requester may remind our team (null = not waiting to be placed)
     remindAt: remindAvailableAt(o.status, o.createdAt, o.decidedAt, [...events].reverse().find((e) => e.action === BULK_EVENT.REMINDED)?.createdAt ?? null),
     // newest first; replaced ones kept (replacedAt set)

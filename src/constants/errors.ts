@@ -112,6 +112,9 @@ export const ERRORS = {
   BULK_ORDER_NOT_EDITABLE: define(409, (po: string, status: string) => `${po} can no longer be changed (now ${status.replace(/_/g, ' ')}): reload it`),
   BULK_PROCESS_TYPE_LATER: define(409, (type: string) => `${type} orders cannot be processed in POST_FG yet`),
   /** v2 piece 2a: until piece 2b (one sale order per receiver) is built. */
+  /** v2 piece 5a: Institutional customers. */
+  BULK_INST_CUSTOMER_NOT_FOUND: define(404, (id: string) => `No Institutional customer ${id}`),
+  BULK_INST_CUSTOMER_EXISTS: define(409, (what: string) => `A customer with this ${what} already exists: open it instead`),
   BULK_PROCESS_RECEIVERS_LATER: define(409, (po: string, n: number) => `${po} goes to ${n} receivers: one sale order per receiver is not built yet`),
   BULK_UPLOAD_NOT_REOPENABLE: define(409, (po: string) => `${po} came from a bulk order: process it again in PO Processing & Review > Bulk Orders`),
   BULK_LOCATION_LABEL_TAKEN: define(409, (label: string) => `A saved location is already called "${label}": pick it, or use another name`),

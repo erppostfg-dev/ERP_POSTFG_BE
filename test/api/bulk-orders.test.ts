@@ -4,6 +4,7 @@ import { BulkOrderFields1795800000000 } from '../../src/migrations/1795800000000
 import { loadBulkSkus } from '../../src/modules/bulk-orders/bulk-skus-load';
 import { BulkOrderBrand1795900000000 } from '../../src/migrations/1795900000000-BulkOrderBrand';
 import { BulkOrderReceivers1796200000000 } from '../../src/migrations/1796200000000-BulkOrderReceivers';
+import { BulkInstitutionCustomers1796300000000 } from '../../src/migrations/1796300000000-BulkInstitutionCustomers';
 import { MARKETING_UNIT_PRICE } from '../../src/constants';
 import { runPoSyncPass } from '../../src/modules/po-uniware-sync/sync.service';
 import { api, loginAs, type TestLogin } from '../helpers/auth';
@@ -17,6 +18,8 @@ import { covers } from '../helpers/routes';
  * and year (also under parallel creates), saved locations per type, validation, and nothing of the PO chain touched.
  */
 covers(['POST /bulk-orders/receivers/check']);
+covers(['GET /bulk-orders/customers', 'POST /bulk-orders/customers', 'PUT /bulk-orders/customers/:customerId',
+  'POST /bulk-orders/customers/:customerId/addresses', 'PUT /bulk-orders/customers/:customerId/addresses/:addressId']);
 covers(['GET /bulk-orders/settings/notifications', 'PUT /bulk-orders/settings/notifications', 'POST /bulk-orders/:id/remind']);
 covers(['GET /bulk-orders', 'POST /bulk-orders', 'GET /bulk-orders/skus', 'GET /bulk-orders/locations', 'POST /bulk-orders/locations', 'GET /bulk-orders/:id',
   'PUT /bulk-orders/:id', 'POST /bulk-orders/:id/cancel', 'POST /bulk-orders/:id/approve', 'POST /bulk-orders/:id/reject',
@@ -530,7 +533,7 @@ describe('bulk orders step 3b: Institutional requester details + our team create
     const bare = { ...order({ type: 'institutional' }), institutionName: undefined, billingSameAsDelivery: undefined, gstin: 'NOT-A-GSTIN', contactEmail: 'nope' };
     expect(fields(await create(inst, bare).expect(400))).toEqual(expect.arrayContaining(['billingAddress', 'billingAddress.line', 'contactEmail', 'gstin', 'institutionName']));
     const same = (await create(inst, order({ type: 'institutional', gstin: '27aaacs1234a1z5' })).expect(201)).body.data;
-    expect(same.institution).toEqual({ name: 'Sunrise Public School', gstin: '27AAACS1234A1Z5', email: 'office@sunrise.example', billingAddress: ADDRESS });
+    expect(same.institution).toEqual({ customerId: null, gstinVerified: null, name: 'Sunrise Public School', gstin: '27AAACS1234A1Z5', email: 'office@sunrise.example', billingAddress: ADDRESS });
     const billing = { line: 'Accounts, 4 Hill Rd', city: 'Pune', state: 'Maharashtra', pincode: '411001' };
     const own = (await create(inst, order({ type: 'institutional', gstin: '', billingSameAsDelivery: false, billingAddress: billing })).expect(201)).body.data;
     expect(own.institution).toMatchObject({ gstin: null, billingAddress: billing });
@@ -1173,6 +1176,88 @@ describe('bulk orders v2: several receivers per order', () => {
     expect(await rows('SELECT order_id, receiver_no, receiver_name, receiver_phone, address_line, pincode, total_units FROM bulk_order_receivers ORDER BY order_id')).toEqual(before);
     expect(before.map((r) => (r as { order_id: string }).order_id).map(String)).toEqual([a.id, b.id]);
     expect(await rows('SELECT DISTINCT receiver_no n FROM bulk_order_lines')).toEqual([{ n: 1 }]);
+  });
+});
+
+/*
+ * Bulk Orders Portal v2 piece 5a (2026-11-24, user "GO"; PRD "Customers page"): Institutional customers (company,
+ * GSTIN unverified until finance, billing, contact, default discount, shipping addresses), kept by our Institutional
+ * team for now; an Institutional order placed for a customer takes its company / GSTIN / email / billing.
+ */
+describe('bulk orders v2: Institutional customers', () => {
+  const C = `${V}/customers`;
+  const BILL = { line: 'Accounts, 4 Hill Rd', city: 'Pune', state: 'Maharashtra', pincode: '411001' };
+  const SHIP = { line: 'Gate 2, Sunrise School, Baner', city: 'Pune', state: 'Maharashtra', pincode: '411045' };
+  const cust = (over: Record<string, unknown> = {}) => ({
+    companyName: 'Sunrise Public School', gstin: '27aaacs1234a1z5', billingAddress: BILL, contactName: 'Asha Rao', contactPhone: '+91 98200 11223',
+    contactEmail: 'accounts@sunrise.example', defaultDiscountPct: 12.5, addresses: [{ label: 'Main campus', address: SHIP }], ...over,
+  });
+  type Cust = { id: string; companyName: string; gstin: string | null; gstinVerified: unknown; active: boolean; defaultDiscountPct: number; addresses: { id: string; label: string; active: boolean }[] };
+
+  it('Institutional editors add / change / switch off customers and their addresses; viewers see them; Marketing cannot; checks + no twins', async () => {
+    const c = (await api().post(C).set('Cookie', inst.cookie).send(cust()).expect(201)).body.data as Cust & Record<string, unknown>;
+    expect(c).toMatchObject({
+      companyName: 'Sunrise Public School', gstin: '27AAACS1234A1Z5', gstinVerified: null, billingAddress: BILL, contactName: 'Asha Rao', contactPhone: '9820011223',
+      contactEmail: 'accounts@sunrise.example', defaultDiscountPct: 12.5, active: true, addresses: [{ label: 'Main campus', address: SHIP, active: true }], createdBy: { id: inst.userId },
+    });
+    expect(fields(await api().post(C).set('Cookie', inst.cookie).send({ gstin: 'BAD', contactPhone: '12', defaultDiscountPct: 100, addresses: [{}] }).expect(400)).sort()).toEqual([
+      'addresses[0].address', 'addresses[0].address.city', 'addresses[0].address.line', 'addresses[0].address.pincode', 'addresses[0].address.state', 'addresses[0].label',
+      'billingAddress', 'billingAddress.city', 'billingAddress.line', 'billingAddress.pincode', 'billingAddress.state', 'companyName', 'contactName', 'contactPhone', 'defaultDiscountPct', 'gstin',
+    ]);
+    expect((await api().post(C).set('Cookie', inst.cookie).send(cust({ companyName: 'Other' })).expect(409)).body.error.code).toBe('BULK_INST_CUSTOMER_EXISTS'); // same GSTIN
+    await api().post(C).set('Cookie', inst.cookie).send(cust({ companyName: 'sunrise public school', gstin: '' })).expect(409); // same name
+    await api().post(C).set('Cookie', mkt.cookie).send(cust({ gstin: '' })).expect(403);
+    await api().get(C).set('Cookie', mkt.cookie).expect(403);
+    await api().post(C).set('Cookie', approver.cookie).send(cust({ companyName: 'X', gstin: '' })).expect(403); // approver: Institutional viewer
+    expect(((await api().get(C).set('Cookie', approver.cookie).expect(200)).body.data as Cust[]).map((x) => x.companyName)).toEqual(['Sunrise Public School']);
+
+    // a GSTIN change clears the verification (verified by finance in 5b; set here directly)
+    await rows('UPDATE bulk_institution_customers SET gstin_verified_at = NOW(6), gstin_verified_by = ? WHERE id = ?', [inst.userId, c.id]);
+    const same = (await api().put(`${C}/${c.id}`).set('Cookie', inst.cookie).send(cust({ contactName: 'Asha R' })).expect(200)).body.data as Cust;
+    expect(same.gstinVerified).toMatchObject({ by: { id: inst.userId } });
+    const moved = (await api().put(`${C}/${c.id}`).set('Cookie', inst.cookie).send(cust({ gstin: '27AAACS1234A1Z6' })).expect(200)).body.data as Cust;
+    expect([moved.gstin, moved.gstinVerified]).toEqual(['27AAACS1234A1Z6', null]);
+    await api().put(`${C}/999999`).set('Cookie', inst.cookie).send(cust()).expect(404);
+
+    const two = (await api().post(`${C}/${c.id}/addresses`).set('Cookie', inst.cookie).send({ label: 'Hostel', address: { ...SHIP, line: 'Hostel block' } }).expect(201)).body.data as Cust;
+    expect(two.addresses.map((a) => a.label)).toEqual(['Main campus', 'Hostel']);
+    const off = (await api().put(`${C}/${c.id}/addresses/${two.addresses[0].id}`).set('Cookie', inst.cookie).send({ active: false }).expect(200)).body.data as Cust;
+    expect(off.addresses.map((a) => [a.label, a.active])).toEqual([['Main campus', false], ['Hostel', true]]);
+    expect(fields(await api().put(`${C}/${c.id}/addresses/${two.addresses[0].id}`).set('Cookie', inst.cookie).send({}).expect(400))).toEqual(['active']);
+    const gone = (await api().put(`${C}/${c.id}`).set('Cookie', inst.cookie).send(cust({ gstin: '27AAACS1234A1Z6', active: false })).expect(200)).body.data as Cust;
+    expect(gone.active).toBe(false);
+    // a switched-off customer frees its name
+    await api().post(C).set('Cookie', inst.cookie).send(cust({ gstin: '' })).expect(201);
+  });
+
+  it('an Institutional order for a customer takes its company / GSTIN / email / billing (not verified yet); a switched-off / unknown customer = 400; the typed way still works', async () => {
+    const c = (await api().post(C).set('Cookie', inst.cookie).send(cust()).expect(201)).body.data as Cust;
+    const { institutionName: _n, gstin: _g, contactEmail: _e, billingSameAsDelivery: _b, ...noInst } = order({ type: 'institutional' });
+    const o = (await create(inst, { ...noInst, customerId: c.id, address: SHIP }).expect(201)).body.data;
+    expect(o.institution).toEqual({ customerId: c.id, gstinVerified: false, name: 'Sunrise Public School', gstin: '27AAACS1234A1Z5', email: 'accounts@sunrise.example', billingAddress: BILL });
+    await rows('UPDATE bulk_institution_customers SET gstin_verified_at = NOW(6) WHERE id = ?', [c.id]);
+    expect((await api().get(`${V}/${o.id}`).set('Cookie', inst.cookie).expect(200)).body.data.institution.gstinVerified).toBe(true);
+    const list = (await api().get(V).set('Cookie', inst.cookie).expect(200)).body.data as { id: string; institution: { gstinVerified: boolean } }[];
+    expect(list.find((x) => x.id === o.id)!.institution.gstinVerified).toBe(true);
+    expect(fields(await create(inst, { ...noInst, customerId: '999999', address: SHIP }).expect(400))).toEqual(['customerId']);
+    expect(fields(await create(inst, { ...noInst, customerId: 'abc', address: SHIP }).expect(400))).toEqual(['customerId']);
+    await api().put(`${C}/${c.id}`).set('Cookie', inst.cookie).send(cust({ active: false })).expect(200);
+    expect(fields(await create(inst, { ...noInst, customerId: c.id, address: SHIP }).expect(400))).toEqual(['customerId']);
+    const typed = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
+    expect(typed.institution).toMatchObject({ customerId: null, gstinVerified: null, name: 'Sunrise Public School' });
+  });
+
+  it('migration BulkInstitutionCustomers: down + up keeps orders, adds the tables again', async () => {
+    const o = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
+    const qr = (await db()).createQueryRunner();
+    try {
+      await new BulkInstitutionCustomers1796300000000().down(qr);
+      await new BulkInstitutionCustomers1796300000000().up(qr);
+    } finally {
+      await qr.release();
+    }
+    expect(await rows('SELECT id, institution_customer_id c FROM bulk_orders')).toEqual([{ id: String(o.id), c: null }]);
+    expect(await count('bulk_institution_customers')).toBe(0);
   });
 });
 

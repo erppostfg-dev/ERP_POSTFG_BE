@@ -284,12 +284,20 @@ export const BULK_ORDERS = {
     REMIND: '/:id/remind',
     /** v2 piece 2: checks the rows of an uploaded receivers file (nothing saved). Before '/:id' in the router. */
     RECEIVERS_CHECK: '/receivers/check',
+    /** v2 piece 5a: Institutional customers (before '/:id' in the router). */
+    CUSTOMERS: '/customers',
+    CUSTOMER: '/customers/:customerId',
+    CUSTOMER_ADDRESSES: '/customers/:customerId/addresses',
+    CUSTOMER_ADDRESS: '/customers/:customerId/addresses/:addressId',
   },
   /** Lines per order (per receiver on a several-receivers order). */
   LINES_MAX: 200,
   /** v2 piece 2 (2026-11-24, user 'go'): receivers per Marketing / Head office order, and SKU lines over all of them (= rows of an upload). */
   RECEIVERS_MAX: 50,
   RECEIVER_LINES_MAX: 500,
+  /** v2 piece 5a: Institutional customers (list size, shipping addresses per customer). */
+  CUSTOMERS_LIST_MAX: 2000,
+  CUSTOMER_ADDRESSES_MAX: 50,
   /** Units per line. */
   QTY_MAX: 1_000_000,
   /** Discount %: 0 up to BELOW this (2 decimals). v2 (2026-11-23): 100% is not allowed (a free line is not an order). */
@@ -423,6 +431,14 @@ export const BULK_BODY = {
   ORDERED_BY: 'orderedBy',
   /** v2 piece 2: several receivers (Marketing / Head office), each { receiverName, receiverPhone, locationId | address, saveLocationAs, lines }. */
   RECEIVERS: 'receivers',
+  /** v2 piece 5a: Institutional customer fields; customerId on an Institutional order = placed for that customer. */
+  CUSTOMER_ID: 'customerId',
+  COMPANY_NAME: 'companyName',
+  CONTACT_NAME: 'contactName',
+  CONTACT_PHONE: 'contactPhone',
+  DEFAULT_DISCOUNT: 'defaultDiscountPct',
+  ADDRESSES: 'addresses',
+  ACTIVE: 'active',
   RECEIVER_NO: 'receiverNo',
   /** v2 piece 2: rows of an uploaded receivers file (receivers/check). */
   ROWS: 'rows',

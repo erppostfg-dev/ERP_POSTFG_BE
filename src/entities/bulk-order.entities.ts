@@ -11,6 +11,7 @@ import { decimal } from './transformers';
 @Entity({ name: TABLES.BULK_ORDERS })
 @Index('uq_bulk_orders_po_number', ['poNumber'], { unique: true })
 @Index('idx_bulk_orders_type_status', ['orderType', 'status', 'createdAt'])
+@Index('idx_bulk_orders_inst_customer', ['institutionCustomerId'])
 export class BulkOrder {
   @PrimaryGeneratedColumn({ name: 'id', type: 'bigint' })
   id: string;
@@ -220,6 +221,10 @@ export class BulkOrder {
   /** v2 piece 2 (2026-11-24, migration BulkOrderReceivers): receivers of the order (bulk_order_receivers); receiver 1 is also on this row. */
   @Column({ name: 'receiver_count', type: 'int', default: 1 })
   receiverCount: number;
+
+  /** v2 piece 5a (migration BulkInstitutionCustomers): the customer an Institutional order was placed for (NULL = typed by hand). */
+  @Column({ name: 'institution_customer_id', type: 'bigint', nullable: true })
+  institutionCustomerId: string | null;
 }
 
 /**
@@ -374,6 +379,107 @@ export class BulkOrderReceiver {
 
   @Column({ name: 'tracking_checked_at', type: 'datetime', precision: 6, nullable: true })
   trackingCheckedAt: Date | null;
+}
+
+/**
+ * v2 piece 5a (2026-11-24, PRD "Customers page"): a customer an Institutional buyer orders for. GSTIN unverified until
+ * finance verifies it (gstin_verified_*; a GSTIN change clears it). Never deleted: switched off (is_active).
+ */
+@Entity({ name: TABLES.BULK_INSTITUTION_CUSTOMERS })
+@Index('uq_bulk_inst_customers_gstin', ['gstin'], { unique: true })
+@Index('idx_bulk_inst_customers_name', ['companyName'])
+export class BulkInstitutionCustomer {
+  @PrimaryGeneratedColumn({ name: 'id', type: 'bigint' })
+  id: string;
+
+  @Column({ name: 'company_name', type: 'varchar', length: 200 })
+  companyName: string;
+
+  /** 15 characters, upper case; NULL = none given. One customer per GSTIN. */
+  @Column({ name: 'gstin', type: 'varchar', length: 15, nullable: true })
+  gstin: string | null;
+
+  @Column({ name: 'gstin_verified_by', type: 'int', nullable: true })
+  gstinVerifiedBy: number | null;
+
+  @Column({ name: 'gstin_verified_at', type: 'datetime', precision: 6, nullable: true })
+  gstinVerifiedAt: Date | null;
+
+  @Column({ name: 'billing_address_line', type: 'varchar', length: 500 })
+  billingAddressLine: string;
+
+  @Column({ name: 'billing_city', type: 'varchar', length: 100 })
+  billingCity: string;
+
+  @Column({ name: 'billing_state', type: 'varchar', length: 100 })
+  billingState: string;
+
+  @Column({ name: 'billing_pincode', type: 'varchar', length: 10 })
+  billingPincode: string;
+
+  @Column({ name: 'contact_name', type: 'varchar', length: 150 })
+  contactName: string;
+
+  /** 10 digits. */
+  @Column({ name: 'contact_phone', type: 'varchar', length: 20 })
+  contactPhone: string;
+
+  @Column({ name: 'contact_email', type: 'varchar', length: 150, nullable: true })
+  contactEmail: string | null;
+
+  /** Filled into a new order's lines (still changeable per line). */
+  @Column({ name: 'default_discount_pct', type: 'decimal', precision: 5, scale: 2, default: 0, transformer: decimal })
+  defaultDiscountPct: number;
+
+  @Column({ name: 'is_active', type: 'boolean', default: true })
+  isActive: boolean;
+
+  @Column({ name: 'created_by', type: 'int' })
+  createdBy: number;
+
+  @Column({ name: 'created_at', type: 'datetime', precision: 6, default: () => 'CURRENT_TIMESTAMP(6)' })
+  createdAt: Date;
+
+  @Column({ name: 'updated_by', type: 'int', nullable: true })
+  updatedBy: number | null;
+
+  @Column({ name: 'updated_at', type: 'datetime', precision: 6, default: () => 'CURRENT_TIMESTAMP(6)' })
+  updatedAt: Date;
+}
+
+/** v2 piece 5a: a shipping address of an Institutional customer (picked on the order form; switched off, never deleted). */
+@Entity({ name: TABLES.BULK_INSTITUTION_CUSTOMER_ADDRESSES })
+@Index('idx_bulk_inst_customer_addresses_customer', ['customerId'])
+export class BulkInstitutionCustomerAddress {
+  @PrimaryGeneratedColumn({ name: 'id', type: 'bigint' })
+  id: string;
+
+  @Column({ name: 'customer_id', type: 'bigint' })
+  customerId: string;
+
+  @Column({ name: 'label', type: 'varchar', length: 100 })
+  label: string;
+
+  @Column({ name: 'address_line', type: 'varchar', length: 500 })
+  addressLine: string;
+
+  @Column({ name: 'city', type: 'varchar', length: 100 })
+  city: string;
+
+  @Column({ name: 'state', type: 'varchar', length: 100 })
+  state: string;
+
+  @Column({ name: 'pincode', type: 'varchar', length: 10 })
+  pincode: string;
+
+  @Column({ name: 'is_active', type: 'boolean', default: true })
+  isActive: boolean;
+
+  @Column({ name: 'created_by', type: 'int' })
+  createdBy: number;
+
+  @Column({ name: 'created_at', type: 'datetime', precision: 6, default: () => 'CURRENT_TIMESTAMP(6)' })
+  createdAt: Date;
 }
 
 /** A delivery address saved from the order form, per type (Marketing people never see Institutional addresses). */
