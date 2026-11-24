@@ -210,7 +210,8 @@ export const brandKey = (b: string | null | undefined): string => {
   const k = (b ?? '').trim();
   return BULK_ORDERS.NO_BRAND.includes(k) ? '' : k.toLowerCase();
 };
-const orderable = (s: MasterSku) => s.isActive !== false && Number(s.mrp) > 0;
+/** Shown in Bulk Orders: active, with an MRP, and on the Bulk Orders list (master_skus.bulk_orderable, 2026-11-24). */
+const orderable = (s: MasterSku) => s.isActive !== false && Number(s.mrp) > 0 && s.bulkOrderable === true;
 
 /** v2 1f: the brands of the orderable SKUs (from the cached list), each in its most used spelling, A-Z. */
 export const bulkBrands = async (): Promise<string[]> => {
@@ -412,7 +413,7 @@ const parseOrder = (body: Record<string, unknown>, fixedType?: BulkOrderType, mo
 const skusNow = async (codes: string[]): Promise<Map<string, MasterSku>> => {
   if (!codes.length) return new Map();
   const skus = await AppDataSource.getRepository(MasterSku).find({
-    select: { pepCode: true, productName: true, mrp: true, isActive: true, brandName: true },
+    select: { pepCode: true, productName: true, mrp: true, isActive: true, brandName: true, bulkOrderable: true },
     where: { pepCode: In(codes) },
   });
   return new Map(skus.map((s) => [s.pepCode.toUpperCase(), s]));
@@ -436,6 +437,8 @@ const priceLines = async (type: BulkOrderType, lines: LineIn[], brand?: string):
     const s = byCode.get(l.pepCode.toUpperCase());
     const why = notSellable(l.pepCode, s);
     if (why) c.add(`${F.LINES}[${i}].${F.PEP_CODE}`, why);
+    // 2026-11-24: only SKUs on the Bulk Orders list (new / edited / draft orders; an approval keeps what was asked)
+    else if (s?.bulkOrderable !== true) c.add(`${F.LINES}[${i}].${F.PEP_CODE}`, `${l.pepCode} is not on the Bulk Orders SKU list: ask the masters team`);
     // v2 1f: one brand per order (the master's brand_name)
     else if (brand !== undefined && brandKey(s?.brandName) !== brandKey(brand)) {
       const has = (s?.brandName ?? '').trim();

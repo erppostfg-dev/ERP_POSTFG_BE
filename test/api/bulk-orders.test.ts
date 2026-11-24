@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BulkCustomerAddresses1795300000000 } from '../../src/migrations/1795300000000-BulkCustomerAddresses';
 import { BulkOrderFields1795800000000 } from '../../src/migrations/1795800000000-BulkOrderFields';
+import { loadBulkSkus } from '../../src/modules/bulk-orders/bulk-skus-load';
 import { BulkOrderBrand1795900000000 } from '../../src/migrations/1795900000000-BulkOrderBrand';
 import { MARKETING_UNIT_PRICE } from '../../src/constants';
 import { runPoSyncPass } from '../../src/modules/po-uniware-sync/sync.service';
@@ -61,10 +62,10 @@ const fields = (res: { body: { error: { details: { field: string }[] } } }) => r
 beforeEach(async () => {
   await resetDb();
   const now = new Date();
-  skuA = await insert('master_skus', { pep_code: 'SKU_A', brand_name: 'mCaffeine', product_name: 'Coffee Body Scrub 100g', mrp: 100, ean_code: '8900000000011', is_active: 1, created_at: now, updated_at: now });
-  await insert('master_skus', { pep_code: 'SKU_B', brand_name: 'mCaffeine', product_name: 'Coffee Face Wash 100ml', mrp: 349, ean_code: '8900000000028', is_active: 1, created_at: now, updated_at: now });
-  await insert('master_skus', { pep_code: 'SKU_OFF', brand_name: 'mCaffeine', product_name: 'Coffee Old Pack', mrp: 199, is_active: 0, created_at: now, updated_at: now });
-  await insert('master_skus', { pep_code: 'SKU_NOMRP', brand_name: 'mCaffeine', product_name: 'Coffee Tester', mrp: null, is_active: 1, created_at: now, updated_at: now });
+  skuA = await insert('master_skus', { pep_code: 'SKU_A', brand_name: 'mCaffeine', product_name: 'Coffee Body Scrub 100g', mrp: 100, ean_code: '8900000000011', is_active: 1, bulk_orderable: 1, created_at: now, updated_at: now });
+  await insert('master_skus', { pep_code: 'SKU_B', brand_name: 'mCaffeine', product_name: 'Coffee Face Wash 100ml', mrp: 349, ean_code: '8900000000028', is_active: 1, bulk_orderable: 1, created_at: now, updated_at: now });
+  await insert('master_skus', { pep_code: 'SKU_OFF', brand_name: 'mCaffeine', product_name: 'Coffee Old Pack', mrp: 199, is_active: 0, bulk_orderable: 1, created_at: now, updated_at: now });
+  await insert('master_skus', { pep_code: 'SKU_NOMRP', brand_name: 'mCaffeine', product_name: 'Coffee Tester', mrp: null, is_active: 1, bulk_orderable: 1, created_at: now, updated_at: now });
   mkt = await loginAs('bulk-marketing');
   inst = await loginAs('bulk-institutional');
   approver = await loginAs('bulk-approver');
@@ -955,7 +956,7 @@ describe('bulk orders v2: edits with a remark and a field-by-field history', () 
   });
 
   it('the history keeps the remark, every field old -> new and every line change; lists show the edit count', async () => {
-    await insert('master_skus', { pep_code: 'SKU_C', brand_name: 'mCaffeine', product_name: 'Coffee Lip Balm', mrp: 199, is_active: 1, created_at: new Date(), updated_at: new Date() });
+    await insert('master_skus', { pep_code: 'SKU_C', brand_name: 'mCaffeine', product_name: 'Coffee Lip Balm', mrp: 199, is_active: 1, bulk_orderable: 1, created_at: new Date(), updated_at: new Date() });
     const o = (await create(mkt, order()).expect(201)).body.data as { id: string }; // SKU_A 10, SKU_B 3, Normal
     const e = (await edit(mkt, o.id, order({
       receiverName: 'Asha', neededBy: undefined, purpose: 'Diwali event',
@@ -994,10 +995,10 @@ describe('bulk orders v2: edits with a remark and a field-by-field history', () 
 describe('bulk orders v2: one brand per order, from the SKU master', () => {
   const now = () => new Date();
   beforeEach(async () => {
-    await insert('master_skus', { pep_code: 'HYP_SERUM', brand_name: 'HYPHEN', product_name: 'Hyphen Serum', mrp: 499, is_active: 1, created_at: now(), updated_at: now() });
-    await insert('master_skus', { pep_code: 'SKU_CAPS', brand_name: 'MCAFFEINE', product_name: 'Coffee Scrub caps spelling', mrp: 299, is_active: 1, created_at: now(), updated_at: now() });
-    await insert('master_skus', { pep_code: 'SKU_NOBRAND', brand_name: '0', product_name: 'Coffee Combo no brand', mrp: 599, is_active: 1, created_at: now(), updated_at: now() });
-    await insert('master_skus', { pep_code: 'DND_OFF', brand_name: 'Drip N Dip', product_name: 'Old DND', mrp: 199, is_active: 0, created_at: now(), updated_at: now() });
+    await insert('master_skus', { pep_code: 'HYP_SERUM', brand_name: 'HYPHEN', product_name: 'Hyphen Serum', mrp: 499, is_active: 1, bulk_orderable: 1, created_at: now(), updated_at: now() });
+    await insert('master_skus', { pep_code: 'SKU_CAPS', brand_name: 'MCAFFEINE', product_name: 'Coffee Scrub caps spelling', mrp: 299, is_active: 1, bulk_orderable: 1, created_at: now(), updated_at: now() });
+    await insert('master_skus', { pep_code: 'SKU_NOBRAND', brand_name: '0', product_name: 'Coffee Combo no brand', mrp: 599, is_active: 1, bulk_orderable: 1, created_at: now(), updated_at: now() });
+    await insert('master_skus', { pep_code: 'DND_OFF', brand_name: 'Drip N Dip', product_name: 'Old DND', mrp: 199, is_active: 0, bulk_orderable: 1, created_at: now(), updated_at: now() });
   });
   const skus = async (q: string, brand?: string) =>
     ((await api().get(`${V}/skus`).query({ q, ...(brand !== undefined ? { brand } : {}) }).set('Cookie', mkt.cookie).expect(200)).body.data as { pepCode: string }[]).map((s) => s.pepCode);
@@ -1042,6 +1043,66 @@ describe('bulk orders v2: one brand per order, from the SKU master', () => {
       await qr.release();
     }
     expect(await rows('SELECT id, brand FROM bulk_orders ORDER BY id')).toEqual([{ id: one.id, brand: 'mCaffeine' }, { id: two.id, brand: null }]);
+  });
+});
+
+/*
+ * Bulk Orders SKU list (2026-11-24, user: only the 540 "final to consider" SKUs, no others): master_skus.bulk_orderable;
+ * loaded by npm run bulk:skus (the file IS the list), changed one by one in Masters > PEP SKUs > Edit.
+ */
+describe('bulk orders: only SKUs on the Bulk Orders list', () => {
+  const now = () => new Date();
+  let admin: TestLogin;
+  beforeEach(async () => {
+    admin = await loginAs('admin');
+    await insert('master_skus', { pep_code: 'SKU_HIDDEN', brand_name: 'mCaffeine', product_name: 'Coffee Hidden Pack', mrp: 150, is_active: 1, bulk_orderable: 0, created_at: now(), updated_at: now() });
+    await insert('master_skus', { pep_code: 'HYP_HIDDEN', brand_name: 'HYPHEN', product_name: 'Hyphen Hidden', mrp: 150, is_active: 1, bulk_orderable: 0, created_at: now(), updated_at: now() });
+  });
+  const skus = async (q: string, brand: string) =>
+    ((await api().get(`${V}/skus`).query({ q, brand }).set('Cookie', mkt.cookie).expect(200)).body.data as { pepCode: string }[]).map((x) => x.pepCode);
+
+  it('a SKU off the list is not searched, its brand not offered, and an order / edit / draft with it is refused', async () => {
+    expect(await skus('coffee', 'mCaffeine')).toEqual(['SKU_A', 'SKU_B']);
+    expect((await api().get(V).set('Cookie', mkt.cookie).expect(200)).body.meta.brands).toEqual(['mCaffeine']); // HYPHEN has only a hidden SKU
+    const res = await create(mkt, order({ lines: [{ pepCode: 'SKU_A', qty: 1 }, { pepCode: 'SKU_HIDDEN', qty: 1 }] })).expect(400);
+    expect(fields(res)).toEqual(['lines[1].pepCode']);
+    expect(res.body.error.details[0].message).toBe('SKU_HIDDEN is not on the Bulk Orders SKU list: ask the masters team');
+    const o = (await create(mkt, order()).expect(201)).body.data as { id: string };
+    expect(fields(await edit(mkt, o.id, order({ lines: [{ pepCode: 'SKU_HIDDEN', qty: 1 }] })).expect(400))).toEqual(['lines[0].pepCode']);
+  });
+
+  it('Masters > PEP SKUs: the list shows it and Edit switches it (Yes / No, History row); the portal follows at once', async () => {
+    const list = (await api().get('/api/v1/masters/pep-skus').set('Cookie', admin.cookie).expect(200)).body.data as { id: string; pepCode: string; bulkOrderable: boolean }[];
+    const hidden = list.find((x) => x.pepCode === 'SKU_HIDDEN')!;
+    expect(hidden.bulkOrderable).toBe(false);
+    expect(list.find((x) => x.pepCode === 'SKU_A')!.bulkOrderable).toBe(true);
+    await api().patch(`/api/v1/masters/edit/pep_sku/${hidden.id}`).set('Cookie', admin.cookie).send({ changes: { bulkOrderable: 'maybe' } }).expect(400);
+    await api().patch(`/api/v1/masters/edit/pep_sku/${hidden.id}`).set('Cookie', admin.cookie).send({ changes: { bulkOrderable: 'Yes' }, original: { bulkOrderable: 'No' } }).expect(200);
+    expect(await rows('SELECT bulk_orderable b FROM master_skus WHERE id = ?', [hidden.id])).toEqual([{ b: 1 }]);
+    expect(await rows("SELECT field_name f, old_value o, new_value n FROM master_change_logs WHERE row_key = 'SKU_HIDDEN'")).toEqual([{ f: 'bulkOrderable', o: 'No', n: 'Yes' }]);
+    expect(await skus('coffee', 'mCaffeine')).toEqual(['SKU_A', 'SKU_B', 'SKU_HIDDEN']);
+  });
+
+  it('loader (npm run bulk:skus): the file is the list (others OFF), empty brands filled, a different brand kept; dry run writes nothing', async () => {
+    await insert('master_skus', { pep_code: 'SKU_ZERO', brand_name: '0', product_name: 'Coffee Zero Brand', mrp: 99, is_active: 1, created_at: now(), updated_at: now() });
+    const file = [
+      { pepCode: 'SKU_A', brand: 'mCaffeine' }, { pepCode: 'SKU_HIDDEN', brand: 'mCaffeine' }, { pepCode: 'SKU_ZERO', brand: 'mCaffeine' },
+      { pepCode: 'HYP_HIDDEN', brand: 'mCaffeine' }, { pepCode: 'NOT_THERE', brand: 'mCaffeine' }, { pepCode: 'sku_a', brand: 'mCaffeine' },
+    ];
+    const dry = await loadBulkSkus(file, false, { id: null });
+    expect(dry).toMatchObject({ listed: 4, on: ['SKU_HIDDEN', 'HYP_HIDDEN', 'SKU_ZERO'], notInMaster: ['NOT_THERE'], duplicates: ['sku_a'] });
+    expect(dry.off).toEqual(expect.arrayContaining(['SKU_B', 'SKU_OFF', 'SKU_NOMRP']));
+    expect(dry.brandFill).toEqual([{ pepCode: 'SKU_ZERO', brand: 'mCaffeine' }]);
+    expect(dry.brandDiffers).toEqual([{ pepCode: 'HYP_HIDDEN', master: 'HYPHEN', file: 'mCaffeine' }]);
+    expect(await rows("SELECT bulk_orderable b FROM master_skus WHERE pep_code IN ('SKU_HIDDEN', 'SKU_B') ORDER BY pep_code")).toEqual([{ b: 1 }, { b: 0 }]); // dry run: untouched (SKU_B on, SKU_HIDDEN off)
+    await loadBulkSkus(file, true, { id: admin.userId });
+    expect(await rows('SELECT pep_code p, bulk_orderable b, brand_name br FROM master_skus ORDER BY pep_code')).toEqual([
+      { p: 'HYP_HIDDEN', b: 1, br: 'HYPHEN' }, { p: 'SKU_A', b: 1, br: 'mCaffeine' }, { p: 'SKU_B', b: 0, br: 'mCaffeine' },
+      { p: 'SKU_HIDDEN', b: 1, br: 'mCaffeine' }, { p: 'SKU_NOMRP', b: 0, br: 'mCaffeine' }, { p: 'SKU_OFF', b: 0, br: 'mCaffeine' },
+      { p: 'SKU_ZERO', b: 1, br: 'mCaffeine' },
+    ]);
+    expect(await skus('coffee', 'mCaffeine')).toEqual(['SKU_A', 'SKU_HIDDEN', 'SKU_ZERO']);
+    expect((await loadBulkSkus(file, true, { id: admin.userId })).on).toEqual([]); // a re-run changes nothing
   });
 });
 
