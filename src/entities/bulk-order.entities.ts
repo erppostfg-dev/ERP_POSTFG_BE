@@ -235,6 +235,10 @@ export class BulkOrder {
 
   @Column({ name: 'payment_link_at', type: 'datetime', precision: 6, nullable: true })
   paymentLinkAt: Date | null;
+
+  /** 2026-11-24 (migration BulkPaymentDetails): bank details text our team gives the buyer (with / instead of a link / QR). */
+  @Column({ name: 'payment_bank_details', type: 'varchar', length: 1000, nullable: true })
+  paymentBankDetails: string | null;
 }
 
 /**

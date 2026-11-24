@@ -6,6 +6,7 @@ import { BulkOrderBrand1795900000000 } from '../../src/migrations/1795900000000-
 import { BulkOrderReceivers1796200000000 } from '../../src/migrations/1796200000000-BulkOrderReceivers';
 import { BulkInstitutionCustomers1796300000000 } from '../../src/migrations/1796300000000-BulkInstitutionCustomers';
 import { BulkFinance1796400000000 } from '../../src/migrations/1796400000000-BulkFinance';
+import { BulkPaymentDetails1796500000000 } from '../../src/migrations/1796500000000-BulkPaymentDetails';
 import { MARKETING_UNIT_PRICE } from '../../src/constants';
 import { runPoSyncPass } from '../../src/modules/po-uniware-sync/sync.service';
 import { api, loginAs, type TestLogin } from '../helpers/auth';
@@ -1282,10 +1283,10 @@ describe('bulk orders v2: finance (invoice, payment link, verify payment, GSTIN)
     await create(fin, order({ type: 'institutional' })).expect(403); // viewer: places no orders
 
     expect((await up(fin, i.id, 'invoice', 'INV-77.pdf').expect(201)).body.data.payment.status).toBe('invoiced');
-    expect(fields(await pay(fin, i.id, { action: 'set_link', link: 'http://rzp.io/l/x' }).expect(400))).toEqual(['link']);
-    expect(fields(await pay(fin, i.id, { action: 'set_link' }).expect(400))).toEqual(['link']);
-    await pay(inst, i.id, { action: 'set_link', link: LINK }).expect(403); // the buyer cannot
-    const linked = (await pay(fin, i.id, { action: 'set_link', link: LINK }).expect(200)).body.data;
+    expect(fields(await pay(fin, i.id, { action: 'set_details', link: 'http://rzp.io/l/x' }).expect(400))).toEqual(['link']);
+    expect(fields(await pay(fin, i.id, { action: 'set_details' }).expect(400))).toEqual(['link']);
+    expect((await pay(inst, i.id, { action: 'set_details', link: LINK }).expect(403)).body.error.code).toBe('BULK_NOT_PAYMENT_DETAILS'); // the buyer cannot
+    const linked = (await pay(fin, i.id, { action: 'set_details', link: LINK }).expect(200)).body.data;
     expect(linked.payment).toMatchObject({ status: 'invoiced', link: LINK });
     expect((await api().get(`${V}/${i.id}`).set('Cookie', inst.cookie).expect(200)).body.data.payment.link).toBe(LINK);
 
@@ -1336,6 +1337,68 @@ describe('bulk orders v2: finance (invoice, payment link, verify payment, GSTIN)
     }
     expect(await statuses()).toEqual(['unbilled', 'invoiced', 'payment_submitted']);
     expect(await rows("SELECT role_key k FROM roles WHERE role_key = 'bulk-finance'")).toEqual([{ k: 'bulk-finance' }]);
+  });
+});
+
+/*
+ * Payment details (2026-11-24, user: "our team sends a Razorpay link generated somewhere, or a QR, or bank details; they
+ * send the proof as screenshots"; "put 3"; "we give access to the payment details"): link / QR / bank details by the
+ * payment details permission (bulk-finance, admin, developer); up to 3 proof files; the requester is told.
+ */
+describe('bulk orders: payment details (link / QR / bank details), 3 proof screenshots, buyer told', () => {
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
+  const up = (who: TestLogin, id: string, kind: string, name: string) => api().post(`${V}/${id}/documents`).set('Cookie', who.cookie).field('kind', kind).attach('file', PNG, name);
+  const pay = (who: TestLogin, id: string, body: Record<string, unknown>) => api().post(`${V}/${id}/payment`).set('Cookie', who.cookie).send(body);
+  const told = async (userId: number) => (await rows<{ text: string }>('SELECT text FROM notices WHERE to_user_id = ? ORDER BY id', [userId])).map((r) => r.text);
+
+  it('finance adds a link + bank details (each can be cleared) and a QR; the buyer cannot; the buyer is told; nothing changes the status', async () => {
+    const fin = await loginAs('bulk-finance');
+    const i = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
+    const bank = 'A/c 1234567890, IFSC HDFC0001234, UPI pep@hdfc';
+    const d = (await pay(fin, i.id, { action: 'set_details', link: 'https://rzp.io/l/abc', bankDetails: bank }).expect(200)).body.data;
+    expect(d.payment).toMatchObject({ status: 'unbilled', link: 'https://rzp.io/l/abc', bankDetails: bank });
+    expect((await told(inst.userId)).some((t) => t.startsWith(`Payment details for your bulk order ${i.poNumber}`))).toBe(true);
+    const cleared = (await pay(fin, i.id, { action: 'set_details', link: '' }).expect(200)).body.data;
+    expect(cleared.payment).toMatchObject({ link: null, bankDetails: bank });
+    expect(fields(await pay(fin, i.id, { action: 'set_details', bankDetails: 5 }).expect(400))).toEqual(['bankDetails']);
+    expect((await up(inst, i.id, 'payment_qr', 'qr.png').expect(403)).body.error.code).toBe('BULK_NOT_PAYMENT_DETAILS');
+    const q = (await up(fin, i.id, 'payment_qr', 'qr.png').expect(201)).body.data;
+    expect(q.documents.map((x: { kind: string }) => x.kind)).toEqual(['payment_qr']);
+    expect(q.payment.status).toBe('unbilled');
+    // a verifier without the details permission cannot (separate permissions)
+    await rows("DELETE FROM page_permissions WHERE role = 'bulk-finance' AND page_slug = 'bulk-orders:payment-details'");
+    const fin2 = await loginAs('bulk-finance');
+    await pay(fin2, i.id, { action: 'set_details', link: 'https://rzp.io/l/x' }).expect(403);
+  });
+
+  it('up to 3 proof screenshots kept together; a 4th waits; a refusal sets them aside for a new set; paid / refused told to the buyer', async () => {
+    const fin = await loginAs('bulk-finance');
+    const i = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
+    for (const n of [1, 2, 3]) await up(inst, i.id, 'payment_proof', `shot-${n}.png`).expect(201);
+    const four = await up(inst, i.id, 'payment_proof', 'shot-4.png').expect(400);
+    expect(four.body.error.details[0].message).toMatch(/already has 3 proof files/);
+    const before = (await api().get(`${V}/${i.id}`).set('Cookie', inst.cookie).expect(200)).body.data;
+    expect(before.documents.filter((x: { replacedAt: string | null }) => !x.replacedAt)).toHaveLength(3);
+    await pay(fin, i.id, { action: 'refuse', note: 'Amount does not match' }).expect(200);
+    await up(inst, i.id, 'payment_proof', 'shot-5.png').expect(201); // a new set
+    const paid = (await pay(fin, i.id, { action: 'verify' }).expect(200)).body.data;
+    expect(paid.payment.status).toBe('paid');
+    expect(paid.documents.filter((x: { kind: string; replacedAt: string | null }) => x.kind === 'payment_proof' && !x.replacedAt).map((x: { fileName: string }) => x.fileName)).toEqual(['shot-5.png']);
+    const t = await told(inst.userId);
+    expect(t.some((x) => x.includes('was not accepted: Amount does not match'))).toBe(true);
+    expect(t.some((x) => x.startsWith(`Your payment for bulk order ${i.poNumber} is verified`))).toBe(true);
+  });
+
+  it('migration BulkPaymentDetails: down + up', async () => {
+    const qr = (await db()).createQueryRunner();
+    try {
+      await new BulkPaymentDetails1796500000000().down(qr);
+      expect(await count('page_permissions', "page_slug = 'bulk-orders:payment-details'")).toBe(0);
+      await new BulkPaymentDetails1796500000000().up(qr);
+    } finally {
+      await qr.release();
+    }
+    expect(await rows("SELECT role FROM page_permissions WHERE page_slug = 'bulk-orders:payment-details'")).toEqual([{ role: 'bulk-finance' }]);
   });
 });
 
@@ -1574,7 +1637,7 @@ describe('bulk orders v2: notifications + remind', () => {
 
   it('email switches (one place): admin only, checked; master OFF = bell only; one event OFF = that email only', async () => {
     const admin = await loginAs('admin');
-    expect((await api().get(N).set('Cookie', admin.cookie).expect(200)).body.data).toEqual({ emails: true, approvalNeeded: true, decision: true, remind: true });
+    expect((await api().get(N).set('Cookie', admin.cookie).expect(200)).body.data).toEqual({ emails: true, approvalNeeded: true, decision: true, remind: true, payment: true });
     await api().get(N).set('Cookie', mkt.cookie).expect(403);
     await api().put(N).set('Cookie', admin.cookie).send({ emails: 'no' }).expect(400);
     await api().put(N).set('Cookie', admin.cookie).send({}).expect(400);

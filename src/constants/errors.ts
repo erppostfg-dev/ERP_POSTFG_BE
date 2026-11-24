@@ -115,6 +115,8 @@ export const ERRORS = {
   /** v2 piece 5a: Institutional customers. */
   BULK_INST_CUSTOMER_NOT_FOUND: define(404, (id: string) => `No Institutional customer ${id}`),
   /** v2 piece 5b: GSTIN verify on a customer without one. */
+  /** 2026-11-24: payment details (link / QR / bank details) need the special permission. */
+  BULK_NOT_PAYMENT_DETAILS: define(403, () => 'Adding payment details needs the permission "Bulk Orders: add payment details" (ask an admin)'),
   BULK_INST_CUSTOMER_NO_GSTIN: define(409, (name: string) => `${name} has no GSTIN to verify`),
   BULK_INST_CUSTOMER_EXISTS: define(409, (what: string) => `A customer with this ${what} already exists: open it instead`),
   BULK_PROCESS_RECEIVERS_LATER: define(409, (po: string, n: number) => `${po} goes to ${n} receivers: one sale order per receiver is not built yet`),

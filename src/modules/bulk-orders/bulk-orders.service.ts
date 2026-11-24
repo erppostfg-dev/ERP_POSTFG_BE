@@ -1142,6 +1142,8 @@ const orderOut = (o: BulkOrder, names: Map<number, string>, editCount = 0, verif
     status: o.paymentStatus, by: o.paymentBy ? { id: o.paymentBy, name: names.get(o.paymentBy) ?? null } : null, at: o.paymentAt, note: o.paymentNote,
     // v2 piece 5b: the Razorpay link finance pasted (the buyer's 'Pay now')
     link: o.paymentLink, linkAt: o.paymentLinkAt,
+    // 2026-11-24: bank details text (a QR = a payment_qr document)
+    bankDetails: o.paymentBankDetails,
   } : null,
 });
 

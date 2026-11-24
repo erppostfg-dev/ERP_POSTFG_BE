@@ -48,7 +48,7 @@ router.get(BULK_ORDERS_TEAM.ROUTES.ONE, ...viewer, async (req, res, next) => {
 router.post(BULK_ORDERS_TEAM.ROUTES.DOCUMENTS, ...editor, upload, async (req, res, next) => {
   try {
     const file = req.file ? { originalname: req.file.originalname, buffer: req.file.buffer } : undefined;
-    res.status(201).json({ data: await teamUploadBulkDocument(req.auth!.user.id, String(req.params.id), (req.body ?? {}) as Record<string, unknown>, file) });
+    res.status(201).json({ data: await teamUploadBulkDocument({ id: req.auth!.user.id, roles: req.auth!.roles }, String(req.params.id), (req.body ?? {}) as Record<string, unknown>, file) });
   } catch (err) {
     next(err);
   }

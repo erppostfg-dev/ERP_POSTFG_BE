@@ -82,6 +82,12 @@ export const CAPABILITY = {
    * tab (no code, no migration). Same rule in the portal and in POST_FG PO Processing & Review > Bulk Orders.
    */
   BULK_PAYMENT_VERIFY: 'bulk-orders:verify-payment',
+  /**
+   * Bulk Orders: add / change an order's payment details (a payment link, a QR image, bank details) (2026-11-24, user:
+   * "we give access to the payment details, we can change this"): admin / developer always, bulk-finance (migration
+   * BulkPaymentDetails), any other role = switch it on in the Roles tab.
+   */
+  BULK_PAYMENT_DETAILS: 'bulk-orders:payment-details',
 } as const;
 // v2 piece 5b (2026-11-24): the role bulk-finance has BULK_PAYMENT_VERIFY on (migration BulkFinance): invoices, payment
 // links, verify payments, verify customer GSTINs.
@@ -101,6 +107,11 @@ export const CAPABILITIES: readonly { key: Capability; label: string; descriptio
     key: CAPABILITY.BULK_PAYMENT_VERIFY,
     label: 'Bulk Orders: verify payments',
     description: 'Verify or refuse a proof of payment, or mark the payment not needed (POST_FG Bulk Orders and the portal).',
+  },
+  {
+    key: CAPABILITY.BULK_PAYMENT_DETAILS,
+    label: 'Bulk Orders: add payment details',
+    description: 'Add or change the payment link, QR code and bank details the buyer pays with (POST_FG Bulk Orders and the portal).',
   },
 ];
 export const CAPABILITY_SECTION = 'Special permissions';

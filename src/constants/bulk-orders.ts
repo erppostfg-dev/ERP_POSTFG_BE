@@ -113,15 +113,19 @@ export const BULK_TRACKING = {
  * Remind: the requester nudges our team (COPT) REMIND_AFTER_H after the request (after the approval when one was
  * needed) while not placed, then at most every REMIND_COOLDOWN_H.
  */
-export type BulkNotifyEvent = 'approval_needed' | 'approved' | 'rejected' | 'for_team' | 'remind';
-export interface BulkNotifySettings { emails: boolean; approvalNeeded: boolean; decision: boolean; remind: boolean }
+/** 2026-11-24: + payment events to the requester (payment details added, payment accepted / refused). */
+export type BulkNotifyEvent = 'approval_needed' | 'approved' | 'rejected' | 'for_team' | 'remind' | 'payment_details' | 'payment_paid' | 'payment_refused';
+export interface BulkNotifySettings { emails: boolean; approvalNeeded: boolean; decision: boolean; remind: boolean; payment: boolean }
 /** The settings' body fields (booleans). */
-export const BULK_ORDERS_BODY_NOTIFY = ['emails', 'approvalNeeded', 'decision', 'remind'] as const;
+export const BULK_ORDERS_BODY_NOTIFY = ['emails', 'approvalNeeded', 'decision', 'remind', 'payment'] as const;
 export const BULK_NOTIFY = {
   SETTINGS_KEY: 'bulk-notify:settings',
-  DEFAULTS: { emails: true, approvalNeeded: true, decision: true, remind: true } as BulkNotifySettings,
+  DEFAULTS: { emails: true, approvalNeeded: true, decision: true, remind: true, payment: true } as BulkNotifySettings,
   /** Which switch sends an event's email (none = bell only: our team works in POST_FG all day). */
-  EMAIL_SWITCH: { approval_needed: 'approvalNeeded', approved: 'decision', rejected: 'decision', for_team: null, remind: 'remind' } as Record<BulkNotifyEvent, 'approvalNeeded' | 'decision' | 'remind' | null>,
+  EMAIL_SWITCH: {
+    approval_needed: 'approvalNeeded', approved: 'decision', rejected: 'decision', for_team: null, remind: 'remind',
+    payment_details: 'payment', payment_paid: 'payment', payment_refused: 'payment',
+  } as Record<BulkNotifyEvent, 'approvalNeeded' | 'decision' | 'remind' | 'payment' | null>,
   APPROVER_ROLE: 'bulk-approver',
   /** POST_FG page of our team's Bulk Orders tab (the bell link + email link for COPT). */
   TEAM_LINK: '/operations/po-review?tab=bulk',
@@ -134,6 +138,9 @@ export const BULK_NOTIFY = {
     rejected: (po: string, _u: number, why: string) => `Your bulk order ${po} was rejected${why ? `: ${why}` : '.'}`,
     for_team: (po: string, units: number) => `New bulk order ${po} (${units} units) to place: Bulk Orders tab.`,
     remind: (po: string, units: number) => `Reminder: bulk order ${po} (${units} units) is still waiting to be placed.`,
+    payment_details: (po: string) => `Payment details for your bulk order ${po} are ready: open the order to pay, then upload the proof of payment.`,
+    payment_paid: (po: string) => `Your payment for bulk order ${po} is verified. Thank you.`,
+    payment_refused: (po: string, _u: number, why: string) => `Your proof of payment for bulk order ${po} was not accepted${why ? `: ${why}` : '.'} Please upload it again.`,
   } as Record<BulkNotifyEvent, (po: string, units: number, extra: string) => string>,
   SUBJECT: {
     approval_needed: (po: string) => `Bulk order ${po} needs your approval`,
@@ -141,6 +148,9 @@ export const BULK_NOTIFY = {
     rejected: (po: string) => `Bulk order ${po} rejected`,
     for_team: (po: string) => `New bulk order ${po} to place`,
     remind: (po: string) => `Reminder: bulk order ${po} waiting to be placed`,
+    payment_details: (po: string) => `Payment details for bulk order ${po}`,
+    payment_paid: (po: string) => `Payment verified: bulk order ${po}`,
+    payment_refused: (po: string) => `Proof of payment not accepted: bulk order ${po}`,
   } as Record<BulkNotifyEvent, (po: string) => string>,
 } as const;
 
@@ -226,8 +236,12 @@ export const BULK_PAYMENT_ACTION = {
   VERIFY: 'verify',
   REFUSE: 'refuse',
   NOT_NEEDED: 'not_needed',
-  /** v2 piece 5b: finance pastes the Razorpay payment link ({ link }); the buyer sees 'Pay now'. No status change. */
-  SET_LINK: 'set_link',
+  /**
+   * Payment details (2026-11-24, replaces v2 5b's set_link): { link?, bankDetails? } = the payment link (https, e.g. a
+   * Razorpay link made outside POST_FG; the buyer sees 'Pay now') and / or bank details text; '' clears one. A QR image is
+   * a document of kind payment_qr. Needs CAPABILITY.BULK_PAYMENT_DETAILS. No status change; the buyer is told.
+   */
+  SET_DETAILS: 'set_details',
 } as const;
 export type BulkPaymentAction = (typeof BULK_PAYMENT_ACTION)[keyof typeof BULK_PAYMENT_ACTION];
 export const BULK_PAYMENT_ACTIONS = Object.values(BULK_PAYMENT_ACTION) as BulkPaymentAction[];
@@ -237,6 +251,8 @@ export const BULK_DOC_KIND = {
   PROFORMA_INVOICE: 'proforma_invoice',
   INVOICE: 'invoice',
   PAYMENT_PROOF: 'payment_proof',
+  /** 2026-11-24: a QR code to pay with (payment details; CAPABILITY.BULK_PAYMENT_DETAILS); a new one replaces the old. */
+  PAYMENT_QR: 'payment_qr',
 } as const;
 export type BulkDocKind = (typeof BULK_DOC_KIND)[keyof typeof BULK_DOC_KIND];
 export const BULK_DOC_KINDS = Object.values(BULK_DOC_KIND) as BulkDocKind[];
@@ -308,6 +324,9 @@ export const BULK_ORDERS = {
   CUSTOMERS_LIST_MAX: 2000,
   /** v2 piece 5b: a payment link: https only, at most this long. */
   PAYMENT_LINK_MAX: 1000,
+  BANK_DETAILS_MAX: 1000,
+  /** 2026-11-24 (user: 'put 3'): proof files (screenshots) kept for one payment; a refusal clears them for a new set. */
+  PAYMENT_PROOFS_MAX: 3,
   CUSTOMER_ADDRESSES_MAX: 50,
   /** Units per line. */
   QTY_MAX: 1_000_000,
@@ -450,6 +469,8 @@ export const BULK_BODY = {
   DEFAULT_DISCOUNT: 'defaultDiscountPct',
   /** v2 piece 5b: payment link (set_link) / GSTIN verified true | false. */
   LINK: 'link',
+  /** 2026-11-24: payment details text (bank account, IFSC, UPI ...). */
+  BANK_DETAILS: 'bankDetails',
   VERIFIED: 'verified',
   ADDRESSES: 'addresses',
   ACTIVE: 'active',
