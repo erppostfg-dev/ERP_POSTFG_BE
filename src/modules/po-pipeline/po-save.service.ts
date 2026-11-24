@@ -97,7 +97,8 @@ export const poRows = (
     channel: v.channelDisplayName,
     // Channel / Marketing / Institutional ... from the channel (2026-11-16; bulk orders come through here too)
     poGroup: poGroupOf(v.channelDisplayName),
-    location: v.location?.locationCode ?? null,
+    // our PEP name for Flipkart (Mumbai BTS), else the channel's code (2026-11-24)
+    location: v.location?.poLocation ?? v.location?.locationCode ?? null,
     locationId: v.location?.locationId ?? null,
     poNumber: v.poNumber,
     totalUnits: lines.reduce((s, l) => s + n(l.qty), 0),
