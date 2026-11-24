@@ -77,6 +77,13 @@ export const ROLE_CATALOG: readonly RoleDef[] = [
   },
 ];
 
+/**
+ * Roles that open ONLY the Bulk Orders portal (2026-11-24, gap B): a person whose roles are all of these is a portal-only
+ * person: the welcome email links to the portal (BULK_PORTAL_URL) and a sign-in started on POST_FG lands on the portal.
+ */
+export const BULK_ONLY_ROLES: readonly string[] = ['bulk-marketing', 'bulk-institutional', 'bulk-approver'];
+export const isBulkOnly = (roles: readonly string[]): boolean => roles.length > 0 && roles.every((r) => BULK_ONLY_ROLES.includes(r));
+
 /** users.id / roles.key in a URL. */
 export const USER_ID_PATTERN = /^\d{1,10}$/;
 

@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AUTH, USER_STATUS } from '../../src/constants';
 import { api, loginAs } from '../helpers/auth';
 import { closeDb, count, db, resetDb, rows } from '../helpers/db';
@@ -9,6 +9,13 @@ import { covers } from '../helpers/routes';
  * the callback's refusal paths need no Google answer; sessions are made with the real session code (helpers/auth).
  */
 covers(['GET /health', 'GET /auth/google', 'GET /auth/google/callback', 'GET /auth/me', 'POST /auth/logout']);
+
+// The one Google step (code -> profile) is a stand-in for the successful sign-in tests; everything after it is real.
+const google = vi.hoisted(() => ({ email: '' }));
+vi.mock('../../src/modules/auth/session.service', async (orig) => ({
+  ...(await orig<object>()),
+  profileFromCode: vi.fn(async () => ({ googleId: `g-${google.email}`, email: google.email, name: 'Test person' })),
+}));
 
 const P = '/api/v1';
 beforeEach(resetDb);
@@ -95,5 +102,21 @@ describe('logout', () => {
 
   it('401 when not logged in', async () => {
     expect((await api().post(`${P}/auth/logout`)).status).toBe(401);
+  });
+});
+
+describe('after a successful sign-in (2026-11-24, portal-only people)', () => {
+  const signIn = async (email: string, app?: string) => {
+    google.email = email;
+    return api().get(`${P}/auth/google/callback?state=s&code=c`).set('Cookie', `${AUTH.STATE_COOKIE}=s${app ? `; ${AUTH.APP_COOKIE}=${app}` : ''}`).expect(302);
+  };
+  it('a person with bulk roles only lands on the Bulk Orders portal even when they started on POST_FG; others on POST_FG', async () => {
+    const bulk = await loginAs('bulk-marketing');
+    const res = await signIn(bulk.email);
+    expect(res.headers.location).toBe('http://localhost:5174');
+    expect(String(res.headers['set-cookie'])).toContain(`${AUTH.SESSION_COOKIE}=`);
+    const ops = await loginAs('operations-executive');
+    expect((await signIn(ops.email)).headers.location).toBe('http://localhost:5173');
+    expect((await signIn(ops.email, AUTH.APP_BULK)).headers.location).toBe('http://localhost:5174'); // started on the portal
   });
 });

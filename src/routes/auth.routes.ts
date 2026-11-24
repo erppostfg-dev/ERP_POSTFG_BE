@@ -1,12 +1,12 @@
 import { CookieOptions, Router } from 'express';
 import { env } from '../config/env';
-import { AUTH, ERROR_CODES } from '../constants';
+import { AUTH, ERROR_CODES, isBulkOnly } from '../constants';
 import { loadAccess, resolveAllAccess, resolveCapabilities } from '../modules/auth/access.service';
 import { clientInfo, requireAuth } from '../modules/auth/auth.middleware';
 import { allowedUser, endSession, googleSignInUrl, newState, profileFromCode, startSession } from '../modules/auth/session.service';
 import { AppError, appError } from '../utils/AppError';
 import { AppDataSource } from '../config/data-source';
-import { Role } from '../entities';
+import { Role, UserRole } from '../entities';
 import { In } from 'typeorm';
 import { LOG_SOURCE } from '../constants/logging';
 import { log } from '../utils/logger';
@@ -32,8 +32,11 @@ const cookieOptions = (maxAgeMs: number): CookieOptions => ({
   maxAge: maxAgeMs,
 });
 
-/** Where the browser goes after sign-in: the frontend that started it (Bulk Orders portal or POST_FG). */
-const backTo = (app: unknown): string => (app === AUTH.APP_BULK ? env.auth.bulkPortalUrl : env.auth.redirectUrl);
+/**
+ * Where the browser goes after sign-in: the frontend that started it (Bulk Orders portal or POST_FG); a portal-only
+ * person (bulk roles only, 2026-11-24) always lands on the portal, where they can work, even when they started on POST_FG.
+ */
+const backTo = (app: unknown, bulkOnly = false): string => (app === AUTH.APP_BULK || bulkOnly ? env.auth.bulkPortalUrl : env.auth.redirectUrl);
 
 const redirectWithError = (code: string, app: unknown): string => {
   const url = new URL(backTo(app));
@@ -66,7 +69,8 @@ router.get('/google/callback', async (req, res) => {
     const { token, expiresAt } = await startSession(user, profile, clientInfo(req));
     res.cookie(AUTH.SESSION_COOKIE, token, cookieOptions(expiresAt.getTime() - Date.now()));
     log.info(LOG_SOURCE.GOOGLE_LOGIN, `[auth] login ${user.email} (user ${user.id})`);
-    res.redirect(backTo(app));
+    const roles = (await AppDataSource.getRepository(UserRole).find({ select: { role: true }, where: { userId: user.id } })).map((r) => r.role);
+    res.redirect(backTo(app, isBulkOnly(roles)));
   } catch (err) {
     const code = err instanceof AppError ? err.code : ERROR_CODES.INTERNAL;
     log.info(LOG_SOURCE.GOOGLE_LOGIN, `[auth] login refused: ${code}${err instanceof AppError ? ` (${err.message})` : ''}`);

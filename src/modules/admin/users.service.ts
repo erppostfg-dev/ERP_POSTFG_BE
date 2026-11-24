@@ -15,6 +15,7 @@ import {
   UserStatus,
   UserTeam,
   WELCOME_EMAIL,
+  isBulkOnly,
 } from '../../constants';
 import { ActivityLog, MasterFacility, Role, User, UserFacility, UserRole } from '../../entities';
 import { AppError, appError } from '../../utils/AppError';
@@ -221,12 +222,15 @@ const welcomeMail = async (user: UserItem) => {
     .map((p) => `${p.section === p.label ? p.label : `${p.section} › ${p.label}`} (${access[p.slug] === ACCESS_LEVEL.EDITOR ? 'can edit' : 'view only'})`);
   const team = user.team ? `${TEAM_LABEL[user.team]} team${user.facilities.length ? `, facilities ${user.facilities.join(', ')}` : ''}` : null;
   // The app's own address (AUTH_REDIRECT_URL, e.g. <domain>/postfg), not FRONTEND_ORIGIN: on a shared domain the bare
-  // origin opens another app's sign-in (user, 2026-10-27).
-  const url = env.auth.redirectUrl;
+  // origin opens another app's sign-in (user, 2026-10-27). A portal-only person (bulk roles only, 2026-11-24): the
+  // Bulk Orders portal (BULK_PORTAL_URL), which is the only place they can work.
+  const bulkOnly = isBulkOnly(user.roles);
+  const url = bulkOnly ? env.auth.bulkPortalUrl : env.auth.redirectUrl;
+  const appName = bulkOnly ? 'the Bulk Orders portal' : 'POST FG';
   const lines = [
     `Hi ${user.name},`,
     '',
-    `${adder ?? 'An admin'} added you to POST FG as ${roleText}${team ? ` (${team})` : ''}.`,
+    `${adder ?? 'An admin'} added you to ${appName} as ${roleText}${team ? ` (${team})` : ''}.`,
     '',
     pages.length ? 'You can open:' : 'You have no pages yet; an admin will give you access.',
     ...pages.map((p) => `  • ${p}`),
@@ -235,9 +239,9 @@ const welcomeMail = async (user: UserItem) => {
   ];
   const html = `<div style="font-family:Arial,sans-serif;font-size:14px;color:#111827;line-height:1.5">
 <p>Hi ${esc(user.name)},</p>
-<p><b>${esc(adder ?? 'An admin')}</b> added you to <b>POST FG</b> as <b>${esc(roleText)}</b>${team ? ` (${esc(team)})` : ''}.</p>
+<p><b>${esc(adder ?? 'An admin')}</b> added you to <b>${esc(appName)}</b> as <b>${esc(roleText)}</b>${team ? ` (${esc(team)})` : ''}.</p>
 ${pages.length ? `<p>You can open:</p><ul>${pages.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>` : '<p>You have no pages yet; an admin will give you access.</p>'}
-<p><a href="${esc(url)}" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 16px;border-radius:6px;text-decoration:none">Sign in to POST FG</a></p>
+<p><a href="${esc(url)}" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 16px;border-radius:6px;text-decoration:none">Sign in to ${esc(bulkOnly ? 'Bulk Orders' : 'POST FG')}</a></p>
 <p style="color:#6b7280;font-size:12px">Use your Google account ${esc(user.email)}.</p>
 </div>`;
   return { to: user.email, subject: WELCOME_EMAIL.SUBJECT, text: lines.join('\n'), html };

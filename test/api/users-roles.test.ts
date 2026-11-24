@@ -59,6 +59,18 @@ describe('users', () => {
     expect(JSON.stringify(opts.body.data)).toContain(m.facilityCode);
   });
 
+  it('a portal-only person (bulk roles only) gets the Bulk Orders portal link; anyone with a POST_FG role the POST_FG one (2026-11-24)', async () => {
+    await addUser({ email: 'bulk.only@mcaffeine.com', roles: ['bulk-marketing', 'bulk-approver'] }).expect(200);
+    await vi.waitFor(() => expect(mail.sent).toHaveLength(1));
+    expect(mail.sent[0].text).toContain('http://localhost:5174');
+    expect(mail.sent[0].text).not.toContain('http://localhost:5173');
+    expect(mail.sent[0].text).toContain('the Bulk Orders portal');
+    expect(mail.sent[0].html).toContain('Sign in to Bulk Orders');
+    await addUser({ email: 'mixed.person@mcaffeine.com', roles: ['bulk-marketing', 'viewer'] }).expect(200);
+    await vi.waitFor(() => expect(mail.sent).toHaveLength(2));
+    expect(mail.sent[1].text).toContain('http://localhost:5173');
+  });
+
   it('adds a person with roles, team and warehouses, and sends the welcome email with the app link and their pages', async () => {
     const res = await addUser({ email: 'New.Person@mcaffeine.com', roles: ['operations-executive'], team: 'warehouse', facilities: [m.facilityCode] });
     expect(res.status).toBeLessThan(300);
