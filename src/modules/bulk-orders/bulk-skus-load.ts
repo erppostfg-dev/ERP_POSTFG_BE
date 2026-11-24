@@ -65,10 +65,17 @@ export const loadBulkSkus = async (rows: BulkSkuRow[], apply: boolean, by: { id:
       }
       for (const c of codes) log.push({ type: MASTER_LOG_TYPE.PEP_SKU, recordId: byCode.get(c)!.id, rowKey: c, action: MASTER_LOG_ACTION.FIELD_CHANGED, field: 'bulkOrderable', oldValue: !val, newValue: val });
     }
+    // one UPDATE per brand (500 ids a time): per SKU it was 538 UPDATEs of ~0.5-2 s each on the shared RDS (dev 2026-11-24)
+    const byBrand = new Map<string, string[]>();
     for (const f of p.brandFill) {
       const s = byCode.get(f.pepCode)!;
-      await repo.update({ id: s.id }, { brandName: f.brand, updatedAt: now });
+      byBrand.set(f.brand, [...(byBrand.get(f.brand) ?? []), String(s.id)]);
       log.push({ type: MASTER_LOG_TYPE.PEP_SKU, recordId: s.id, rowKey: f.pepCode, action: MASTER_LOG_ACTION.FIELD_CHANGED, field: 'brand', oldValue: s.brandName, newValue: f.brand });
+    }
+    for (const [brand, ids] of byBrand) {
+      for (let i = 0; i < ids.length; i += 500) {
+        await repo.createQueryBuilder().update().set({ brandName: brand, updatedAt: now }).where('id IN (:...part)', { part: ids.slice(i, i + 500) }).execute();
+      }
     }
     for (let i = 0; i < log.length; i += 1000) await logMasterChanges(m, log.slice(i, i + 1000), by, MASTER_LOG_SOURCE.SCRIPT, 'Bulk Orders SKU list (npm run bulk:skus)');
     return p;
