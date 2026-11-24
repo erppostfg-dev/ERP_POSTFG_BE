@@ -122,19 +122,20 @@ export const hideBulkCustomer = async (actorId: number, customerId: string) => {
   return { id: String(c.id), hidden: true };
 };
 
+/** A mother warehouse (BULK_SALE.MOTHER_TYPE, 2026-11-24): the only warehouses a bulk order ships from. */
+const MOTHER_WHERE = { isActive: true, intransitType: BULK_SALE.MOTHER_TYPE, parentFacilityId: IsNull() };
+
 /**
- * What the Process panel needs: active warehouses + matching saved customers. Each warehouse carries parentCode = its
- * main (mother) warehouse's code, null for a main one (or a child whose main is not active): the panel lists the main
- * warehouses and folds their children under them.
+ * What the Process panel needs: the MOTHER warehouses (user 2026-11-24: only those; no child, dark store, D2C, return)
+ * + matching saved customers. parentCode stays in the answer (always null now) for the panel's warehouse picker.
  */
 export const bulkProcessOptions = async (id: string) => {
   const o = await loadOrder(id);
   const facilities = await AppDataSource.getRepository(MasterFacility).find({
-    select: { id: true, code: true, name: true, parentFacilityId: true }, where: { isActive: true }, order: { code: 'ASC' }, take: BULK_SALE.FACILITIES_MAX,
+    select: { id: true, code: true, name: true }, where: MOTHER_WHERE, order: { code: 'ASC' }, take: BULK_SALE.FACILITIES_MAX,
   });
-  const codeOf = new Map(facilities.map((f) => [f.id, f.code]));
   return {
-    facilities: facilities.map((f) => ({ code: f.code, name: f.name, parentCode: (f.parentFacilityId !== null && codeOf.get(f.parentFacilityId)) || null })),
+    facilities: facilities.map((f) => ({ code: f.code, name: f.name, parentCode: null })),
     customers: await matchesFor(o),
   };
 };
@@ -236,9 +237,10 @@ export const processBulkOrder = async (actor: ProcessActor, id: string, body: Re
   // v2 piece 2a: one sale order per receiver comes with piece 2b
   if (first.receiverCount > 1) throw appError(ERROR_CODES.BULK_PROCESS_RECEIVERS_LATER, first.poNumber, first.receiverCount);
   // the warehouse exactly as the facility master spells it (case matters: main vs child warehouse)
-  const facility = await AppDataSource.getRepository(MasterFacility).findOne({ select: { id: true, code: true, isActive: true }, where: { code: facilityCode } });
-  if (!facility || !facility.isActive) {
-    c.add(F.FACILITY, `${facilityCode} is not an active warehouse in the facility master`);
+  // a mother warehouse only (2026-11-24), exactly as the facility master spells it
+  const facility = await AppDataSource.getRepository(MasterFacility).findOne({ select: { id: true, code: true }, where: { code: facilityCode, ...MOTHER_WHERE } });
+  if (!facility) {
+    c.add(F.FACILITY, `${facilityCode} is not an active mother warehouse in the facility master (bulk orders ship from mother warehouses only)`);
     c.fail();
   }
   const type = first.orderType as BulkOrderType;

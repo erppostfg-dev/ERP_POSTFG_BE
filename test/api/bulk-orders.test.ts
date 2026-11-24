@@ -518,8 +518,11 @@ describe('bulk orders step 3b: Institutional requester details + our team create
   };
 
   beforeEach(async () => {
-    const main = await insert('master_facilities', { code: WH, name: 'Bhiwandi', entity: 'PEP', state: 'Maharashtra', is_active: 1, source: 'manual', uniware_export: 0 });
-    await insert('master_facilities', { code: 'MUM_Warehouse2', name: 'Bhiwandi child', parent_facility_id: main, entity: 'PEP', state: 'Maharashtra', is_active: 1, source: 'manual', uniware_export: 0 });
+    const main = await insert('master_facilities', { code: WH, name: 'Bhiwandi', entity: 'PEP', state: 'Maharashtra', is_active: 1, intransit_type: 'MWH', source: 'manual', uniware_export: 0 });
+    await insert('master_facilities', { code: 'MUM_Warehouse2', name: 'Bhiwandi child', parent_facility_id: main, entity: 'PEP', state: 'Maharashtra', is_active: 1, intransit_type: 'MWH', source: 'manual', uniware_export: 0 });
+    // not mother warehouses: never offered, refused (2026-11-24)
+    await insert('master_facilities', { code: 'DS_NCR_TEST', name: 'Dark store', entity: 'PEP', state: 'Delhi', is_active: 1, intransit_type: 'DarkStore', source: 'manual', uniware_export: 0 });
+    await insert('master_facilities', { code: 'HYP_AHMD', name: 'D2C', entity: 'PEP', state: 'Gujarat', is_active: 1, intransit_type: 'D2C', source: 'manual', uniware_export: 0 });
     await insert('master_facilities', { code: 'OLD_WH', name: 'Closed', entity: 'PEP', state: 'Maharashtra', is_active: 0, source: 'manual', uniware_export: 0 });
   });
 
@@ -546,7 +549,8 @@ describe('bulk orders step 3b: Institutional requester details + our team create
     expect(fields(await processIt(opsExec, i.id, { ...SALE, facilityCode: 'OLD_WH' }).expect(400))).toEqual(['facilityCode']);
     expect(fields(await processIt(opsExec, i.id, { ...SALE, facilityCode: 'mum_warehouse2' }).expect(400))).toEqual(['facilityCode']); // case = another warehouse
     const opts = (await api().get(`${T}/${i.id}/process-options`).set('Cookie', opsExec.cookie).expect(200)).body.data;
-    expect(opts).toEqual({ facilities: [{ code: WH, name: 'Bhiwandi', parentCode: null }, { code: 'MUM_Warehouse2', name: 'Bhiwandi child', parentCode: WH }], customers: [] }); // child under its main
+    expect(opts).toEqual({ facilities: [{ code: WH, name: 'Bhiwandi', parentCode: null }], customers: [] }); // mother warehouses only: no child, dark store, D2C
+    for (const not of ['MUM_Warehouse2', 'DS_NCR_TEST', 'HYP_AHMD']) expect(fields(await processIt(opsExec, i.id, { ...SALE, facilityCode: not }).expect(400))).toEqual(['facilityCode']);
     expect(await count('master_purchase_orders')).toBe(0);
   });
 
@@ -752,7 +756,7 @@ describe('bulk orders v2: Head office works like Marketing', () => {
   });
 
   it('our team processes it like Marketing: saved PO in Bulk Marketing (group Marketing), CSV at ₹0.01, its own address book', async () => {
-    await insert('master_facilities', { code: WH, name: 'Bhiwandi', entity: 'PEP', state: 'Maharashtra', is_active: 1, source: 'manual', uniware_export: 0 });
+    await insert('master_facilities', { code: WH, name: 'Bhiwandi', entity: 'PEP', state: 'Maharashtra', is_active: 1, intransit_type: 'MWH', source: 'manual', uniware_export: 0 });
     const o = (await create(mkt, order(HO)).expect(201)).body.data as { id: string; poNumber: string };
     await api().post(`${V}/${o.id}/approve`).set('Cookie', approver.cookie).send({}).expect(200);
     const SALE = { facilityCode: WH, uniwareChannel: 'JIVA', customerCode: 'CUST_HO_01' };
@@ -860,7 +864,7 @@ describe('bulk orders v2: approval rules', () => {
   });
 
   it('our team: a submitted order counts as waiting and is processed like an approved one; then no more edits; send back -> submitted again', async () => {
-    await insert('master_facilities', { code: WH, name: 'Bhiwandi', entity: 'PEP', state: 'Maharashtra', is_active: 1, source: 'manual', uniware_export: 0 });
+    await insert('master_facilities', { code: WH, name: 'Bhiwandi', entity: 'PEP', state: 'Maharashtra', is_active: 1, intransit_type: 'MWH', source: 'manual', uniware_export: 0 });
     const o = (await create(mkt, units(10)).expect(201)).body.data as { id: string };
     expect((await api().get(T).set('Cookie', opsExec.cookie).expect(200)).body.meta.waiting.marketing).toBe(1);
     expect((await api().get(`${T}?status=ready`).set('Cookie', opsExec.cookie).expect(200)).body.meta.total).toBe(1); // approved + submitted
@@ -1305,7 +1309,7 @@ describe('bulk orders v2: courier tracking from Uniware (sync)', () => {
   let pkgs: Record<string, unknown>[] = [];
   const fakeUniware = { post: async <R,>(_path: string, body: unknown) => ({ saleOrderDTO: { code: (body as { code: string }).code, status: 'PROCESSING', saleOrderItems: [], shippingPackages: pkgs } }) as unknown as R };
   const placed = async () => {
-    await insert('master_facilities', { code: WH, name: 'Bhiwandi', entity: 'PEP', state: 'Maharashtra', is_active: 1, source: 'manual', uniware_export: 0 });
+    await insert('master_facilities', { code: WH, name: 'Bhiwandi', entity: 'PEP', state: 'Maharashtra', is_active: 1, intransit_type: 'MWH', source: 'manual', uniware_export: 0 });
     const o = (await create(mkt, order()).expect(201)).body.data as { id: string };
     await api().post(`${V}/${o.id}/approve`).set('Cookie', approver.cookie).send({}).expect(200);
     await api().post(`${T}/${o.id}/process`).set('Cookie', opsExec.cookie).send({ facilityCode: WH, uniwareChannel: 'JIVA', customerCode: 'C1' }).expect(200);

@@ -400,6 +400,12 @@ export const BULK_SALE = {
   CODE_MAX: 100,
   CUSTOMERS_MAX: 5,
   FACILITIES_MAX: 500,
+  /**
+   * Bulk orders ship from MOTHER warehouses only (user 2026-11-24): active, facility master intransit_type = MWH (the
+   * in-transit report's mother warehouse type: GGN / KOL / MUM groups on dev) and not a child (no parent_facility_id).
+   * Dark stores, D2C, Return and child warehouses are never offered, and a process request with one is refused.
+   */
+  MOTHER_TYPE: 'MWH',
 } as const;
 
 /** Institutional requester details (portal; user 2026-11-12: "name and all details are from the requester only"). */
