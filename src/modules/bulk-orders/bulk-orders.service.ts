@@ -762,6 +762,48 @@ export const updateBulkOrder = async (actor: BulkActor, id: string, body: Record
   return after;
 };
 
+// ---- duplicate warning (2026-11-24, backlog M5.7) -------------------------------------------------------------------
+
+/**
+ * "Have I ordered this already?" before Submit (editor on the type; NOTHING saved, never blocks): the person's own
+ * orders of the type from the last DUPLICATE_DAYS (not rejected / cancelled / drafts) with the SAME set of SKUs and at
+ * least one delivery pincode in common. `excludeId` = the order being edited. 3 queries (orders, lines, receivers).
+ */
+export const bulkDuplicateCheck = async (actor: BulkActor, body: Record<string, unknown>) => {
+  const c = new Checker();
+  const type = typeParam(c, body[F.TYPE]);
+  const list = (k: string) => (Array.isArray(body[k]) ? (body[k] as unknown[]).filter((x): x is string => typeof x === 'string' && x.trim() !== '').map((x) => x.trim()) : null);
+  const codes = list(F.PEP_CODES);
+  const pins = list(F.PINCODES);
+  if (!codes?.length) c.add(F.PEP_CODES, errorMessage(ERROR_CODES.FIELD_REQUIRED, F.PEP_CODES));
+  if (!pins) c.add(F.PINCODES, errorMessage(ERROR_CODES.FIELD_NOT_LIST, F.PINCODES));
+  const ex = body[F.EXCLUDE_ID];
+  c.fail();
+  needType(await bulkRights(actor), type!, ACCESS_LEVEL.EDITOR);
+  const want = [...new Set(codes!.map((x) => x.toUpperCase()))].sort().join('|');
+  const pinSet = new Set(pins);
+  const since = new Date(Date.now() - BULK_ORDERS.DUPLICATE_DAYS * 86_400_000);
+  const recent = await AppDataSource.getRepository(BulkOrder).createQueryBuilder('o')
+    .select(['o.id', 'o.poNumber', 'o.status', 'o.createdAt', 'o.totalUnits', 'o.pincode'])
+    .where('o.createdBy = :me AND o.orderType = :type AND o.createdAt >= :since AND o.status NOT IN (:...closed)', {
+      me: actor.id, type, since, closed: [BULK_ORDER_STATUS.REJECTED, BULK_ORDER_STATUS.CANCELLED, BULK_ORDER_STATUS.DRAFT],
+    })
+    .andWhere(isId(ex) ? 'o.id <> :ex' : '1 = 1', { ex: isId(ex) ? String(ex) : null })
+    .orderBy('o.createdAt', 'DESC').take(50).getMany();
+  if (!recent.length) return [];
+  const ids = recent.map((o) => String(o.id));
+  const [lines, receivers] = await Promise.all([
+    AppDataSource.getRepository(BulkOrderLine).find({ select: { orderId: true, pepCode: true }, where: { orderId: In(ids) } }),
+    AppDataSource.getRepository(BulkOrderReceiver).find({ select: { orderId: true, pincode: true }, where: { orderId: In(ids) } }),
+  ]);
+  return recent.filter((o) => {
+    const id = String(o.id);
+    const set = [...new Set(lines.filter((l) => String(l.orderId) === id).map((l) => l.pepCode.toUpperCase()))].sort().join('|');
+    const orderPins = [o.pincode, ...receivers.filter((r) => String(r.orderId) === id).map((r) => r.pincode)];
+    return set === want && (!pinSet.size || orderPins.some((p) => pinSet.has(p)));
+  }).slice(0, BULK_ORDERS.DUPLICATE_MAX).map((o) => ({ id: String(o.id), poNumber: o.poNumber, status: o.status, createdAt: o.createdAt, totalUnits: o.totalUnits }));
+};
+
 // ---- receivers upload (v2 piece 2) ---------------------------------------------------------------------------------
 
 interface RowIssue { row: number; field: string; message: string }
@@ -1154,7 +1196,7 @@ export const userNames = async (ids: number[]): Promise<Map<number, string>> => 
   return new Map(us.map((u) => [u.id, u.name || u.email]));
 };
 
-interface ListQuery { type: BulkOrderType | null; status: string | null; payment: string | null; page: number; size: number; search: string; archived: boolean }
+interface ListQuery { type: BulkOrderType | null; status: string | null; payment: string | null; page: number; size: number; search: string; archived: boolean; waitingDays: number | null }
 
 /** Checks a list query (type, status, q, page, pageSize); 400 with every wrong one. */
 const parseListQuery = (q: Record<string, unknown>): ListQuery => {
@@ -1171,8 +1213,12 @@ const parseListQuery = (q: Record<string, unknown>): ListQuery => {
   if (!Number.isInteger(page) || page < 1) c.add('page', errorMessage(ERROR_CODES.FIELD_NOT_INT_RANGE, 'page', 1, 1_000_000));
   if (!Number.isInteger(size) || size < 1 || size > BULK_ORDERS.PAGE_SIZE_MAX) c.add('pageSize', errorMessage(ERROR_CODES.FIELD_NOT_INT_RANGE, 'pageSize', 1, BULK_ORDERS.PAGE_SIZE_MAX));
   const search = c.text(q.q, 'q', 100, false);
+  // 2026-11-24 (M5.6): ready orders (approved / submitted) waiting more than N days since approval (or since the request)
+  const w = q[F.WAITING_DAYS];
+  const waitingDays = w === undefined || w === '' ? null : Number(w);
+  if (waitingDays !== null && !(Number.isInteger(waitingDays) && waitingDays >= 1 && waitingDays <= BULK_ORDERS.WAITING_DAYS_MAX)) c.add(F.WAITING_DAYS, errorMessage(ERROR_CODES.FIELD_NOT_INT_RANGE, F.WAITING_DAYS, 1, BULK_ORDERS.WAITING_DAYS_MAX));
   c.fail();
-  return { type, status, payment, page, size, search, archived };
+  return { type, status, payment, page, size, search, archived, waitingDays };
 };
 
 /** One page of orders of these types (newest first) + the total: 1 count + 1 page query, no lines. */
@@ -1195,6 +1241,9 @@ const pageOfOrders = async (types: BulkOrderType[], l: ListQuery, me: number | n
   else if (l.status === BULK_LIST_ACTIVE) qb.andWhere('o.status IN (:...active)', { active: [...BULK_ACTIVE_STATUSES] });
   else if (l.status) qb.andWhere('o.status = :status', { status: l.status });
   if (l.payment) qb.andWhere('o.paymentStatus = :payment', { payment: l.payment });
+  if (l.waitingDays !== null) {
+    qb.andWhere('o.status IN (:...waitReady) AND COALESCE(o.decidedAt, o.createdAt) < :waitCut', { waitReady: [...BULK_PROCESSABLE_STATUSES], waitCut: new Date(Date.now() - l.waitingDays * 86_400_000) });
+  }
   if (l.search) {
     const like = `%${l.search.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
     // v2 piece 2: any receiver's name / city too
@@ -1222,7 +1271,20 @@ export const listBulkOrders = async (actor: BulkActor, q: Record<string, unknown
     overUnits: settings.find((s) => s.orderType === t)?.approvalOverUnits ?? null,
     modes: isMarketingLike(t) ? [...BULK_APPROVAL.MODES] : [],
   }]));
-  return { ...found, meta: { ...found.meta, approvalRules, brands } };
+  return { ...found, items: found.items.map(hideFreeMoney), meta: { ...found.meta, approvalRules, brands } };
+};
+
+/**
+ * Marketing / Head office orders are free (user 2026-11-13 / v2 1b): the PORTAL API sends no amounts at all (MRP, unit
+ * price, line / order totals = null; was hidden on the screen only, backlog M5.5, 2026-11-24). Our team's POST_FG API
+ * (teamBulkOrders / teamBulkOrder) keeps them (the sale order is priced from them).
+ */
+const hideFreeMoney = <T extends { type: string; totalMrp: number | null; totalValue: number | null }>(o: T): T => {
+  if (!isMarketingLike(o.type)) return o;
+  const out: T = { ...o, totalMrp: null, totalValue: null };
+  const lines = (o as unknown as { lines?: Record<string, unknown>[] }).lines;
+  if (lines) (out as unknown as { lines: Record<string, unknown>[] }).lines = lines.map((l) => ({ ...l, mrp: null, unitPrice: null, lineTotal: null }));
+  return out;
 };
 
 /** One order with lines + timeline (no access check: the callers check). */
@@ -1269,7 +1331,7 @@ export const getBulkOrder = async (actor: BulkActor, id: string) => {
   const r = await needAnyBulk(actor);
   if (!o || !allows(r.types[o.orderType as BulkOrderType] ?? ACCESS_LEVEL.NONE, ACCESS_LEVEL.VIEWER)) throw appError(ERROR_CODES.BULK_ORDER_NOT_FOUND, id);
   if (o.status === BULK_ORDER_STATUS.DRAFT && o.createdBy !== actor.id) throw appError(ERROR_CODES.BULK_ORDER_NOT_FOUND, id);
-  return orderFull(o);
+  return hideFreeMoney(await orderFull(o));
 };
 
 // ---- our team: PO Processing & Review > Bulk Orders (step 3a, read only; the route checks PO review access) ----------

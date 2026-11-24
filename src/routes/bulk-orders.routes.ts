@@ -8,6 +8,7 @@ import {
   BulkActor,
   cancelBulkOrder,
   checkBulkReceiverRows,
+  bulkDuplicateCheck,
   createBulkOrder,
   getBulkOrder,
   listBulkLocations,
@@ -82,6 +83,7 @@ router.get(BULK_ORDERS.ROUTES.SKUS, requireAuth, send(async (req) => {
   return searchBulkSkus(req.query.q, req.query.brand);
 }));
 // v2 piece 2: an uploaded receivers file checked (nothing saved); before the /:id routes
+router.post(BULK_ORDERS.ROUTES.DUPLICATE_CHECK, requireAuth, send((req) => bulkDuplicateCheck(actor(req), body(req))));
 router.post(BULK_ORDERS.ROUTES.RECEIVERS_CHECK, requireAuth, send((req) => checkBulkReceiverRows(actor(req), body(req))));
 // v2 piece 5a: Institutional customers (before the /:id routes)
 router.get(BULK_ORDERS.ROUTES.CUSTOMERS, requireAuth, send((req) => listInstitutionCustomers(actor(req))));

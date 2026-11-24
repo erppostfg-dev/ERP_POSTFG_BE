@@ -19,7 +19,7 @@ import { covers } from '../helpers/routes';
  * SKU search with MRP, price = MRP less discount % from OUR master (never the request's), unique PO numbers per type
  * and year (also under parallel creates), saved locations per type, validation, and nothing of the PO chain touched.
  */
-covers(['POST /bulk-orders/receivers/check']);
+covers(['POST /bulk-orders/receivers/check', 'POST /bulk-orders/duplicate-check']);
 covers(['GET /bulk-orders/customers', 'POST /bulk-orders/customers', 'PUT /bulk-orders/customers/:customerId',
   'POST /bulk-orders/customers/:customerId/addresses', 'PUT /bulk-orders/customers/:customerId/addresses/:addressId', 'POST /bulk-orders/customers/:customerId/gstin']);
 covers(['GET /bulk-orders/settings/notifications', 'PUT /bulk-orders/settings/notifications', 'POST /bulk-orders/:id/remind']);
@@ -65,6 +65,8 @@ const create = (who: TestLogin, body: Record<string, unknown>) => api().post(V).
 /** An edit (v2 1e: every edit carries a remark). */
 const edit = (who: TestLogin, id: string, body: Record<string, unknown>, remark = 'Test edit') => api().put(`${V}/${id}`).set('Cookie', who.cookie).send({ remark, ...body });
 const fields = (res: { body: { error: { details: { field: string }[] } } }) => res.body.error.details.map((d) => d.field);
+/** An order as our team (POST_FG) sees it: with amounts also on Marketing / Head office (the portal hides them, 2026-11-24). */
+const asTeam = async (id: string) => (await api().get(`/api/v1/po-review/bulk-orders/${id}`).set('Cookie', opsExec.cookie).expect(200)).body.data;
 
 beforeEach(async () => {
   await resetDb();
@@ -168,14 +170,16 @@ describe('bulk orders: create', () => {
 
   it('Marketing: every unit at MARKETING_UNIT_PRICE (₹0.01, v2 2026-11-23; was ₹1) whatever the MRP, no discount (a discount sent = 400), MRP still kept', async () => {
     const o = (await create(mkt, order({ lines: [{ pepCode: 'SKU_A', qty: 10 }, { pepCode: 'SKU_B', qty: 3, discountPct: 0 }] })).expect(201)).body.data;
-    expect(o).toMatchObject({ poNumber: `MKT-${YEAR}-0001`, type: 'marketing', lineCount: 2, totalUnits: 13, totalMrp: 2047, totalValue: 0.13 });
-    expect(o.lines.map((l: Record<string, unknown>) => [l.pepCode, l.mrp, l.discountPct, l.unitPrice, l.lineTotal])).toEqual([['SKU_A', 100, 0, 0.01, 0.1], ['SKU_B', 349, 0, 0.01, 0.03]]);
+    expect(o).toMatchObject({ poNumber: `MKT-${YEAR}-0001`, type: 'marketing', lineCount: 2, totalUnits: 13, totalMrp: null, totalValue: null }); // portal: no amounts
+    expect(await asTeam(o.id)).toMatchObject({ totalMrp: 2047, totalValue: 0.13 });
+    expect((await asTeam(o.id)).lines.map((l: Record<string, unknown>) => [l.pepCode, l.mrp, l.discountPct, l.unitPrice, l.lineTotal])).toEqual([['SKU_A', 100, 0, 0.01, 0.1], ['SKU_B', 349, 0, 0.01, 0.03]]);
     const res = await create(mkt, order({ lines: [{ pepCode: 'SKU_A', qty: 1, discountPct: 30 }] })).expect(400);
     expect(fields(res)).toEqual(['lines[0].discountPct']);
     expect(res.body.error.details[0].message).toContain('take no discount');
     expect(res.body.error.details[0].message).not.toMatch(/marketing|head_office|₹/); // no type code or price shown (v2: free orders)
     const edited = (await edit(mkt, o.id, order({ lines: [{ pepCode: 'SKU_B', qty: 5 }] })).expect(200)).body.data;
-    expect(edited).toMatchObject({ totalValue: 0.05, totalMrp: 1745 });
+    expect(edited).toMatchObject({ totalValue: null, totalMrp: null });
+    expect(await asTeam(edited.id)).toMatchObject({ totalValue: 0.05, totalMrp: 1745 });
   });
 
   it('PO numbers: one series per type and year, never repeated (also when 8 are created at the same moment)', async () => {
@@ -315,15 +319,16 @@ describe('bulk orders step 2: edit, cancel, approve, reject (timeline)', () => {
     const o = (await create(mkt, order()).expect(201)).body.data;
     expect(fields(await post(approver, o.id, 'approve', { lines: [{ lineNo: 1, discountPct: 20 }] }).expect(400))).toEqual(['lines[0].discountPct']);
     const a = (await post(approver, o.id, 'approve', { lines: [{ lineNo: 1, qty: 4 }, { lineNo: 2, discountPct: 0 }] }).expect(200)).body.data;
-    expect(a).toMatchObject({ status: 'approved', totalUnits: 7, totalValue: 0.07 });
-    expect(a.lines.map((l: Record<string, unknown>) => [l.qty, l.unitPrice, l.lineTotal])).toEqual([[4, 0.01, 0.04], [3, 0.01, 0.03]]);
+    expect(a).toMatchObject({ status: 'approved', totalUnits: 7, totalValue: null });
+    expect(await asTeam(o.id)).toMatchObject({ totalValue: 0.07 });
+    expect((await asTeam(o.id)).lines.map((l: Record<string, unknown>) => [l.qty, l.unitPrice, l.lineTotal])).toEqual([[4, 0.01, 0.04], [3, 0.01, 0.03]]);
   });
 
   it('a Marketing order saved with discounts before the fixed-price rule: approval sets every unit to ₹0.01 (on the timeline)', async () => {
     const o = (await create(mkt, order()).expect(201)).body.data;
     await rows('UPDATE bulk_order_lines SET discount_pct = 30, requested_discount_pct = 30, unit_price = 70, line_total = 700 WHERE order_id = ? AND line_no = 1', [o.id]);
     const a = (await post(approver, o.id, 'approve').expect(200)).body.data;
-    expect(a.lines[0]).toMatchObject({ discountPct: 0, unitPrice: 0.01, lineTotal: 0.1, requestedDiscountPct: 30 });
+    expect((await asTeam(o.id)).lines[0]).toMatchObject({ discountPct: 0, unitPrice: 0.01, lineTotal: 0.1, requestedDiscountPct: 30 });
     expect(a.events[1].changes.lines).toEqual([{ lineNo: 1, pepCode: 'SKU_A', discountPct: [30, 0] }]);
   });
 
@@ -741,8 +746,9 @@ describe('bulk orders v2: Head office works like Marketing', () => {
 
   it('Marketing people create it (HO- series of its own), ₹0.01 a unit, a discount refused, delivery mode kept; Institutional people cannot', async () => {
     const o = (await create(mkt, order(HO)).expect(201)).body.data;
-    expect(o).toMatchObject({ poNumber: `HO-${YEAR}-0001`, type: 'head_office', mode: 'Regular', totalUnits: 13, totalValue: 0.13, payment: null });
-    expect(o.lines.map((l: Record<string, unknown>) => [l.pepCode, l.discountPct, l.unitPrice])).toEqual([['SKU_A', 0, 0.01], ['SKU_B', 0, 0.01]]);
+    expect(o).toMatchObject({ poNumber: `HO-${YEAR}-0001`, type: 'head_office', mode: 'Regular', totalUnits: 13, totalValue: null, payment: null });
+    expect(await asTeam(o.id)).toMatchObject({ totalValue: 0.13 });
+    expect((await asTeam(o.id)).lines.map((l: Record<string, unknown>) => [l.pepCode, l.discountPct, l.unitPrice])).toEqual([['SKU_A', 0, 0.01], ['SKU_B', 0, 0.01]]);
     const m = (await create(mkt, order()).expect(201)).body.data;
     expect(m.poNumber).toBe(`MKT-${YEAR}-0001`); // Marketing's own series is untouched
     expect((await create(mkt, order({ ...HO, poNumber: undefined })).expect(201)).body.data.poNumber).toBe(`HO-${YEAR}-0002`);
@@ -757,7 +763,8 @@ describe('bulk orders v2: Head office works like Marketing', () => {
     await api().get(`${V}/${o.id}`).set('Cookie', inst.cookie).expect(404);
     await api().get(`${V}?type=head_office`).set('Cookie', inst.cookie).expect(403);
     const done = (await api().post(`${V}/${o.id}/approve`).set('Cookie', approver.cookie).send({}).expect(200)).body.data;
-    expect(done).toMatchObject({ status: 'approved', totalValue: 0.13 });
+    expect(done).toMatchObject({ status: 'approved', totalValue: null });
+    expect(await asTeam(o.id)).toMatchObject({ totalValue: 0.13 });
   });
 
   it('our team processes it like Marketing: saved PO in Bulk Marketing (group Marketing), CSV at ₹0.01, its own address book', async () => {
@@ -792,7 +799,7 @@ describe('bulk orders v2: pricing rules', () => {
   it('Marketing / Head office use the one constant MARKETING_UNIT_PRICE', async () => {
     for (const type of ['marketing', 'head_office']) {
       const o = (await create(mkt, order({ type })).expect(201)).body.data;
-      expect(o.lines.map((l: { unitPrice: number }) => l.unitPrice)).toEqual([MARKETING_UNIT_PRICE, MARKETING_UNIT_PRICE]);
+      expect((await asTeam(o.id)).lines.map((l: { unitPrice: number }) => l.unitPrice)).toEqual([MARKETING_UNIT_PRICE, MARKETING_UNIT_PRICE]);
     }
   });
 
@@ -1403,6 +1410,50 @@ describe('bulk orders: payment details (link / QR / bank details), 3 proof scree
       await qr.release();
     }
     expect(await rows("SELECT role FROM page_permissions WHERE page_slug = 'bulk-orders:payment-details'")).toEqual([{ role: 'bulk-finance' }]);
+  });
+});
+
+/*
+ * Quick wins (2026-11-24, user): Marketing / Head office amounts not in the portal API (our team keeps them); a duplicate
+ * warning before Submit; our team's "waiting more than N days" filter.
+ */
+describe('bulk orders: free orders without amounts in the portal, duplicate warning, waiting more than N days', () => {
+  it('portal answers carry no amounts on Marketing / Head office orders; Institutional and our team keep them', async () => {
+    const m = (await create(mkt, order()).expect(201)).body.data;
+    expect([m.totalMrp, m.totalValue, m.lines[0].mrp, m.lines[0].unitPrice, m.lines[0].lineTotal]).toEqual([null, null, null, null, null]);
+    expect((await api().get(V).set('Cookie', mkt.cookie).expect(200)).body.data[0].totalValue).toBeNull();
+    const team = (await api().get(`/api/v1/po-review/bulk-orders/${m.id}`).set('Cookie', opsExec.cookie).expect(200)).body.data;
+    expect(team.totalValue).toBeGreaterThan(0);
+    expect(team.lines[0].unitPrice).toBe(MARKETING_UNIT_PRICE);
+    const i = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
+    expect(i.totalValue).toBe(1616.14);
+  });
+
+  it('duplicate check: my own recent order with the same SKUs to the same pincode (not others, not a cancelled one, not the order being edited)', async () => {
+    const D = `${V}/duplicate-check`;
+    const a = (await create(mkt, order()).expect(201)).body.data;
+    const check = (who: TestLogin, body: Record<string, unknown>) => api().post(D).set('Cookie', who.cookie).send({ type: 'marketing', pepCodes: ['SKU_B', 'sku_a'], pincodes: [ADDRESS.pincode], ...body });
+    expect((await check(mkt, {}).expect(200)).body.data.map((x: { poNumber: string }) => x.poNumber)).toEqual([a.poNumber]);
+    expect((await check(mkt, { pepCodes: ['SKU_A'] }).expect(200)).body.data).toEqual([]); // other SKUs
+    expect((await check(mkt, { pincodes: ['411001'] }).expect(200)).body.data).toEqual([]); // other place
+    expect((await check(mkt, { excludeId: a.id }).expect(200)).body.data).toEqual([]); // editing that order
+    await check(inst, {}).expect(403);
+    expect(fields(await check(mkt, { pepCodes: [] }).expect(400))).toEqual(['pepCodes']);
+    await api().post(`${V}/${a.id}/cancel`).set('Cookie', mkt.cookie).send({}).expect(200);
+    expect((await check(mkt, {}).expect(200)).body.data).toEqual([]);
+  });
+
+  it('our team: ready orders waiting more than N days', async () => {
+    const T = '/api/v1/po-review/bulk-orders';
+    await rows('UPDATE bulk_type_settings SET approval_over_units = NULL');
+    const old = (await create(mkt, order()).expect(201)).body.data;
+    const fresh = (await create(mkt, order()).expect(201)).body.data;
+    await rows('UPDATE bulk_orders SET created_at = DATE_SUB(NOW(6), INTERVAL 5 DAY) WHERE id = ?', [old.id]);
+    const ids = async (n: number) => ((await api().get(`${T}?type=marketing&waitingDays=${n}`).set('Cookie', opsExec.cookie).expect(200)).body.data as { id: string }[]).map((x) => x.id);
+    expect(await ids(3)).toEqual([old.id]);
+    expect(await ids(10)).toEqual([]);
+    expect(fields(await api().get(`${T}?waitingDays=0`).set('Cookie', opsExec.cookie).expect(400))).toEqual(['waitingDays']);
+    expect(fresh.status).toBe('submitted');
   });
 });
 

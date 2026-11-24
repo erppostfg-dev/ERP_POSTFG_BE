@@ -314,6 +314,8 @@ export const BULK_ORDERS = {
     CUSTOMER_ADDRESS: '/customers/:customerId/addresses/:addressId',
     /** v2 piece 5b: finance verifies (or un-verifies) a customer's GSTIN. */
     CUSTOMER_GSTIN: '/customers/:customerId/gstin',
+    /** 2026-11-24: 'have I ordered this already?' before Submit (nothing saved). Before '/:id'. */
+    DUPLICATE_CHECK: '/duplicate-check',
   },
   /** Lines per order (per receiver on a several-receivers order). */
   LINES_MAX: 200,
@@ -327,6 +329,11 @@ export const BULK_ORDERS = {
   BANK_DETAILS_MAX: 1000,
   /** 2026-11-24 (user: 'put 3'): proof files (screenshots) kept for one payment; a refusal clears them for a new set. */
   PAYMENT_PROOFS_MAX: 3,
+  /** 2026-11-24 (backlog M5.7): a new order like one the same person placed in the last DUPLICATE_DAYS = a warning (never blocks). */
+  DUPLICATE_DAYS: 7,
+  DUPLICATE_MAX: 5,
+  /** 2026-11-24 (M5.6): our team's list filter waitingDays = ready orders waiting more than N days (1..WAITING_DAYS_MAX). */
+  WAITING_DAYS_MAX: 365,
   CUSTOMER_ADDRESSES_MAX: 50,
   /** Units per line. */
   QTY_MAX: 1_000_000,
@@ -471,6 +478,11 @@ export const BULK_BODY = {
   LINK: 'link',
   /** 2026-11-24: payment details text (bank account, IFSC, UPI ...). */
   BANK_DETAILS: 'bankDetails',
+  /** 2026-11-24: duplicate check { type, pepCodes, pincodes, excludeId? } / team list ?waitingDays=N. */
+  PEP_CODES: 'pepCodes',
+  PINCODES: 'pincodes',
+  EXCLUDE_ID: 'excludeId',
+  WAITING_DAYS: 'waitingDays',
   VERIFIED: 'verified',
   ADDRESSES: 'addresses',
   ACTIVE: 'active',

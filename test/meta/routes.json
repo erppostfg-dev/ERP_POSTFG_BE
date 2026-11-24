@@ -161,6 +161,7 @@
   "POST /bulk-orders/customers",
   "POST /bulk-orders/customers/:customerId/addresses",
   "POST /bulk-orders/customers/:customerId/gstin",
+  "POST /bulk-orders/duplicate-check",
   "POST /bulk-orders/locations",
   "POST /bulk-orders/receivers/check",
   "POST /channel-pulls/:key/process",
