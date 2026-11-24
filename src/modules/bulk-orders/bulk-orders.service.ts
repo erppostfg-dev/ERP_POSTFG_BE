@@ -852,6 +852,11 @@ const orderOut = (o: BulkOrder, names: Map<number, string>, editCount = 0) => ({
   lineCount: o.lineCount, totalUnits: o.totalUnits, totalMrp: o.totalMrp, totalValue: o.totalValue,
   createdBy: { id: o.createdBy, name: names.get(o.createdBy) ?? null }, createdAt: o.createdAt,
   decidedBy: o.decidedBy ? { id: o.decidedBy, name: names.get(o.decidedBy) ?? null } : null, decidedAt: o.decidedAt, decisionNote: o.decisionNote,
+  // v2 piece 4: courier tracking from Uniware (null until the sync saw a shipment)
+  tracking: o.awb || o.dispatchedAt || o.courierStatus ? {
+    awb: o.awb, courier: o.courier, courierStatus: o.courierStatus, link: o.trackingLink, dispatchedAt: o.dispatchedAt,
+    deliveredAt: o.deliveredAt, invoiceCode: o.invoiceCode, checkedAt: o.trackingCheckedAt,
+  } : null,
   // null = no payment check on this order (off for its type when it was created)
   payment: o.paymentStatus ? {
     status: o.paymentStatus, by: o.paymentBy ? { id: o.paymentBy, name: names.get(o.paymentBy) ?? null } : null, at: o.paymentAt, note: o.paymentNote,

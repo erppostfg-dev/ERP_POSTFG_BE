@@ -79,6 +79,9 @@ export const BULK_ORDER_STATUS = {
    * fields may be empty; Submit checks everything, applies the approval rules and gives it its real number.
    */
   DRAFT: 'draft',
+  /** v2 piece 4 (2026-11-24): set from Uniware's shipping packages by the sync (never by hand; bulk-tracking.service). */
+  DISPATCHED: 'dispatched',
+  DELIVERED: 'delivered',
 } as const;
 export type BulkOrderStatus = (typeof BULK_ORDER_STATUS)[keyof typeof BULK_ORDER_STATUS];
 export const BULK_ORDER_STATUSES = Object.values(BULK_ORDER_STATUS) as BulkOrderStatus[];
@@ -89,6 +92,21 @@ export const BULK_PROCESSABLE_STATUSES: readonly string[] = [BULK_ORDER_STATUS.A
 export const BULK_LIST_READY = 'ready';
 /** Statuses the requester may still edit / cancel (before approval, or before the sale order when none is needed). */
 export const BULK_EDITABLE_STATUSES: readonly string[] = [BULK_ORDER_STATUS.PENDING_APPROVAL, BULK_ORDER_STATUS.SUBMITTED, BULK_ORDER_STATUS.DRAFT];
+/**
+ * Courier tracking (v2 piece 4, 2026-11-24, READ-ONLY on Uniware): the channel PO sync's saleorder/get answer fills a bulk
+ * order's tracking. Package status words are Uniware's; cancelled packages are ignored.
+ */
+export const BULK_TRACKING = {
+  DISPATCHED: ['DISPATCHED', 'SHIPPED', 'MANIFESTED', 'IN_TRANSIT', 'OUT_FOR_DELIVERY'] as readonly string[],
+  DELIVERED: ['DELIVERED'] as readonly string[],
+  CANCELLED: ['CANCELLED'] as readonly string[],
+  /** Orders the sync updates (placed, dispatched; delivered = final). */
+  TRACKED_STATUSES: ['processing', 'dispatched'] as readonly string[],
+  /** Timeline rows written by the sync (no person). */
+  SYSTEM_USER: 0,
+  TEXT_MAX: 255,
+} as const;
+
 /** List filter `status=active` (v2 1g): open orders (submitted, pending approval, approved): the worklist's "Active" card. */
 export const BULK_LIST_ACTIVE = 'active';
 export const BULK_ACTIVE_STATUSES: readonly string[] = [BULK_ORDER_STATUS.SUBMITTED, BULK_ORDER_STATUS.PENDING_APPROVAL, BULK_ORDER_STATUS.APPROVED];
@@ -134,6 +152,8 @@ export const BULK_EVENT = {
   PAYMENT: 'payment',
   /** Our team created the sale order (changes: { saleOrderCode, facilityCode, uniwareChannel, customerCode, uploadId }). */
   PROCESSED: 'processed',
+  /** v2 piece 4: Uniware moved the order (changes: { status: [old, new], awb, courier }). */
+  TRACKING: 'tracking',
   /** v2 1g: a draft was submitted (changes: { approval: why[] , poNumber }). */
   SUBMITTED: 'submitted',
   /** The Verify step sent the sale order back (cancelled, kept): the order is approved again, to be processed again. */

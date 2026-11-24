@@ -3,6 +3,7 @@ import { BulkCustomerAddresses1795300000000 } from '../../src/migrations/1795300
 import { BulkOrderFields1795800000000 } from '../../src/migrations/1795800000000-BulkOrderFields';
 import { BulkOrderBrand1795900000000 } from '../../src/migrations/1795900000000-BulkOrderBrand';
 import { MARKETING_UNIT_PRICE } from '../../src/constants';
+import { runPoSyncPass } from '../../src/modules/po-uniware-sync/sync.service';
 import { api, loginAs, type TestLogin } from '../helpers/auth';
 import { closeDb, count, db, insert, resetDb, rows } from '../helpers/db';
 import { s3Objects } from '../helpers/fake-s3';
@@ -1096,5 +1097,58 @@ describe('bulk orders v2: drafts, active filter, archive', () => {
     expect(await ids('')).toEqual([a.id, c.id].sort()); // the old OPEN one stays; the old closed one leaves
     expect(await ids('archived=1')).toEqual([b.id]);
     expect(await ids('archived=1&q=MKT')).toEqual([b.id]);
+  });
+});
+
+/*
+ * Bulk Orders Portal v2, piece 4 (2026-11-24): courier tracking from Uniware (read only). The channel PO sync reads the
+ * bulk order's sale order (fake Uniware here); its packages fill AWB / courier / status / dates and move the order
+ * Order placed -> Dispatched -> Delivered (never back), with a timeline row; nothing new = no row.
+ */
+describe('bulk orders v2: courier tracking from Uniware (sync)', () => {
+  const T = '/api/v1/po-review/bulk-orders';
+  const WH = 'MUM_WAREHOUSE2';
+  let pkgs: Record<string, unknown>[] = [];
+  const fakeUniware = { post: async <R,>(_path: string, body: unknown) => ({ saleOrderDTO: { code: (body as { code: string }).code, status: 'PROCESSING', saleOrderItems: [], shippingPackages: pkgs } }) as unknown as R };
+  const placed = async () => {
+    await insert('master_facilities', { code: WH, name: 'Bhiwandi', entity: 'PEP', state: 'Maharashtra', is_active: 1, source: 'manual', uniware_export: 0 });
+    const o = (await create(mkt, order()).expect(201)).body.data as { id: string };
+    await api().post(`${V}/${o.id}/approve`).set('Cookie', approver.cookie).send({}).expect(200);
+    await api().post(`${T}/${o.id}/process`).set('Cookie', opsExec.cookie).send({ facilityCode: WH, uniwareChannel: 'JIVA', customerCode: 'C1' }).expect(200);
+    await rows('UPDATE po_uploads SET csv_downloaded_at = NOW()'); // the CSV went to Uniware: the sync reads it
+    return o.id;
+  };
+  const one = async (id: string) => (await api().get(`${V}/${id}`).set('Cookie', mkt.cookie).expect(200)).body.data;
+  const pkg = (over: Record<string, unknown>) => ({ code: 'SP1', status: 'PACKED', trackingNumber: null, shippingCourier: null, shippingProvider: null, courierStatus: null, trackingLink: null, dispatched: null, delivered: null, invoiceDisplayCode: null, items: {}, ...over });
+
+  it('dispatched: AWB + courier + date + invoice saved, status Dispatched (timeline); the same answer again changes nothing', async () => {
+    const id = await placed();
+    pkgs = [pkg({ status: 'PACKED' })];
+    await runPoSyncPass({ manual: true }, fakeUniware);
+    expect(await one(id)).toMatchObject({ status: 'processing', tracking: null });
+    pkgs = [pkg({ status: 'DISPATCHED', trackingNumber: 'AWB123', shippingCourier: 'Delhivery', courierStatus: 'In transit', trackingLink: 'https://track.example/AWB123', dispatched: Date.parse('2026-11-24T06:00:00Z'), invoiceDisplayCode: 'PEP/2627/HR/1' })];
+    await runPoSyncPass({ manual: true }, fakeUniware);
+    const d = await one(id);
+    expect(d).toMatchObject({ status: 'dispatched', tracking: { awb: 'AWB123', courier: 'Delhivery', courierStatus: 'In transit', link: 'https://track.example/AWB123', invoiceCode: 'PEP/2627/HR/1', deliveredAt: null } });
+    expect(new Date(d.tracking.dispatchedAt).toISOString()).toBe('2026-11-24T06:00:00.000Z');
+    expect(d.events.at(-1)).toMatchObject({ action: 'tracking', changes: { status: ['processing', 'dispatched'], awb: 'AWB123' } });
+    const events = d.events.length;
+    await runPoSyncPass({ manual: true }, fakeUniware);
+    expect((await one(id)).events).toHaveLength(events);
+  });
+
+  it('delivered when every live package is delivered (a cancelled one ignored); never goes back', async () => {
+    const id = await placed();
+    pkgs = [pkg({ code: 'SP1', status: 'DELIVERED', trackingNumber: 'A1', delivered: Date.parse('2026-11-26T10:00:00Z') }), pkg({ code: 'SP2', status: 'DISPATCHED', trackingNumber: 'A2' })];
+    await runPoSyncPass({ manual: true }, fakeUniware);
+    expect(await one(id)).toMatchObject({ status: 'dispatched', tracking: { awb: 'A1, A2', deliveredAt: null } });
+    pkgs = [pkg({ code: 'SP1', status: 'DELIVERED', trackingNumber: 'A1', delivered: Date.parse('2026-11-26T10:00:00Z') }), pkg({ code: 'SP2', status: 'CANCELLED', trackingNumber: 'A2' })];
+    await runPoSyncPass({ manual: true }, fakeUniware);
+    const d = await one(id);
+    expect(d).toMatchObject({ status: 'delivered', tracking: { awb: 'A1' } });
+    expect(d.events.filter((e: { action: string }) => e.action === 'tracking').map((e: { changes: { status: string[] } }) => e.changes.status)).toEqual([['processing', 'dispatched'], ['dispatched', 'delivered']]);
+    pkgs = [pkg({ status: 'DISPATCHED', trackingNumber: 'A1' })];
+    await runPoSyncPass({ manual: true }, fakeUniware);
+    expect((await one(id)).status).toBe('delivered');
   });
 });

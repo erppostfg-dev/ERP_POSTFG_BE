@@ -77,6 +77,32 @@ export class BulkOrder {
   @Column({ name: 'fast_track_remarks', type: 'varchar', length: 500, nullable: true })
   fastTrackRemarks: string | null;
 
+  // ---- courier tracking (v2 piece 4, 2026-11-24, migration BulkOrderTracking): from Uniware by the sync ----
+  @Column({ name: 'awb', type: 'varchar', length: 255, nullable: true })
+  awb: string | null;
+
+  @Column({ name: 'courier', type: 'varchar', length: 255, nullable: true })
+  courier: string | null;
+
+  @Column({ name: 'courier_status', type: 'varchar', length: 255, nullable: true })
+  courierStatus: string | null;
+
+  @Column({ name: 'tracking_link', type: 'varchar', length: 1000, nullable: true })
+  trackingLink: string | null;
+
+  @Column({ name: 'dispatched_at', type: 'datetime', precision: 6, nullable: true })
+  dispatchedAt: Date | null;
+
+  @Column({ name: 'delivered_at', type: 'datetime', precision: 6, nullable: true })
+  deliveredAt: Date | null;
+
+  @Column({ name: 'invoice_code', type: 'varchar', length: 255, nullable: true })
+  invoiceCode: string | null;
+
+  /** When the sync last read it (shown as "updated"). */
+  @Column({ name: 'tracking_checked_at', type: 'datetime', precision: 6, nullable: true })
+  trackingCheckedAt: Date | null;
+
   /** v2 1f: the brand of every line (PEP SKU master brand_name, as chosen); NULL on orders made before 1f. */
   @Column({ name: 'brand', type: 'varchar', length: 100, nullable: true })
   brand: string | null;

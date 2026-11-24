@@ -16,6 +16,7 @@ import { bumpReview } from '../po-review/po-review.live';
 import { nextDelayOf, runGentle, withRunLock } from './pacing';
 import { planPoSync, PoSyncState } from './plan';
 import { readSaleOrder, SoDetail } from './sale-order';
+import { applyBulkTracking, bulkOrdersOfPos } from '../bulk-orders/bulk-tracking.service';
 import { isThrottled, poUniwareClient, UniwarePoster } from './uniware-client';
 
 /*
@@ -227,6 +228,8 @@ export const runPoSyncPass = async (o: PoSyncRunOptions, api: UniwarePoster = po
   const startedAt = new Date().toISOString();
   const before = await readRecord();
   const list = await candidates(o);
+  // bulk orders among them (v2 piece 4): their courier tracking comes from the same answer (one query per pass)
+  const bulk = await bulkOrdersOfPos(list.map((c) => c.uid)).catch((err) => { logError(LOG_SOURCE.APP, `${LOG} could not look up bulk orders`, err); return new Map<string, never>(); });
   const counts: Record<string, number> = { picked: list.length, read: 0, notInUniware: 0, changed: 0, done: 0, errors: 0, notStarted: 0 };
   let logged = false;
   const unchanged: string[] = [];
@@ -234,6 +237,9 @@ export const runPoSyncPass = async (o: PoSyncRunOptions, api: UniwarePoster = po
     try {
       const so = await readSaleOrder(api, c.orderNo1, c.facility);
       counts.read++;
+      const b = so ? bulk.get(c.uid) : undefined;
+      if (b && so) await applyBulkTracking(b, so).then((moved) => { if (moved) counts.bulkTracked = (counts.bulkTracked ?? 0) + 1; })
+        .catch((err) => logError(LOG_SOURCE.APP, `${LOG} bulk order tracking of ${c.orderNo1} failed (the next read tries again)`, err));
       if (!so) counts.notInUniware++;
       // nothing to change on what is stored: no transaction, only "read at" (in bulk, below)
       const quick = planPoSync(c.state, so, new Date(), { uploadedAt: c.uploadedAt, wasDone: !!c.doneAt });
