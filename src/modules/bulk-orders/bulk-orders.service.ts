@@ -613,7 +613,7 @@ export const createBulkOrder = async (actor: BulkActor, body: Record<string, unk
       poNumber, orderType: o.type, status: approval.needed ? BULK_ORDER_STATUS.PENDING_APPROVAL : BULK_ORDER_STATUS.SUBMITTED, orderedBy: o.orderedBy,
       ...cols, neededBy: o.neededBy, deliveryMode: o.mode, priority: o.priority, note: o.note,
       fastTrackRemarks: o.fastTrackRemarks, purpose: o.purpose, brand: o.brand,
-      ...institutionCols(o.institution, places[0], o.customerId), ...totalsOf(priced), createdBy: actor.id, paymentStatus: paymentCheck ? BULK_PAYMENT_STATUS.AWAITING_PROOF : null,
+      ...institutionCols(o.institution, places[0], o.customerId), ...totalsOf(priced), createdBy: actor.id, paymentStatus: paymentCheck ? BULK_PAYMENT_STATUS.UNBILLED : null,
     });
     const orderId = String(res.identifiers[0].id);
     await m.getRepository(BulkOrderLine).insert(priced.map((l) => ({ ...l, orderId })));
@@ -942,7 +942,7 @@ const submitDraft = async (actor: BulkActor, id: string, type: BulkOrderType, bo
     await m.getRepository(BulkOrder).update({ id }, {
       poNumber, status: approval.needed ? BULK_ORDER_STATUS.PENDING_APPROVAL : BULK_ORDER_STATUS.SUBMITTED, createdAt: new Date(), updatedAt: new Date(),
       ...orderCols(o), ...cols, ...institutionCols(o.institution, places[0], o.customerId), ...totalsOf(priced),
-      paymentStatus: setting?.paymentCheck === true ? BULK_PAYMENT_STATUS.AWAITING_PROOF : null,
+      paymentStatus: setting?.paymentCheck === true ? BULK_PAYMENT_STATUS.UNBILLED : null,
     });
     await addEvent(m, id, BULK_EVENT.SUBMITTED, actor.id, o.note, { approval: approval.why, poNumber });
     log.info(LOG_SOURCE.API, `[bulk-orders] draft ${id} submitted as ${poNumber} by user ${actor.id}`);
@@ -1140,6 +1140,8 @@ const orderOut = (o: BulkOrder, names: Map<number, string>, editCount = 0, verif
   // null = no payment check on this order (off for its type when it was created)
   payment: o.paymentStatus ? {
     status: o.paymentStatus, by: o.paymentBy ? { id: o.paymentBy, name: names.get(o.paymentBy) ?? null } : null, at: o.paymentAt, note: o.paymentNote,
+    // v2 piece 5b: the Razorpay link finance pasted (the buyer's 'Pay now')
+    link: o.paymentLink, linkAt: o.paymentLinkAt,
   } : null,
 });
 
@@ -1160,7 +1162,7 @@ const parseListQuery = (q: Record<string, unknown>): ListQuery => {
   const status = q.status === undefined || q.status === '' ? null : c.oneOf(q.status, 'status', [...BULK_ORDER_STATUSES, BULK_LIST_READY, BULK_LIST_ACTIVE]);
   // v2 1g: 1 / true = only the archive (closed orders not changed for BULK_ARCHIVE.DAYS); else they are left out
   const archived = q[F.ARCHIVED] === '1' || q[F.ARCHIVED] === 'true';
-  // payment status (2026-11-13: "Payments to verify" = proof_uploaded)
+  // payment status (2026-11-13: "Payments to verify"; v2 5b: = payment_submitted)
   const payment = q.payment === undefined || q.payment === '' ? null : c.oneOf(q.payment, 'payment', BULK_PAYMENT_STATUSES);
   const page = q.page === undefined ? 1 : Number(q.page);
   const size = q.pageSize === undefined ? BULK_ORDERS.PAGE_SIZE : Number(q.pageSize);
@@ -1278,7 +1280,7 @@ export const teamBulkOrders = async (q: Record<string, unknown>) => {
     pageOfOrders(l.type ? [l.type] : BULK_ORDER_TYPES, l, null),
     AppDataSource.getRepository(BulkOrder).createQueryBuilder('o').select('o.orderType', 'type')
       .addSelect('SUM(o.status IN (:...ready))', 'n').addSelect('SUM(o.paymentStatus = :p AND o.status NOT IN (:...closed))', 'pay')
-      .where('(o.status IN (:...ready) OR o.paymentStatus = :p)', { ready: [...BULK_PROCESSABLE_STATUSES], p: BULK_PAYMENT_STATUS.PROOF_UPLOADED, closed: [BULK_ORDER_STATUS.REJECTED, BULK_ORDER_STATUS.CANCELLED] })
+      .where('(o.status IN (:...ready) OR o.paymentStatus = :p)', { ready: [...BULK_PROCESSABLE_STATUSES], p: BULK_PAYMENT_STATUS.PAYMENT_SUBMITTED, closed: [BULK_ORDER_STATUS.REJECTED, BULK_ORDER_STATUS.CANCELLED] })
       .groupBy('o.orderType').getRawMany<{ type: string; n: string | null; pay: string | null }>(),
   ]);
   const per = (k: 'n' | 'pay') => Object.fromEntries(BULK_ORDER_TYPES.map((t) => [t, Number(counts.find((c) => c.type === t)?.[k] ?? 0)])) as Record<BulkOrderType, number>;

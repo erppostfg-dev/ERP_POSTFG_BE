@@ -97,20 +97,23 @@ const addDocument = async (orderId: string, byUserId: number, body: Record<strin
     if (older.length) await docs.update(older.map((d) => d.id), { replacedAt: now });
     await docs.insert({ orderId, kind: u.kind, fileName, contentType: u.contentType, sizeBytes: u.file.buffer.length, s3Url, uploadedBy: byUserId });
     await addEvent(m, orderId, BULK_EVENT.DOCUMENT_ADDED, byUserId, null, { kind: u.kind, fileName, ...(older.length ? { replaced: older.map((d) => d.fileName) } : {}) });
-    // a new proof (also after verified / refused / not needed) = the approver checks the latest one
-    if (u.kind === BULK_DOC_KIND.PAYMENT_PROOF && o.paymentStatus && o.paymentStatus !== BULK_PAYMENT_STATUS.PROOF_UPLOADED) {
-      await m.getRepository(BulkOrder).update({ id: orderId }, { paymentStatus: BULK_PAYMENT_STATUS.PROOF_UPLOADED, updatedAt: now });
-      await addEvent(m, orderId, BULK_EVENT.PAYMENT, byUserId, null, { status: [o.paymentStatus, BULK_PAYMENT_STATUS.PROOF_UPLOADED] });
+    // a new proof (also after paid / refused / not needed) = finance checks the latest one; v2 5b: an invoice on an
+    // unbilled order = invoiced
+    const next = u.kind === BULK_DOC_KIND.PAYMENT_PROOF && o.paymentStatus && o.paymentStatus !== BULK_PAYMENT_STATUS.PAYMENT_SUBMITTED ? BULK_PAYMENT_STATUS.PAYMENT_SUBMITTED
+      : u.kind === BULK_DOC_KIND.INVOICE && o.paymentStatus === BULK_PAYMENT_STATUS.UNBILLED ? BULK_PAYMENT_STATUS.INVOICED : null;
+    if (next) {
+      await m.getRepository(BulkOrder).update({ id: orderId }, { paymentStatus: next, updatedAt: now });
+      await addEvent(m, orderId, BULK_EVENT.PAYMENT, byUserId, null, { status: [o.paymentStatus, next] });
     }
     log.info(LOG_SOURCE.API, `[bulk-orders] ${o.poNumber} ${u.kind} "${fileName}" uploaded by user ${byUserId}${older.length ? ` (replaces ${older.length})` : ''}`);
   });
 };
 
-/** Portal upload: editor on the order's type, or an approver. */
+/** Portal upload: editor on the order's type, an approver, or finance (v2 5b: verify payments permission). */
 export const uploadBulkDocument = async (actor: BulkActor, id: string, body: Record<string, unknown>, file: DocFile | undefined) => {
   const r = await needAnyBulk(actor);
   const t = await typeOfOrder(r, id);
-  if (!allows(r.types[t], ACCESS_LEVEL.EDITOR) && !allows(r.approve, ACCESS_LEVEL.EDITOR)) throw appError(ERROR_CODES.BULK_TYPE_NOT_ALLOWED, t, 'upload documents to');
+  if (!allows(r.types[t], ACCESS_LEVEL.EDITOR) && !allows(r.approve, ACCESS_LEVEL.EDITOR) && !(await hasCapability(actor.id, actor.roles, CAPABILITY.BULK_PAYMENT_VERIFY))) throw appError(ERROR_CODES.BULK_TYPE_NOT_ALLOWED, t, 'upload documents to');
   await addDocument(id, actor.id, body, file);
   return getBulkOrder(actor, id);
 };
@@ -140,9 +143,8 @@ export const teamOpenBulkDocument = async (id: string, docId: string) => {
   return openDocument(id, docId);
 };
 
-const PAYMENT_TO: Record<string, BulkPaymentStatus> = {
-  [BULK_PAYMENT_ACTION.VERIFY]: BULK_PAYMENT_STATUS.VERIFIED,
-  [BULK_PAYMENT_ACTION.REFUSE]: BULK_PAYMENT_STATUS.REFUSED,
+const PAYMENT_TO: Partial<Record<string, BulkPaymentStatus>> = {
+  [BULK_PAYMENT_ACTION.VERIFY]: BULK_PAYMENT_STATUS.PAID,
   [BULK_PAYMENT_ACTION.NOT_NEEDED]: BULK_PAYMENT_STATUS.NOT_NEEDED,
 };
 
@@ -161,15 +163,27 @@ const decidePayment = async (actorId: number, id: string, body: Record<string, u
   const c = new Checker();
   const action = c.oneOf(body[F.ACTION], F.ACTION, BULK_PAYMENT_ACTIONS);
   const note = c.text(body[F.NOTE], F.NOTE, BULK_ORDERS.NOTE_MAX, action === BULK_PAYMENT_ACTION.REFUSE) || null;
+  // v2 piece 5b: set_link = the Razorpay link (https)
+  const link = action === BULK_PAYMENT_ACTION.SET_LINK ? c.text(body[F.LINK], F.LINK, BULK_ORDERS.PAYMENT_LINK_MAX) : '';
+  if (link && !/^https:\/\/[^\s/]+\.[^\s]+$/i.test(link)) c.add(F.LINK, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.LINK, 'a payment link starting with https://'));
   c.fail();
-  const to = PAYMENT_TO[action!];
   await AppDataSource.transaction(async (m) => {
     const o = await lockOpen(m, id);
     if (!o.paymentStatus) throw appError(ERROR_CODES.BULK_PAYMENT_NOT_TRACKED, o.poNumber);
-    if (action !== BULK_PAYMENT_ACTION.NOT_NEEDED && o.paymentStatus !== BULK_PAYMENT_STATUS.PROOF_UPLOADED) throw appError(ERROR_CODES.BULK_PAYMENT_NO_PROOF, o.poNumber);
     const now = new Date();
+    if (action === BULK_PAYMENT_ACTION.SET_LINK) {
+      await m.getRepository(BulkOrder).update({ id }, { paymentLink: link, paymentLinkBy: actorId, paymentLinkAt: now, updatedAt: now });
+      await addEvent(m, id, BULK_EVENT.PAYMENT, actorId, note, { link: [o.paymentLink, link] });
+      log.info(LOG_SOURCE.API, `[bulk-orders] ${o.poNumber} payment link set by user ${actorId}`);
+      return;
+    }
+    if (action !== BULK_PAYMENT_ACTION.NOT_NEEDED && o.paymentStatus !== BULK_PAYMENT_STATUS.PAYMENT_SUBMITTED) throw appError(ERROR_CODES.BULK_PAYMENT_NO_PROOF, o.poNumber);
+    // a refused proof: back to waiting for the payment (invoiced; unbilled when no invoice was uploaded)
+    const hasInvoice = action === BULK_PAYMENT_ACTION.REFUSE
+      && (await m.getRepository(BulkOrderDocument).count({ where: { orderId: id, kind: BULK_DOC_KIND.INVOICE, replacedAt: IsNull() } })) > 0;
+    const to = PAYMENT_TO[action!] ?? (hasInvoice ? BULK_PAYMENT_STATUS.INVOICED : BULK_PAYMENT_STATUS.UNBILLED);
     await m.getRepository(BulkOrder).update({ id }, { paymentStatus: to, paymentBy: actorId, paymentAt: now, paymentNote: note, updatedAt: now });
-    await addEvent(m, id, BULK_EVENT.PAYMENT, actorId, note, { status: [o.paymentStatus, to] });
+    await addEvent(m, id, BULK_EVENT.PAYMENT, actorId, note, { status: [o.paymentStatus, to], ...(action === BULK_PAYMENT_ACTION.REFUSE ? { refused: true } : {}) });
     log.info(LOG_SOURCE.API, `[bulk-orders] ${o.poNumber} payment ${o.paymentStatus} -> ${to} by user ${actorId}`);
   });
 };

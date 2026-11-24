@@ -114,6 +114,8 @@ export const ERRORS = {
   /** v2 piece 2a: until piece 2b (one sale order per receiver) is built. */
   /** v2 piece 5a: Institutional customers. */
   BULK_INST_CUSTOMER_NOT_FOUND: define(404, (id: string) => `No Institutional customer ${id}`),
+  /** v2 piece 5b: GSTIN verify on a customer without one. */
+  BULK_INST_CUSTOMER_NO_GSTIN: define(409, (name: string) => `${name} has no GSTIN to verify`),
   BULK_INST_CUSTOMER_EXISTS: define(409, (what: string) => `A customer with this ${what} already exists: open it instead`),
   BULK_PROCESS_RECEIVERS_LATER: define(409, (po: string, n: number) => `${po} goes to ${n} receivers: one sale order per receiver is not built yet`),
   BULK_UPLOAD_NOT_REOPENABLE: define(409, (po: string) => `${po} came from a bulk order: process it again in PO Processing & Review > Bulk Orders`),

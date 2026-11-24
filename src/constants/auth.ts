@@ -83,6 +83,8 @@ export const CAPABILITY = {
    */
   BULK_PAYMENT_VERIFY: 'bulk-orders:verify-payment',
 } as const;
+// v2 piece 5b (2026-11-24): the role bulk-finance has BULK_PAYMENT_VERIFY on (migration BulkFinance): invoices, payment
+// links, verify payments, verify customer GSTINs.
 export type Capability = (typeof CAPABILITY)[keyof typeof CAPABILITY];
 export const CAPABILITIES: readonly { key: Capability; label: string; description: string }[] = [
   {

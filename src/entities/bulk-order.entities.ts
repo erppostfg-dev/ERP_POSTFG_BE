@@ -225,6 +225,16 @@ export class BulkOrder {
   /** v2 piece 5a (migration BulkInstitutionCustomers): the customer an Institutional order was placed for (NULL = typed by hand). */
   @Column({ name: 'institution_customer_id', type: 'bigint', nullable: true })
   institutionCustomerId: string | null;
+
+  /** v2 piece 5b (migration BulkFinance): the Razorpay payment link finance pasted (the buyer sees 'Pay now'). */
+  @Column({ name: 'payment_link', type: 'varchar', length: 1000, nullable: true })
+  paymentLink: string | null;
+
+  @Column({ name: 'payment_link_by', type: 'int', nullable: true })
+  paymentLinkBy: number | null;
+
+  @Column({ name: 'payment_link_at', type: 'datetime', precision: 6, nullable: true })
+  paymentLinkAt: Date | null;
 }
 
 /**

@@ -5,6 +5,7 @@ import { loadBulkSkus } from '../../src/modules/bulk-orders/bulk-skus-load';
 import { BulkOrderBrand1795900000000 } from '../../src/migrations/1795900000000-BulkOrderBrand';
 import { BulkOrderReceivers1796200000000 } from '../../src/migrations/1796200000000-BulkOrderReceivers';
 import { BulkInstitutionCustomers1796300000000 } from '../../src/migrations/1796300000000-BulkInstitutionCustomers';
+import { BulkFinance1796400000000 } from '../../src/migrations/1796400000000-BulkFinance';
 import { MARKETING_UNIT_PRICE } from '../../src/constants';
 import { runPoSyncPass } from '../../src/modules/po-uniware-sync/sync.service';
 import { api, loginAs, type TestLogin } from '../helpers/auth';
@@ -19,7 +20,7 @@ import { covers } from '../helpers/routes';
  */
 covers(['POST /bulk-orders/receivers/check']);
 covers(['GET /bulk-orders/customers', 'POST /bulk-orders/customers', 'PUT /bulk-orders/customers/:customerId',
-  'POST /bulk-orders/customers/:customerId/addresses', 'PUT /bulk-orders/customers/:customerId/addresses/:addressId']);
+  'POST /bulk-orders/customers/:customerId/addresses', 'PUT /bulk-orders/customers/:customerId/addresses/:addressId', 'POST /bulk-orders/customers/:customerId/gstin']);
 covers(['GET /bulk-orders/settings/notifications', 'PUT /bulk-orders/settings/notifications', 'POST /bulk-orders/:id/remind']);
 covers(['GET /bulk-orders', 'POST /bulk-orders', 'GET /bulk-orders/skus', 'GET /bulk-orders/locations', 'POST /bulk-orders/locations', 'GET /bulk-orders/:id',
   'PUT /bulk-orders/:id', 'POST /bulk-orders/:id/cancel', 'POST /bulk-orders/:id/approve', 'POST /bulk-orders/:id/reject',
@@ -391,7 +392,7 @@ describe('bulk orders: payment check + documents + settings (2026-11-12)', () =>
   it('payment check per type: Institutional ON (awaiting proof), Marketing OFF (no payment line); admin turns it on for new orders only', async () => {
     const i = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
     const m = (await create(mkt, order()).expect(201)).body.data;
-    expect(i.payment).toMatchObject({ status: 'awaiting_proof', by: null });
+    expect(i.payment).toMatchObject({ status: 'unbilled', by: null, link: null });
     expect(m.payment).toBeNull();
 
     for (const who of [mkt, approver, opsExec]) expect((await api().get(`${V}/settings`).set('Cookie', who.cookie).expect(403)).body.error.code).toBe('BULK_NOT_SETTINGS_ADMIN');
@@ -403,7 +404,7 @@ describe('bulk orders: payment check + documents + settings (2026-11-12)', () =>
     await api().put(`${V}/settings/marketing`).set('Cookie', mkt.cookie).send({ paymentCheck: true }).expect(403);
     const after = (await api().put(`${V}/settings/marketing`).set('Cookie', admin.cookie).send({ paymentCheck: true }).expect(200)).body.data;
     expect(after[0]).toMatchObject({ type: 'marketing', paymentCheck: true, updatedBy: { id: admin.userId } });
-    expect((await create(mkt, order()).expect(201)).body.data.payment.status).toBe('awaiting_proof');
+    expect((await create(mkt, order()).expect(201)).body.data.payment.status).toBe('unbilled');
     expect((await api().get(`${V}/${m.id}`).set('Cookie', mkt.cookie).expect(200)).body.data.payment).toBeNull(); // older order unchanged
   });
 
@@ -414,7 +415,7 @@ describe('bulk orders: payment check + documents + settings (2026-11-12)', () =>
     expect((await pay(admin, i.id, { action: 'verify' }).expect(409)).body.error.code).toBe('BULK_PAYMENT_NO_PROOF');
 
     const a = (await up(inst, i.id, 'payment_proof', PDF, 'utr-1.pdf').expect(201)).body.data;
-    expect(a.payment.status).toBe('proof_uploaded');
+    expect(a.payment.status).toBe('payment_submitted');
     expect(a.documents).toMatchObject([{ kind: 'payment_proof', fileName: 'utr-1.pdf', contentType: 'application/pdf', replacedAt: null }]);
     const file = await api().get(`${V}/${i.id}/documents/${a.documents[0].id}`).set('Cookie', approver.cookie).buffer(true)
       .parse((res, cb) => { const parts: Buffer[] = []; res.on('data', (c: Buffer) => parts.push(c)); res.on('end', () => cb(null, Buffer.concat(parts))); }).expect(200);
@@ -425,15 +426,15 @@ describe('bulk orders: payment check + documents + settings (2026-11-12)', () =>
     expect((await pay(approver, i.id, { action: 'verify' }).expect(403)).body.error.code).toBe('BULK_NOT_PAYMENT_VERIFIER'); // 2026-11-13: not the approver
     expect(fields(await pay(admin, i.id, { action: 'refuse' }).expect(400))).toEqual(['note']);
     const refused = (await pay(admin, i.id, { action: 'refuse', note: 'Amount short by Rs 500' }).expect(200)).body.data;
-    expect(refused.payment).toMatchObject({ status: 'refused', by: { id: admin.userId }, note: 'Amount short by Rs 500' });
+    expect(refused.payment).toMatchObject({ status: 'unbilled', by: { id: admin.userId }, note: 'Amount short by Rs 500' }); // v2 5b: back to waiting (no invoice)
 
     const b = (await up(inst, i.id, 'payment_proof', PNG, 'utr-2.png').expect(201)).body.data;
-    expect(b.payment.status).toBe('proof_uploaded');
+    expect(b.payment.status).toBe('payment_submitted');
     expect(b.documents.map((d: { fileName: string; replacedAt: string | null }) => [d.fileName, d.replacedAt === null])).toEqual([['utr-2.png', true], ['utr-1.pdf', false]]);
     const ok = (await pay(admin, i.id, { action: 'verify', note: 'UTR matched' }).expect(200)).body.data;
-    expect(ok.payment.status).toBe('verified');
+    expect(ok.payment.status).toBe('paid');
     expect(ok.events.filter((e: { action: string }) => e.action === 'payment').map((e: { changes: { status: string[] } }) => e.changes.status))
-      .toEqual([['awaiting_proof', 'proof_uploaded'], ['proof_uploaded', 'refused'], ['refused', 'proof_uploaded'], ['proof_uploaded', 'verified']]);
+      .toEqual([['unbilled', 'payment_submitted'], ['payment_submitted', 'unbilled'], ['unbilled', 'payment_submitted'], ['payment_submitted', 'paid']]);
     expect(await count('bulk_order_documents')).toBe(2); // nothing deleted
   });
 
@@ -467,12 +468,12 @@ describe('bulk orders: payment check + documents + settings (2026-11-12)', () =>
     const i = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
     const d = (await up(opsExec, i.id, 'invoice', PDF, 'inv-77.pdf', T).expect(201)).body.data;
     expect(d.documents[0]).toMatchObject({ kind: 'invoice', by: { id: opsExec.userId } });
-    expect(d.payment.status).toBe('awaiting_proof'); // an invoice is not a proof
+    expect(d.payment.status).toBe('invoiced'); // v2 5b: an invoice = invoiced (not a proof)
     const viewer = await loginAs('viewer');
     await up(viewer, i.id, 'invoice', PDF, 'v.pdf', T).expect(403);
     await api().get(`${T}/${i.id}/documents/${d.documents[0].id}`).set('Cookie', viewer.cookie).expect(200);
     const list = (await api().get(`${T}?type=institutional`).set('Cookie', viewer.cookie).expect(200)).body.data;
-    expect(list[0].payment.status).toBe('awaiting_proof');
+    expect(list[0].payment.status).toBe('invoiced');
     await up(inst, i.id, 'invoice', PDF, 'p.pdf', T).expect(403);
     await api().get(`${T}/${i.id}/documents/${d.documents[0].id}`).set('Cookie', inst.cookie).expect(403);
   });
@@ -485,18 +486,18 @@ describe('bulk orders: payment check + documents + settings (2026-11-12)', () =>
     await up(inst, b.id, 'payment_proof', PDF, 'utr-b.pdf').expect(201);
     await api().post(`${V}/${b.id}/cancel`).set('Cookie', inst.cookie).send({}).expect(200); // closed: not counted
 
-    const toVerify = (await api().get(`${T}?type=institutional&payment=proof_uploaded`).set('Cookie', opsExec.cookie).expect(200)).body;
+    const toVerify = (await api().get(`${T}?type=institutional&payment=payment_submitted`).set('Cookie', opsExec.cookie).expect(200)).body;
     expect(toVerify.data.map((o: { id: string }) => o.id)).toEqual([b.id, a.id]);
     expect(toVerify.meta.paymentsToVerify).toEqual({ marketing: 0, head_office: 0, institutional: 1 });
-    expect(fields(await api().get(`${T}?payment=paid`).set('Cookie', opsExec.cookie).expect(400))).toEqual(['payment']);
+    expect(fields(await api().get(`${T}?payment=verified`).set('Cookie', opsExec.cookie).expect(400))).toEqual(['payment']); // old name
 
     // PO review editor without the permission: refused; portal-only people: no PO review page
     expect((await teamPay(opsExec, a.id, { action: 'verify' }).expect(403)).body.error.code).toBe('BULK_NOT_PAYMENT_VERIFIER');
     await teamPay(approver, a.id, { action: 'verify' }).expect(403);
     const admin = await loginAs('admin');
     const done = (await teamPay(admin, a.id, { action: 'verify', note: 'UTR 1234 matched' }).expect(200)).body.data;
-    expect(done.payment).toMatchObject({ status: 'verified', by: { id: admin.userId }, note: 'UTR 1234 matched' });
-    expect((await api().get(`${T}?payment=proof_uploaded`).set('Cookie', opsExec.cookie).expect(200)).body.meta.paymentsToVerify.institutional).toBe(0);
+    expect(done.payment).toMatchObject({ status: 'paid', by: { id: admin.userId }, note: 'UTR 1234 matched' });
+    expect((await api().get(`${T}?payment=payment_submitted`).set('Cookie', opsExec.cookie).expect(200)).body.meta.paymentsToVerify.institutional).toBe(0);
     await teamPay(admin, '999999', { action: 'not_needed' }).expect(404);
 
     // later (user): a role gets it from Users & Roles -> Roles, no code: the Operations Executive role now verifies
@@ -560,7 +561,7 @@ describe('bulk orders step 3b: Institutional requester details + our team create
   it('process = a normal saved PO: erp_ sale order, PO rows, CSV at the approved price, Processed tab (no Verify), payment never blocks', async () => {
     const i = await approvedInst();
     const done = (await processIt(opsExec, i.id).expect(200)).body.data;
-    expect(done).toMatchObject({ status: 'processing', payment: { status: 'awaiting_proof' }, saleOrder: { ...SALE, by: { id: opsExec.userId } } });
+    expect(done).toMatchObject({ status: 'processing', payment: { status: 'unbilled' }, saleOrder: { ...SALE, by: { id: opsExec.userId } } });
     const code = done.saleOrder.code as string;
     expect(code).toMatch(/^erp_\d{11}$/);
     expect(done.events.map((e: { action: string }) => e.action)).toEqual(['created', 'approved', 'processed']);
@@ -1258,6 +1259,83 @@ describe('bulk orders v2: Institutional customers', () => {
     }
     expect(await rows('SELECT id, institution_customer_id c FROM bulk_orders')).toEqual([{ id: String(o.id), c: null }]);
     expect(await count('bulk_institution_customers')).toBe(0);
+  });
+});
+
+/*
+ * Bulk Orders Portal v2 piece 5b (2026-11-24, user "GO": Finance + admin / developer; PRD "Invoices and payments"):
+ * role bulk-finance (portal only: Institutional orders + the verify payments permission); payment unbilled -> invoiced
+ * -> payment_submitted -> paid (refused = back to invoiced); the Razorpay link pasted by finance; customer GSTIN verify.
+ */
+describe('bulk orders v2: finance (invoice, payment link, verify payment, GSTIN)', () => {
+  const PDF = Buffer.from('%PDF-1.4 test');
+  const up = (who: TestLogin, id: string, kind: string, name: string) => api().post(`${V}/${id}/documents`).set('Cookie', who.cookie).field('kind', kind).attach('file', PDF, name);
+  const pay = (who: TestLogin, id: string, body: Record<string, unknown>) => api().post(`${V}/${id}/payment`).set('Cookie', who.cookie).send(body);
+  const LINK = 'https://rzp.io/l/sunrise-inst-0001';
+
+  it('finance sees Institutional orders only, uploads the invoice (invoiced), pastes the link (buyer sees it), refuses (back to invoiced) and verifies (paid)', async () => {
+    const fin = await loginAs('bulk-finance');
+    const i = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
+    const m = (await create(mkt, order()).expect(201)).body.data;
+    expect((await api().get(V).set('Cookie', fin.cookie).expect(200)).body.data.map((x: { id: string }) => x.id)).toEqual([i.id]);
+    await api().get(`${V}/${m.id}`).set('Cookie', fin.cookie).expect(404);
+    await create(fin, order({ type: 'institutional' })).expect(403); // viewer: places no orders
+
+    expect((await up(fin, i.id, 'invoice', 'INV-77.pdf').expect(201)).body.data.payment.status).toBe('invoiced');
+    expect(fields(await pay(fin, i.id, { action: 'set_link', link: 'http://rzp.io/l/x' }).expect(400))).toEqual(['link']);
+    expect(fields(await pay(fin, i.id, { action: 'set_link' }).expect(400))).toEqual(['link']);
+    await pay(inst, i.id, { action: 'set_link', link: LINK }).expect(403); // the buyer cannot
+    const linked = (await pay(fin, i.id, { action: 'set_link', link: LINK }).expect(200)).body.data;
+    expect(linked.payment).toMatchObject({ status: 'invoiced', link: LINK });
+    expect((await api().get(`${V}/${i.id}`).set('Cookie', inst.cookie).expect(200)).body.data.payment.link).toBe(LINK);
+
+    expect((await pay(fin, i.id, { action: 'verify' }).expect(409)).body.error.code).toBe('BULK_PAYMENT_NO_PROOF');
+    expect((await up(inst, i.id, 'payment_proof', 'utr.pdf').expect(201)).body.data.payment.status).toBe('payment_submitted');
+    const refused = (await pay(fin, i.id, { action: 'refuse', note: 'UTR not found' }).expect(200)).body.data;
+    expect(refused.payment).toMatchObject({ status: 'invoiced', note: 'UTR not found', by: { id: fin.userId } });
+    await up(inst, i.id, 'payment_proof', 'utr-2.pdf').expect(201);
+    const paid = (await pay(fin, i.id, { action: 'verify', note: 'UTR 99 matched' }).expect(200)).body.data;
+    expect(paid.payment).toMatchObject({ status: 'paid', link: LINK });
+    expect(paid.events.filter((e: { action: string }) => e.action === 'payment').map((e: { changes: Record<string, unknown> }) => e.changes.status ?? 'link'))
+      .toEqual([['unbilled', 'invoiced'], 'link', ['invoiced', 'payment_submitted'], ['payment_submitted', 'invoiced'], ['invoiced', 'payment_submitted'], ['payment_submitted', 'paid']]);
+  });
+
+  it('finance verifies a customer GSTIN (others cannot); orders show it; a customer without GSTIN = 409; bulk-finance is a portal-only role', async () => {
+    const fin = await loginAs('bulk-finance');
+    const C = `${V}/customers`;
+    const body = { companyName: 'Sunrise Public School', gstin: '27AAACS1234A1Z5', billingAddress: ADDRESS, contactName: 'Asha', contactPhone: '9820011223' };
+    const c = (await api().post(C).set('Cookie', inst.cookie).send(body).expect(201)).body.data;
+    await api().post(`${C}/${c.id}/gstin`).set('Cookie', inst.cookie).send({ verified: true }).expect(403);
+    expect(fields(await api().post(`${C}/${c.id}/gstin`).set('Cookie', fin.cookie).send({ verified: 'yes' }).expect(400))).toEqual(['verified']);
+    const v = (await api().post(`${C}/${c.id}/gstin`).set('Cookie', fin.cookie).send({ verified: true }).expect(200)).body.data;
+    expect(v.gstinVerified).toMatchObject({ by: { id: fin.userId } });
+    expect((await api().get(C).set('Cookie', fin.cookie).expect(200)).body.data[0].gstinVerified).not.toBeNull();
+    expect((await api().post(`${C}/${c.id}/gstin`).set('Cookie', fin.cookie).send({ verified: false }).expect(200)).body.data.gstinVerified).toBeNull();
+    const noG = (await api().post(C).set('Cookie', inst.cookie).send({ ...body, companyName: 'No GST School', gstin: '' }).expect(201)).body.data;
+    expect((await api().post(`${C}/${noG.id}/gstin`).set('Cookie', fin.cookie).send({ verified: true }).expect(409)).body.error.code).toBe('BULK_INST_CUSTOMER_NO_GSTIN');
+    await api().post(`${C}/999999/gstin`).set('Cookie', fin.cookie).send({ verified: true }).expect(404);
+    const me = (await api().get('/api/v1/auth/me').set('Cookie', fin.cookie).expect(200)).body.data;
+    expect([me.access['/bulk-orders/institutional'], me.access['/bulk-orders/marketing'], me.access['/operations']]).toEqual(['viewer', 'none', 'none']);
+  });
+
+  it('migration BulkFinance: old payment statuses renamed (invoice -> invoiced), down + up', async () => {
+    const a = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
+    const b = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
+    await up(inst, b.id, 'invoice', 'inv.pdf').expect(201);
+    const c = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
+    await up(inst, c.id, 'payment_proof', 'utr.pdf').expect(201);
+    const qr = (await db()).createQueryRunner();
+    const statuses = async () => (await rows('SELECT payment_status s FROM bulk_orders ORDER BY id')).map((r) => (r as { s: string }).s);
+    try {
+      await new BulkFinance1796400000000().down(qr);
+      expect(await statuses()).toEqual(['awaiting_proof', 'awaiting_proof', 'proof_uploaded']);
+      await rows("UPDATE bulk_orders SET payment_status = 'refused' WHERE id = ?", [a.id]);
+      await new BulkFinance1796400000000().up(qr);
+    } finally {
+      await qr.release();
+    }
+    expect(await statuses()).toEqual(['unbilled', 'invoiced', 'payment_submitted']);
+    expect(await rows("SELECT role_key k FROM roles WHERE role_key = 'bulk-finance'")).toEqual([{ k: 'bulk-finance' }]);
   });
 });
 

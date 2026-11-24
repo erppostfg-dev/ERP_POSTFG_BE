@@ -206,11 +206,16 @@ export type BulkEventAction = (typeof BULK_EVENT)[keyof typeof BULK_EVENT];
  * line). Payment NEVER blocks approval or processing; the proof may come any time; the APPROVER validates it.
  * A setting change applies to orders created after it.
  */
+/*
+ * v2 piece 5b (2026-11-24, PRD 'Invoices and payments'; migration BulkFinance renamed the old values): unbilled (no
+ * invoice yet) -> invoiced (an invoice uploaded) -> payment_submitted (a proof uploaded) -> paid (finance verified it);
+ * a refused proof goes back to invoiced (unbilled when there is no invoice); not_needed any time (free order).
+ */
 export const BULK_PAYMENT_STATUS = {
-  AWAITING_PROOF: 'awaiting_proof',
-  PROOF_UPLOADED: 'proof_uploaded',
-  VERIFIED: 'verified',
-  REFUSED: 'refused',
+  UNBILLED: 'unbilled',
+  INVOICED: 'invoiced',
+  PAYMENT_SUBMITTED: 'payment_submitted',
+  PAID: 'paid',
   NOT_NEEDED: 'not_needed',
 } as const;
 export type BulkPaymentStatus = (typeof BULK_PAYMENT_STATUS)[keyof typeof BULK_PAYMENT_STATUS];
@@ -221,6 +226,8 @@ export const BULK_PAYMENT_ACTION = {
   VERIFY: 'verify',
   REFUSE: 'refuse',
   NOT_NEEDED: 'not_needed',
+  /** v2 piece 5b: finance pastes the Razorpay payment link ({ link }); the buyer sees 'Pay now'. No status change. */
+  SET_LINK: 'set_link',
 } as const;
 export type BulkPaymentAction = (typeof BULK_PAYMENT_ACTION)[keyof typeof BULK_PAYMENT_ACTION];
 export const BULK_PAYMENT_ACTIONS = Object.values(BULK_PAYMENT_ACTION) as BulkPaymentAction[];
@@ -289,6 +296,8 @@ export const BULK_ORDERS = {
     CUSTOMER: '/customers/:customerId',
     CUSTOMER_ADDRESSES: '/customers/:customerId/addresses',
     CUSTOMER_ADDRESS: '/customers/:customerId/addresses/:addressId',
+    /** v2 piece 5b: finance verifies (or un-verifies) a customer's GSTIN. */
+    CUSTOMER_GSTIN: '/customers/:customerId/gstin',
   },
   /** Lines per order (per receiver on a several-receivers order). */
   LINES_MAX: 200,
@@ -297,6 +306,8 @@ export const BULK_ORDERS = {
   RECEIVER_LINES_MAX: 500,
   /** v2 piece 5a: Institutional customers (list size, shipping addresses per customer). */
   CUSTOMERS_LIST_MAX: 2000,
+  /** v2 piece 5b: a payment link: https only, at most this long. */
+  PAYMENT_LINK_MAX: 1000,
   CUSTOMER_ADDRESSES_MAX: 50,
   /** Units per line. */
   QTY_MAX: 1_000_000,
@@ -437,6 +448,9 @@ export const BULK_BODY = {
   CONTACT_NAME: 'contactName',
   CONTACT_PHONE: 'contactPhone',
   DEFAULT_DISCOUNT: 'defaultDiscountPct',
+  /** v2 piece 5b: payment link (set_link) / GSTIN verified true | false. */
+  LINK: 'link',
+  VERIFIED: 'verified',
   ADDRESSES: 'addresses',
   ACTIVE: 'active',
   RECEIVER_NO: 'receiverNo',

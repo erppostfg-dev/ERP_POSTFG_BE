@@ -75,13 +75,18 @@ export const ROLE_CATALOG: readonly RoleDef[] = [
     key: 'bulk-approver', label: 'Bulk Orders: Approver', description: 'Sees every bulk order and approves or rejects them in the Bulk Orders portal only', isSystem: false,
     grants: { '/bulk-orders/approve': E, '/bulk-orders/marketing': V, '/bulk-orders/institutional': V },
   },
+  // v2 piece 5b (2026-11-24, migration BulkFinance): + the special permission bulk-orders:verify-payment
+  {
+    key: 'bulk-finance', label: 'Bulk Orders: Finance', description: 'Uploads invoices and payment links, verifies payments and customer GSTINs in the Bulk Orders portal only', isSystem: false,
+    grants: { '/bulk-orders/institutional': V, 'bulk-orders:verify-payment': E },
+  },
 ];
 
 /**
  * Roles that open ONLY the Bulk Orders portal (2026-11-24, gap B): a person whose roles are all of these is a portal-only
  * person: the welcome email links to the portal (BULK_PORTAL_URL) and a sign-in started on POST_FG lands on the portal.
  */
-export const BULK_ONLY_ROLES: readonly string[] = ['bulk-marketing', 'bulk-institutional', 'bulk-approver'];
+export const BULK_ONLY_ROLES: readonly string[] = ['bulk-marketing', 'bulk-institutional', 'bulk-approver', 'bulk-finance'];
 export const isBulkOnly = (roles: readonly string[]): boolean => roles.length > 0 && roles.every((r) => BULK_ONLY_ROLES.includes(r));
 
 /** users.id / roles.key in a URL. */

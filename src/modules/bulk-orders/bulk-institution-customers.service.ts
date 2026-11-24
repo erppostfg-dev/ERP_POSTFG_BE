@@ -1,11 +1,11 @@
 import { In, Not } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
-import { ACCESS_LEVEL, AccessLevel, BULK_BODY as F, BULK_INSTITUTION, BULK_ORDER_TYPE, BULK_ORDERS, BULK_PAGE, ERROR_CODES, errorMessage } from '../../constants';
+import { ACCESS_LEVEL, AccessLevel, BULK_BODY as F, BULK_INSTITUTION, BULK_ORDER_TYPE, BULK_ORDERS, BULK_PAGE, CAPABILITY, ERROR_CODES, errorMessage } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
 import { BulkInstitutionCustomer, BulkInstitutionCustomerAddress } from '../../entities';
 import { appError } from '../../utils/AppError';
 import { log } from '../../utils/logger';
-import { accessFrom, allows, loadAccess } from '../auth/access.service';
+import { accessFrom, allows, hasCapability, loadAccess } from '../auth/access.service';
 import { BulkActor, Checker, checkAddress, isId, normalPhone, userNames } from './bulk-orders.service';
 
 /*
@@ -185,5 +185,22 @@ export const updateInstitutionCustomerAddress = async (actor: BulkActor, id: str
     ...(next ? { label: next.label, addressLine: next.address.line, city: next.address.city, state: next.address.state, pincode: next.address.pincode } : {}),
     ...(typeof act === 'boolean' ? { isActive: act } : {}),
   });
+  return oneOut(String(cur.id));
+};
+
+/**
+ * v2 piece 5b: finance verifies a customer's GSTIN ({ verified: true }) or takes it back ({ verified: false }): the
+ * special permission "Bulk Orders: verify payments" (bulk-finance, admin / developer). 409 when it has no GSTIN.
+ */
+export const verifyInstitutionCustomerGstin = async (actor: BulkActor, id: string, body: Record<string, unknown>) => {
+  if (!(await hasCapability(actor.id, actor.roles, CAPABILITY.BULK_PAYMENT_VERIFY))) throw appError(ERROR_CODES.BULK_NOT_PAYMENT_VERIFIER);
+  const cur = await loadCustomer(id);
+  const c = new Checker();
+  const v = body[F.VERIFIED];
+  if (typeof v !== 'boolean') c.add(F.VERIFIED, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.VERIFIED, 'true or false'));
+  c.fail();
+  if (!cur.gstin) throw appError(ERROR_CODES.BULK_INST_CUSTOMER_NO_GSTIN, cur.companyName);
+  await AppDataSource.getRepository(BulkInstitutionCustomer).update({ id: String(cur.id) }, v ? { gstinVerifiedBy: actor.id, gstinVerifiedAt: new Date() } : { gstinVerifiedBy: null, gstinVerifiedAt: null });
+  log.info(LOG_SOURCE.API, `[bulk-orders] Institutional customer ${id} GSTIN ${v ? 'verified' : 'unverified'} by user ${actor.id}`);
   return oneOut(String(cur.id));
 };
