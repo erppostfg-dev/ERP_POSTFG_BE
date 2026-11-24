@@ -158,6 +158,7 @@
   "POST /bulk-orders/:id/reject",
   "POST /bulk-orders/:id/remind",
   "POST /bulk-orders/locations",
+  "POST /bulk-orders/receivers/check",
   "POST /channel-pulls/:key/process",
   "POST /channel-pulls/:key/robot",
   "POST /d2c-transfers",

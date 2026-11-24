@@ -36,7 +36,7 @@ import {
   IST_OFFSET_MS,
   TABLES,
 } from '../../constants';
-import { BulkLocation, BulkOrder, BulkOrderDocument, BulkOrderEvent, BulkOrderLine, BulkTypeSetting, MasterSku, User } from '../../entities';
+import { BulkLocation, BulkOrder, BulkOrderDocument, BulkOrderEvent, BulkOrderLine, BulkOrderReceiver, BulkTypeSetting, MasterSku, User } from '../../entities';
 import { appError } from '../../utils/AppError';
 import { log } from '../../utils/logger';
 import { LOG_SOURCE } from '../../constants/logging';
@@ -289,19 +289,21 @@ export const addBulkLocation = async (actor: BulkActor, body: Record<string, unk
 
 interface LineIn { pepCode: string; qty: number; discountPct: number }
 
-const checkLines = (c: Checker, v: unknown, type: BulkOrderType | null): LineIn[] => {
+/** The SKU lines under `pre` ('' = the order's own `lines`, `receivers[i].` = that receiver's). */
+const checkLines = (c: Checker, v: unknown, type: BulkOrderType | null, pre = ''): LineIn[] => {
+  const field = `${pre}${F.LINES}`;
   if (!Array.isArray(v) || !v.length) {
-    c.add(F.LINES, errorMessage(ERROR_CODES.FIELD_REQUIRED, F.LINES));
+    c.add(field, errorMessage(ERROR_CODES.FIELD_REQUIRED, field));
     return [];
   }
   if (v.length > BULK_ORDERS.LINES_MAX) {
-    c.add(F.LINES, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.LINES, `at most ${BULK_ORDERS.LINES_MAX} SKUs`));
+    c.add(field, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, field, `at most ${BULK_ORDERS.LINES_MAX} SKUs`));
     return [];
   }
   const seen = new Set<string>();
   return v.map((raw, i) => {
     const l = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
-    const at = (f: string) => `${F.LINES}[${i}].${f}`;
+    const at = (f: string) => `${field}[${i}].${f}`;
     const pepCode = c.text(l[F.PEP_CODE], at(F.PEP_CODE), 100);
     const qty = l[F.QTY];
     const d = l[F.DISCOUNT] ?? 0;
@@ -344,12 +346,69 @@ const takeBulkPoNumber = async (m: EntityManager, type: BulkOrderType, year = is
   return `${BULK_PO_PREFIX[type]}-${year}-${String(n).padStart(BULK_ORDERS.SERIAL_DIGITS, '0')}`;
 };
 
+/** v2 piece 2: one receiver as checked; `pre` = where its fields are in the request ('' or `receivers[i].`). */
+interface ReceiverIn { pre: string; name: string; phone: string; locationId: string | null; address: AddressIn | null; saveAs: string; lines: LineIn[] }
+
+/** One receiver's fields under `pre`: name, 10-digit phone, a saved location or an address (+ name to save it), its lines. */
+const checkReceiver = (c: Checker, raw: unknown, pre: string, type: BulkOrderType | null, lenient: boolean): ReceiverIn => {
+  const b = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const at = (f: string) => `${pre}${f}`;
+  const name = c.text(b[F.RECEIVER_NAME], at(F.RECEIVER_NAME), BULK_ORDERS.NAME_MAX);
+  const phoneText = c.text(b[F.RECEIVER_PHONE], at(F.RECEIVER_PHONE), 20);
+  const phone = phoneText ? normalPhone(phoneText) : null;
+  if (phoneText && !phone) c.add(at(F.RECEIVER_PHONE), errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, at(F.RECEIVER_PHONE), 'a 10-digit phone number'));
+  // where: a saved location (its id) or an address typed now (+ optional name to save it under)
+  const rawLocation = b[F.LOCATION_ID];
+  let locationId: string | null = null;
+  let address: AddressIn | null = null;
+  let saveAs = '';
+  if (rawLocation !== undefined && rawLocation !== null && rawLocation !== '') {
+    if (!isId(rawLocation)) c.add(at(F.LOCATION_ID), errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, at(F.LOCATION_ID), 'a saved location id'));
+    else locationId = String(rawLocation);
+  } else {
+    address = checkAddress(c, b[F.ADDRESS], at(F.ADDRESS));
+    saveAs = c.text(b[F.SAVE_LOCATION_AS], at(F.SAVE_LOCATION_AS), BULK_ORDERS.LABEL_MAX, false);
+  }
+  const lines = checkLines(c, b[F.LINES], type, pre);
+  return { pre, name, phone: phone ?? (lenient ? phoneText : ''), locationId, address, saveAs, lines };
+};
+
+const EMPTY_RECEIVER: ReceiverIn = { pre: '', name: '', phone: '', locationId: null, address: { line: '', city: '', state: '', pincode: '' }, saveAs: '', lines: [] };
+
+/**
+ * v2 piece 2: the receivers of an order. No `receivers` = one receiver from the order's own fields (as before; every
+ * Institutional order). `receivers` = Marketing / Head office only, 1 to RECEIVERS_MAX, RECEIVER_LINES_MAX lines in all.
+ */
+const checkReceivers = (c: Checker, body: Record<string, unknown>, type: BulkOrderType | null, lenient: boolean): ReceiverIn[] => {
+  const raw = body[F.RECEIVERS];
+  if (raw === undefined || raw === null) return [checkReceiver(c, body, '', type, lenient)];
+  if (type && !isMarketingLike(type)) {
+    c.add(F.RECEIVERS, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.RECEIVERS, 'left out: only Marketing / Head office orders go to several receivers'));
+    return [EMPTY_RECEIVER];
+  }
+  if (!Array.isArray(raw) || !raw.length || raw.length > BULK_ORDERS.RECEIVERS_MAX) {
+    c.add(F.RECEIVERS, Array.isArray(raw) && raw.length
+      ? errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.RECEIVERS, `at most ${BULK_ORDERS.RECEIVERS_MAX} receivers`)
+      : errorMessage(ERROR_CODES.FIELD_REQUIRED, F.RECEIVERS));
+    return [EMPTY_RECEIVER];
+  }
+  const out = raw.map((r, i) => checkReceiver(c, r, `${F.RECEIVERS}[${i}].`, type, lenient));
+  if (out.reduce((s, r) => s + r.lines.length, 0) > BULK_ORDERS.RECEIVER_LINES_MAX) {
+    c.add(F.RECEIVERS, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.RECEIVERS, `at most ${BULK_ORDERS.RECEIVER_LINES_MAX} SKU lines over all receivers`));
+  }
+  const names = new Set<string>();
+  out.forEach((r) => {
+    const k = r.saveAs.toLowerCase();
+    if (k && names.has(k)) c.add(`${r.pre}${F.SAVE_LOCATION_AS}`, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, `${r.pre}${F.SAVE_LOCATION_AS}`, 'a name not used by another receiver of this order'));
+    names.add(k);
+  });
+  return out;
+};
+
 /** An order's fields as checked from a create / edit request (before the SKUs are priced). */
 interface OrderIn {
   type: BulkOrderType;
   orderedBy: string;
-  receiverName: string;
-  phone: string;
   neededBy: string | null;
   priority: string;
   fastTrackRemarks: string | null;
@@ -358,10 +417,8 @@ interface OrderIn {
   brand: string;
   mode: string | null;
   note: string | null;
-  locationId: string | null;
-  address: AddressIn | null;
-  saveAs: string;
-  lines: LineIn[];
+  /** v2 piece 2: one or more (Marketing / Head office); receiver 1 = the order's own fields when `receivers` is not sent. */
+  receivers: ReceiverIn[];
   /** Institutional only (else null). */
   institution: InstitutionIn | null;
 }
@@ -371,10 +428,6 @@ const parseOrder = (body: Record<string, unknown>, fixedType?: BulkOrderType, mo
   const c = new Checker(lenient);
   const type = fixedType ?? typeParam(c, body[F.TYPE]);
   const orderedBy = c.text(body[F.ORDERED_BY], F.ORDERED_BY, BULK_ORDERS.NAME_MAX);
-  const receiverName = c.text(body[F.RECEIVER_NAME], F.RECEIVER_NAME, BULK_ORDERS.NAME_MAX);
-  const phoneText = c.text(body[F.RECEIVER_PHONE], F.RECEIVER_PHONE, 20);
-  const phone = phoneText ? normalPhone(phoneText) : null;
-  if (phoneText && !phone) c.add(F.RECEIVER_PHONE, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.RECEIVER_PHONE, 'a 10-digit phone number'));
   const priority = c.oneOf(body[F.PRIORITY] ?? BULK_PRIORITY.NORMAL, F.PRIORITY, BULK_PRIORITIES);
   const fastTrack = priority === BULK_PRIORITY.FAST_TRACK;
   // v2 1d: Needed by required for Fast-track, optional for Normal; never in the past
@@ -388,25 +441,13 @@ const parseOrder = (body: Record<string, unknown>, fixedType?: BulkOrderType, mo
   // delivery mode: Marketing (and Head office, which works like it) only (the design shows it only there)
   const mode = isMarketingLike(type) ? c.oneOf(body[F.MODE], F.MODE, BULK_DELIVERY_MODES) : null;
   const note = c.text(body[F.NOTE], F.NOTE, BULK_ORDERS.NOTE_MAX, false) || null;
-  // where: a saved location (its id) or an address typed now (+ optional name to save it under)
-  const rawLocation = body[F.LOCATION_ID];
-  let locationId: string | null = null;
-  let address: AddressIn | null = null;
-  let saveAs = '';
-  if (rawLocation !== undefined && rawLocation !== null && rawLocation !== '') {
-    if (!isId(rawLocation)) c.add(F.LOCATION_ID, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.LOCATION_ID, 'a saved location id'));
-    else locationId = String(rawLocation);
-  } else {
-    address = checkAddress(c, body[F.ADDRESS]);
-    saveAs = c.text(body[F.SAVE_LOCATION_AS], F.SAVE_LOCATION_AS, BULK_ORDERS.LABEL_MAX, false);
-  }
   // v2 1f: one brand per order (every line is checked against it when priced)
   const brand = c.text(body[F.BRAND], F.BRAND, BULK_ORDERS.BRAND_MAX);
-  const lines = checkLines(c, body[F.LINES], type);
+  const receivers = checkReceivers(c, body, type, lenient);
   const institution = type === BULK_ORDER_TYPE.INSTITUTIONAL ? checkInstitution(c, body) : null;
   more?.(c);
   c.fail();
-  return { type: type!, orderedBy, receiverName, phone: phone ?? (lenient ? phoneText : ''), neededBy, priority: priority!, fastTrackRemarks, purpose, mode, note, locationId, address, saveAs, lines, institution, brand };
+  return { type: type!, orderedBy, neededBy, priority: priority!, fastTrackRemarks, purpose, mode, note, receivers, institution, brand };
 };
 
 /** Today's MRP / name / active of SKUs from OUR master (one read; never the cache, never the request). */
@@ -425,24 +466,28 @@ const notSellable = (code: string, s: MasterSku | undefined): string =>
     : !s.mrp || Number(s.mrp) <= 0 ? `${code} has no MRP in the PEP SKU master: ask the masters team` : '';
 
 interface PricedLine {
-  lineNo: number; pepCode: string; productName: string | null; mrp: number; requestedQty: number; requestedDiscountPct: number;
+  lineNo: number; receiverNo: number; pepCode: string; productName: string | null; mrp: number; requestedQty: number; requestedDiscountPct: number;
   qty: number; discountPct: number; unitPrice: number; lineTotal: number;
 }
 
-/** The lines priced on today's MRP (requested = what is asked now); 400 naming each SKU that cannot be sold. */
-const priceLines = async (type: BulkOrderType, lines: LineIn[], brand?: string): Promise<PricedLine[]> => {
-  const byCode = await skusNow(lines.map((l) => l.pepCode));
+/**
+ * The lines of every receiver priced on today's MRP (requested = what is asked now), numbered 1.. across the receivers;
+ * 400 naming each SKU that cannot be sold (field = where the line is in the request).
+ */
+const priceLines = async (type: BulkOrderType, receivers: ReceiverIn[], brand?: string): Promise<PricedLine[]> => {
+  const lines = receivers.flatMap((r, ri) => r.lines.map((l, i) => ({ ...l, receiverNo: ri + 1, at: `${r.pre}${F.LINES}[${i}]` })));
+  const byCode = await skusNow([...new Set(lines.map((l) => l.pepCode))]);
   const c = new Checker();
-  lines.forEach((l, i) => {
+  lines.forEach((l) => {
     const s = byCode.get(l.pepCode.toUpperCase());
     const why = notSellable(l.pepCode, s);
-    if (why) c.add(`${F.LINES}[${i}].${F.PEP_CODE}`, why);
+    if (why) c.add(`${l.at}.${F.PEP_CODE}`, why);
     // 2026-11-24: only SKUs on the Bulk Orders list (new / edited / draft orders; an approval keeps what was asked)
-    else if (s?.bulkOrderable !== true) c.add(`${F.LINES}[${i}].${F.PEP_CODE}`, `${l.pepCode} is not on the Bulk Orders SKU list: ask the masters team`);
+    else if (s?.bulkOrderable !== true) c.add(`${l.at}.${F.PEP_CODE}`, `${l.pepCode} is not on the Bulk Orders SKU list: ask the masters team`);
     // v2 1f: one brand per order (the master's brand_name)
     else if (brand !== undefined && brandKey(s?.brandName) !== brandKey(brand)) {
       const has = (s?.brandName ?? '').trim();
-      c.add(`${F.LINES}[${i}].${F.PEP_CODE}`, `${l.pepCode} is not a ${brand} SKU (its brand in the PEP SKU master: ${brandKey(has) ? has : 'none: ask the masters team'})`);
+      c.add(`${l.at}.${F.PEP_CODE}`, `${l.pepCode} is not a ${brand} SKU (its brand in the PEP SKU master: ${brandKey(has) ? has : 'none: ask the masters team'})`);
     }
   });
   c.fail();
@@ -451,14 +496,14 @@ const priceLines = async (type: BulkOrderType, lines: LineIn[], brand?: string):
     const mrp = Number(s.mrp);
     const unitPrice = unitPriceOf(type, mrp, l.discountPct);
     return {
-      lineNo: i + 1, pepCode: s.pepCode, productName: s.productName, mrp,
+      lineNo: i + 1, receiverNo: l.receiverNo, pepCode: s.pepCode, productName: s.productName, mrp,
       requestedQty: l.qty, requestedDiscountPct: l.discountPct, qty: l.qty, discountPct: l.discountPct,
       unitPrice, lineTotal: round2(unitPrice * l.qty),
     };
   });
   priced.forEach((p, i) => {
     const why = lineTotalProblem(type, p.lineTotal);
-    if (why) c.add(`${F.LINES}[${i}].${F.DISCOUNT}`, why);
+    if (why) c.add(`${lines[i].at}.${F.DISCOUNT}`, why);
   });
   c.fail();
   return priced;
@@ -472,15 +517,37 @@ const totalsOf = (lines: { qty: number; mrp: number; lineTotal: number }[]) => (
   totalValue: round2(lines.reduce((s, l) => s + l.lineTotal, 0)),
 });
 
-/** The delivery address of an order: a saved location of the type, or the typed one (saved under a name if asked). */
-const whereTo = async (m: EntityManager, o: OrderIn, userId: number) => {
-  if (o.address) {
-    const saved = o.saveAs ? await insertLocation(m, o.type, o.saveAs, o.address, userId) : null;
-    return { locationId: saved ? String(saved.id) : null, locationLabel: saved?.label ?? null, addressLine: o.address.line, city: o.address.city, state: o.address.state, pincode: o.address.pincode };
+/** The delivery address of a receiver: a saved location of the type, or the typed one (saved under a name if asked). */
+const whereTo = async (m: EntityManager, type: BulkOrderType, r: ReceiverIn, userId: number) => {
+  if (r.address) {
+    const saved = r.saveAs ? await insertLocation(m, type, r.saveAs, r.address, userId) : null;
+    return { locationId: saved ? String(saved.id) : null, locationLabel: saved?.label ?? null, addressLine: r.address.line, city: r.address.city, state: r.address.state, pincode: r.address.pincode };
   }
-  const loc = await m.getRepository(BulkLocation).findOneBy({ id: o.locationId!, orderType: o.type });
-  if (!loc) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails([{ field: F.LOCATION_ID, code: ERROR_CODES.VALIDATION_FAILED, message: `No saved ${o.type} location ${o.locationId}` }]);
+  const loc = await m.getRepository(BulkLocation).findOneBy({ id: r.locationId!, orderType: type });
+  if (!loc) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails([{ field: `${r.pre}${F.LOCATION_ID}`, code: ERROR_CODES.VALIDATION_FAILED, message: `No saved ${type} location ${r.locationId}` }]);
   return { locationId: String(loc.id), locationLabel: loc.label, addressLine: loc.addressLine, city: loc.city, state: loc.state, pincode: loc.pincode };
+};
+type Place = Awaited<ReturnType<typeof whereTo>>;
+
+/**
+ * v2 piece 2: every receiver's address (saved locations made as asked) + the order's receiver columns (= receiver 1, so
+ * lists / search / older code read the order row alone) + receiver_count.
+ */
+const placeAll = async (m: EntityManager, o: OrderIn, userId: number) => {
+  const places: Place[] = [];
+  for (const r of o.receivers) places.push(await whereTo(m, o.type, r, userId));
+  const first = o.receivers[0];
+  return { places, cols: { receiverName: first.name, receiverPhone: first.phone, ...places[0], receiverCount: o.receivers.length } };
+};
+
+/** v2 piece 2: the order's receiver rows written again (only before a sale order exists: create / edit / draft). */
+const writeReceivers = async (m: EntityManager, orderId: string, o: OrderIn, places: Place[], priced: PricedLine[]) => {
+  const repo = m.getRepository(BulkOrderReceiver);
+  await repo.delete({ orderId });
+  await repo.insert(o.receivers.map((r, i) => ({
+    orderId, receiverNo: i + 1, receiverName: r.name, receiverPhone: r.phone, ...places[i],
+    totalUnits: priced.filter((l) => l.receiverNo === i + 1).reduce((s, l) => s + l.qty, 0),
+  })));
 };
 
 /** One timeline row (bulk_order_events), in the same transaction as the change. */
@@ -508,24 +575,25 @@ export const createBulkOrder = async (actor: BulkActor, body: Record<string, unk
   if (body[F.DRAFT] === true) return createDraft(actor, body);
   const o = parseOrder(body);
   needType(await bulkRights(actor), o.type, ACCESS_LEVEL.EDITOR);
-  const priced = await priceLines(o.type, o.lines, o.brand);
+  const priced = await priceLines(o.type, o.receivers, o.brand);
   const setting = await settingOf(o.type);
   const paymentCheck = setting?.paymentCheck === true;
   const approval = approvalNeed(setting, o.type, totalsOf(priced).totalUnits, o.mode);
 
   const id = await withDeadlockRetry(() => AppDataSource.transaction(async (m) => {
-    const where = await whereTo(m, o, actor.id);
+    const { places, cols } = await placeAll(m, o, actor.id);
     const poNumber = await takeBulkPoNumber(m, o.type);
     const res = await m.getRepository(BulkOrder).insert({
-      poNumber, orderType: o.type, status: approval.needed ? BULK_ORDER_STATUS.PENDING_APPROVAL : BULK_ORDER_STATUS.SUBMITTED, orderedBy: o.orderedBy, receiverName: o.receiverName,
-      receiverPhone: o.phone, ...where, neededBy: o.neededBy, deliveryMode: o.mode, priority: o.priority, note: o.note,
+      poNumber, orderType: o.type, status: approval.needed ? BULK_ORDER_STATUS.PENDING_APPROVAL : BULK_ORDER_STATUS.SUBMITTED, orderedBy: o.orderedBy,
+      ...cols, neededBy: o.neededBy, deliveryMode: o.mode, priority: o.priority, note: o.note,
       fastTrackRemarks: o.fastTrackRemarks, purpose: o.purpose, brand: o.brand,
-      ...institutionCols(o.institution, where), ...totalsOf(priced), createdBy: actor.id, paymentStatus: paymentCheck ? BULK_PAYMENT_STATUS.AWAITING_PROOF : null,
+      ...institutionCols(o.institution, places[0]), ...totalsOf(priced), createdBy: actor.id, paymentStatus: paymentCheck ? BULK_PAYMENT_STATUS.AWAITING_PROOF : null,
     });
     const orderId = String(res.identifiers[0].id);
     await m.getRepository(BulkOrderLine).insert(priced.map((l) => ({ ...l, orderId })));
+    await writeReceivers(m, orderId, o, places, priced);
     await addEvent(m, orderId, BULK_EVENT.CREATED, actor.id, o.note, { approval: approval.why });
-    log.info(LOG_SOURCE.API, `[bulk-orders] ${poNumber} created (${o.type}, ${priced.length} SKUs, ${approval.needed ? `approval: ${approval.why.join(', ')}` : 'no approval needed'}) by user ${actor.id}`);
+    log.info(LOG_SOURCE.API, `[bulk-orders] ${poNumber} created (${o.type}, ${o.receivers.length} receiver(s), ${priced.length} SKU lines, ${approval.needed ? `approval: ${approval.why.join(', ')}` : 'no approval needed'}) by user ${actor.id}`);
     return orderId;
   }));
   const made = await getBulkOrder(actor, id);
@@ -565,7 +633,9 @@ export const typeOfOrder = async (r: BulkRights, id: string): Promise<BulkOrderT
   return t;
 };
 
-const lineSummary = (ls: { pepCode: string; qty: number; discountPct: number }[]) => ls.map((l) => `${l.pepCode} x${l.qty} @${l.discountPct}%`);
+type SummaryLine = { pepCode: string; qty: number; discountPct: number; receiverNo?: number };
+/** `R2 CODE x3 @0%` on a several-receivers order, else `CODE x3 @0%`. */
+const lineSummary = (ls: SummaryLine[], multi = false) => ls.map((l) => `${multi ? `R${l.receiverNo ?? 1} ` : ''}${l.pepCode} x${l.qty} @${l.discountPct}%`);
 
 /** v2 1e: what an edit did to the lines, by SKU: added / removed / qty or discount changed (old -> new). */
 export const diffLines = (before: { pepCode: string; qty: number; discountPct: number }[], after: { pepCode: string; qty: number; discountPct: number }[]) => {
@@ -582,6 +652,31 @@ export const diffLines = (before: { pepCode: string; qty: number; discountPct: n
     if (c.qty || c.discountPct) out.push(c);
   }
   for (const b of before) if (!now.has(key(b.pepCode))) out.push({ pepCode: b.pepCode, change: 'removed', qty: [b.qty, 0] });
+  return out;
+};
+
+/** v2 piece 2: diffLines per receiver (each change + its receiverNo when the order has / had several receivers). */
+const diffByReceiver = (before: SummaryLine[], after: SummaryLine[], multi: boolean) => {
+  const nos = [...new Set([...before, ...after].map((l) => l.receiverNo ?? 1))].sort((a, b) => a - b);
+  return nos.flatMap((n) => diffLines(before.filter((l) => (l.receiverNo ?? 1) === n), after.filter((l) => (l.receiverNo ?? 1) === n))
+    .map((x) => (multi ? { receiverNo: n, ...x } : x)));
+};
+
+const RECEIVER_FIELDS = ['receiverName', 'receiverPhone', 'locationLabel', 'addressLine', 'city', 'state', 'pincode'] as const;
+type ReceiverRow = Pick<BulkOrderReceiver, (typeof RECEIVER_FIELDS)[number] | 'receiverNo'>;
+
+/** v2 piece 2: receivers added / removed / changed by an edit (field by field, old -> new). */
+export const diffReceivers = (before: ReceiverRow[], after: ReceiverRow[]) => {
+  const was = new Map(before.map((r) => [r.receiverNo, r]));
+  const now = new Map(after.map((r) => [r.receiverNo, r]));
+  const out: { receiverNo: number; change: 'added' | 'removed' | 'changed'; name: string; fields?: { field: string; from: unknown; to: unknown }[] }[] = [];
+  for (const r of after) {
+    const b = was.get(r.receiverNo);
+    if (!b) { out.push({ receiverNo: r.receiverNo, change: 'added', name: r.receiverName }); continue; }
+    const fields = RECEIVER_FIELDS.filter((k) => String(b[k] ?? '') !== String(r[k] ?? '')).map((k) => ({ field: k, from: b[k] ?? null, to: r[k] ?? null }));
+    if (fields.length) out.push({ receiverNo: r.receiverNo, change: 'changed', name: r.receiverName, fields });
+  }
+  for (const b of before) if (!now.has(b.receiverNo)) out.push({ receiverNo: b.receiverNo, change: 'removed', name: b.receiverName });
   return out;
 };
 
@@ -603,7 +698,7 @@ export const updateBulkOrder = async (actor: BulkActor, id: string, body: Record
   // v2 1e: every edit says why (kept with the change); checked with the rest of the body (all problems in one 400)
   let remark = '';
   const o = parseOrder(body, t, (c) => { remark = c.text(body[F.EDIT_REMARK], F.EDIT_REMARK, BULK_ORDERS.EDIT_REMARK_MAX); });
-  const priced = await priceLines(t, o.lines, o.brand);
+  const priced = await priceLines(t, o.receivers, o.brand);
   const approval = approvalNeed(await settingOf(t), t, totalsOf(priced).totalUnits, o.mode);
   let moved = false;
   await AppDataSource.transaction(async (m) => {
@@ -611,21 +706,26 @@ export const updateBulkOrder = async (actor: BulkActor, id: string, body: Record
     // the rules again (v2 1c): an edit may need approval now, or no longer
     const status = approval.needed ? BULK_ORDER_STATUS.PENDING_APPROVAL : BULK_ORDER_STATUS.SUBMITTED;
     const before = await m.getRepository(BulkOrderLine).find({ where: { orderId: id }, order: { lineNo: 'ASC' } });
-    const where = await whereTo(m, o, actor.id);
+    const receiversBefore = await m.getRepository(BulkOrderReceiver).find({ where: { orderId: id }, order: { receiverNo: 'ASC' } });
+    const { places, cols } = await placeAll(m, o, actor.id);
     const next = {
-      orderedBy: o.orderedBy, receiverName: o.receiverName, receiverPhone: o.phone, ...where, neededBy: o.neededBy,
+      orderedBy: o.orderedBy, ...cols, neededBy: o.neededBy,
       fastTrackRemarks: o.fastTrackRemarks, purpose: o.purpose, brand: o.brand,
-      deliveryMode: o.mode, priority: o.priority, note: o.note, ...institutionCols(o.institution, where),
+      deliveryMode: o.mode, priority: o.priority, note: o.note, ...institutionCols(o.institution, places[0]),
     };
     const fields = (Object.keys(next) as (keyof typeof next)[]).filter((k) => String(cur[k] ?? '') !== String(next[k] ?? ''));
     // v2 1e: field by field, old -> new (dates / text as stored), and the lines added / removed / changed
     const fieldChanges = fields.map((k) => ({ field: k, from: cur[k] ?? null, to: next[k] ?? null }));
-    const lineChanges = diffLines(before, priced);
+    // v2 piece 2: per receiver when the order has / had several (receiverNo on each change + receiver changes)
+    const multi = receiversBefore.length > 1 || o.receivers.length > 1;
+    const lineChanges = diffByReceiver(before, priced, multi);
+    const receiverChanges = multi ? diffReceivers(receiversBefore, o.receivers.map((r, i) => ({ receiverNo: i + 1, receiverName: r.name, receiverPhone: r.phone, ...places[i] }))) : [];
     await m.getRepository(BulkOrderLine).delete({ orderId: id });
     await m.getRepository(BulkOrderLine).insert(priced.map((l) => ({ ...l, orderId: id })));
+    await writeReceivers(m, id, o, places, priced);
     await m.getRepository(BulkOrder).update({ id }, { ...next, ...totalsOf(priced), status, updatedAt: new Date() });
     await addEvent(m, id, BULK_EVENT.EDITED, actor.id, remark, {
-      fields, fieldChanges, lineChanges, linesBefore: lineSummary(before), linesAfter: lineSummary(priced),
+      fields, fieldChanges, lineChanges, ...(receiverChanges.length ? { receiverChanges } : {}), linesBefore: lineSummary(before, multi), linesAfter: lineSummary(priced, multi),
       ...(status !== cur.status ? { status: [cur.status, status], approval: approval.why } : {}),
     });
     log.info(LOG_SOURCE.API, `[bulk-orders] ${cur.poNumber} edited by user ${actor.id}`);
@@ -634,6 +734,86 @@ export const updateBulkOrder = async (actor: BulkActor, id: string, body: Record
   const after = await getBulkOrder(actor, id);
   if (moved) await notifyNew(after, after.status === BULK_ORDER_STATUS.PENDING_APPROVAL, actor.id);
   return after;
+};
+
+// ---- receivers upload (v2 piece 2) ---------------------------------------------------------------------------------
+
+interface RowIssue { row: number; field: string; message: string }
+interface UploadReceiver {
+  receiverName: string; receiverPhone: string; address: AddressIn;
+  lines: { pepCode: string; name: string | null; mrp: number; qty: number }[]; rows: number[];
+}
+
+/** A qty from a file cell: a whole number 1..QTY_MAX (a number or its text), else null. */
+const qtyOf = (v: unknown): number | null => {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && /^\s*\d+\s*$/.test(v) ? Number(v) : NaN;
+  return Number.isInteger(n) && n >= 1 && n <= BULK_ORDERS.QTY_MAX ? n : null;
+};
+const groupKey = (r: { receiverName: string; receiverPhone: string; address: AddressIn }) =>
+  [r.receiverName, r.receiverPhone, r.address.pincode, r.address.line].map((s) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()).join('|');
+
+/**
+ * Checks the rows of an uploaded receivers file (Marketing / Head office; editor on the type). NOTHING is saved: the form
+ * loads the good receivers and lists the bad rows. One row = receiver name, number, address, city, state, pincode, SKU
+ * code, qty; rows of the same receiver (name + number + pincode + address) make one receiver with several SKUs.
+ * SKUs checked on the cached SKU list (on the Bulk Orders list, of the brand); the order itself is checked again on Submit.
+ */
+export const checkBulkReceiverRows = async (actor: BulkActor, body: Record<string, unknown>) => {
+  const c = new Checker();
+  const type = typeParam(c, body[F.TYPE]);
+  if (type && !isMarketingLike(type)) c.add(F.TYPE, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.TYPE, 'Marketing or Head office (only they go to several receivers)'));
+  const brand = c.text(body[F.BRAND], F.BRAND, BULK_ORDERS.BRAND_MAX);
+  const rows = body[F.ROWS];
+  if (!Array.isArray(rows) || !rows.length) c.add(F.ROWS, errorMessage(ERROR_CODES.FIELD_REQUIRED, F.ROWS));
+  else if (rows.length > BULK_ORDERS.RECEIVER_LINES_MAX) c.add(F.ROWS, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.ROWS, `at most ${BULK_ORDERS.RECEIVER_LINES_MAX} rows`));
+  c.fail();
+  needType(await bulkRights(actor), type!, ACCESS_LEVEL.EDITOR);
+  const skus = new Map((await cachedPepSkus()).map((s) => [s.pepCode.toUpperCase(), s]));
+  const errors: RowIssue[] = [];
+  const groups = new Map<string, UploadReceiver>();
+  (rows as unknown[]).forEach((raw, i) => {
+    const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+    // the file's own row number when the screen sends it (header = row 1), else the position
+    const row = typeof r[F.ROW] === 'number' && Number.isInteger(r[F.ROW]) ? (r[F.ROW] as number) : i + 1;
+    const rc = new Checker();
+    const receiverName = rc.text(r[F.RECEIVER_NAME], F.RECEIVER_NAME, BULK_ORDERS.NAME_MAX);
+    const phoneText = rc.text(typeof r[F.RECEIVER_PHONE] === 'number' ? String(r[F.RECEIVER_PHONE]) : r[F.RECEIVER_PHONE], F.RECEIVER_PHONE, 20);
+    const receiverPhone = phoneText ? normalPhone(phoneText) : null;
+    if (phoneText && !receiverPhone) rc.add(F.RECEIVER_PHONE, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.RECEIVER_PHONE, 'a 10-digit phone number'));
+    const pin = typeof r[F.PINCODE] === 'number' ? String(r[F.PINCODE]) : r[F.PINCODE];
+    const address = {
+      line: rc.text(r[F.LINE], F.LINE, BULK_ORDERS.ADDRESS_MAX), city: rc.text(r[F.CITY], F.CITY, BULK_ORDERS.CITY_MAX),
+      state: rc.text(r[F.STATE], F.STATE, BULK_ORDERS.CITY_MAX), pincode: rc.text(pin, F.PINCODE, 10),
+    };
+    if (address.pincode && !BULK_ORDERS.PINCODE_RE.test(address.pincode)) rc.add(F.PINCODE, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.PINCODE, '6 digits (not starting with 0)'));
+    const code = rc.text(r[F.PEP_CODE], F.PEP_CODE, 100);
+    const s = code ? skus.get(code.toUpperCase()) : undefined;
+    if (code) {
+      const why = notSellable(code, s);
+      if (why) rc.add(F.PEP_CODE, why);
+      else if (!orderable(s!)) rc.add(F.PEP_CODE, `${code} is not on the Bulk Orders SKU list: ask the masters team`);
+      else if (brandKey(s!.brandName) !== brandKey(brand)) rc.add(F.PEP_CODE, `${code} is not a ${brand} SKU`);
+    }
+    const qty = qtyOf(r[F.QTY]);
+    if (qty === null) rc.add(F.QTY, errorMessage(ERROR_CODES.FIELD_NOT_INT_RANGE, F.QTY, 1, BULK_ORDERS.QTY_MAX));
+    if (rc.issues.length) {
+      errors.push(...rc.issues.map((x) => ({ row, field: x.field, message: x.message })));
+      return;
+    }
+    const rec = { receiverName, receiverPhone: receiverPhone!, address };
+    const key = groupKey(rec);
+    const g = groups.get(key) ?? { ...rec, lines: [], rows: [] };
+    if (g.lines.some((l) => l.pepCode.toUpperCase() === s!.pepCode.toUpperCase())) {
+      errors.push({ row, field: F.PEP_CODE, message: `${s!.pepCode} is already on another row of this receiver (put the total qty on one row)` });
+      return;
+    }
+    g.lines.push({ pepCode: s!.pepCode, name: s!.productName, mrp: Number(s!.mrp), qty: qty! });
+    g.rows.push(row);
+    groups.set(key, g);
+  });
+  const receivers = [...groups.values()];
+  if (receivers.length > BULK_ORDERS.RECEIVERS_MAX) errors.push({ row: 0, field: F.RECEIVERS, message: `The file has ${receivers.length} receivers: at most ${BULK_ORDERS.RECEIVERS_MAX} per order` });
+  return { receivers, errors, rowCount: (rows as unknown[]).length };
 };
 
 // ---- notifications + remind (v2 piece 3) ----------------------------------------------------------------------------
@@ -676,7 +856,7 @@ export const remindBulkOrder = async (actor: BulkActor, id: string) => {
 
 /** The order columns of a parsed order (a draft's may be empty: NOT NULL text columns take ''). */
 const orderCols = (o: OrderIn) => ({
-  orderedBy: o.orderedBy, receiverName: o.receiverName, receiverPhone: o.phone, neededBy: o.neededBy, deliveryMode: o.mode,
+  orderedBy: o.orderedBy, neededBy: o.neededBy, deliveryMode: o.mode,
   priority: o.priority, note: o.note, fastTrackRemarks: o.fastTrackRemarks, purpose: o.purpose, brand: o.brand || null,
 });
 
@@ -687,16 +867,17 @@ const createDraft = async (actor: BulkActor, body: Record<string, unknown>) => {
   tc.fail();
   needType(await bulkRights(actor), type!, ACCESS_LEVEL.EDITOR);
   const o = parseOrder(body, type!, undefined, true);
-  const priced = await priceLines(o.type, o.lines, o.brand || undefined);
+  const priced = await priceLines(o.type, o.receivers, o.brand || undefined);
   const id = await AppDataSource.transaction(async (m) => {
-    const where = await whereTo(m, o, actor.id);
+    const { places, cols } = await placeAll(m, o, actor.id);
     const res = await m.getRepository(BulkOrder).insert({
       poNumber: `${BULK_ARCHIVE.DRAFT_PREFIX}${randomUUID().slice(0, 20)}`, orderType: o.type, status: BULK_ORDER_STATUS.DRAFT,
-      ...orderCols(o), ...where, ...institutionCols(o.institution, where), ...totalsOf(priced), createdBy: actor.id, paymentStatus: null,
+      ...orderCols(o), ...cols, ...institutionCols(o.institution, places[0]), ...totalsOf(priced), createdBy: actor.id, paymentStatus: null,
     });
     const orderId = String(res.identifiers[0].id);
     await m.getRepository(BulkOrder).update({ id: orderId }, { poNumber: `${BULK_ARCHIVE.DRAFT_PREFIX}${orderId}` });
     if (priced.length) await m.getRepository(BulkOrderLine).insert(priced.map((l) => ({ ...l, orderId })));
+    await writeReceivers(m, orderId, o, places, priced);
     await addEvent(m, orderId, BULK_EVENT.CREATED, actor.id, null, { draft: true });
     return orderId;
   });
@@ -707,13 +888,14 @@ const createDraft = async (actor: BulkActor, body: Record<string, unknown>) => {
 /** A draft saved again: everything replaced, no history row (nothing was sent yet). */
 const saveDraft = async (actor: BulkActor, id: string, type: BulkOrderType, body: Record<string, unknown>) => {
   const o = parseOrder(body, type, undefined, true);
-  const priced = await priceLines(type, o.lines, o.brand || undefined);
+  const priced = await priceLines(type, o.receivers, o.brand || undefined);
   await AppDataSource.transaction(async (m) => {
     await lockEditable(m, id, actor.id);
-    const where = await whereTo(m, o, actor.id);
+    const { places, cols } = await placeAll(m, o, actor.id);
     await m.getRepository(BulkOrderLine).delete({ orderId: id });
     if (priced.length) await m.getRepository(BulkOrderLine).insert(priced.map((l) => ({ ...l, orderId: id })));
-    await m.getRepository(BulkOrder).update({ id }, { ...orderCols(o), ...where, ...institutionCols(o.institution, where), ...totalsOf(priced), updatedAt: new Date() });
+    await writeReceivers(m, id, o, places, priced);
+    await m.getRepository(BulkOrder).update({ id }, { ...orderCols(o), ...cols, ...institutionCols(o.institution, places[0]), ...totalsOf(priced), updatedAt: new Date() });
   });
   return getBulkOrder(actor, id);
 };
@@ -721,18 +903,19 @@ const saveDraft = async (actor: BulkActor, id: string, type: BulkOrderType, body
 /** Submit a draft: every check of a new order, the approval rules, its real PO number, the payment check of today. */
 const submitDraft = async (actor: BulkActor, id: string, type: BulkOrderType, body: Record<string, unknown>) => {
   const o = parseOrder(body, type);
-  const priced = await priceLines(type, o.lines, o.brand);
+  const priced = await priceLines(type, o.receivers, o.brand);
   const setting = await settingOf(type);
   const approval = approvalNeed(setting, type, totalsOf(priced).totalUnits, o.mode);
   await withDeadlockRetry(() => AppDataSource.transaction(async (m) => {
     await lockEditable(m, id, actor.id);
-    const where = await whereTo(m, o, actor.id);
+    const { places, cols } = await placeAll(m, o, actor.id);
     const poNumber = await takeBulkPoNumber(m, type);
     await m.getRepository(BulkOrderLine).delete({ orderId: id });
     await m.getRepository(BulkOrderLine).insert(priced.map((l) => ({ ...l, orderId: id })));
+    await writeReceivers(m, id, o, places, priced);
     await m.getRepository(BulkOrder).update({ id }, {
       poNumber, status: approval.needed ? BULK_ORDER_STATUS.PENDING_APPROVAL : BULK_ORDER_STATUS.SUBMITTED, createdAt: new Date(), updatedAt: new Date(),
-      ...orderCols(o), ...where, ...institutionCols(o.institution, where), ...totalsOf(priced),
+      ...orderCols(o), ...cols, ...institutionCols(o.institution, places[0]), ...totalsOf(priced),
       paymentStatus: setting?.paymentCheck === true ? BULK_PAYMENT_STATUS.AWAITING_PROOF : null,
     });
     await addEvent(m, id, BULK_EVENT.SUBMITTED, actor.id, o.note, { approval: approval.why, poNumber });
@@ -847,10 +1030,21 @@ export const approveBulkOrder = async (actor: BulkActor, id: string, body: Recor
       if (why) c.add(`line ${n.line.lineNo}`, why);
     });
     c.fail();
+    // v2 piece 2: every receiver keeps at least one line (else reject, or the requester edits the order)
+    for (const n of [...new Set(lines.map((l) => l.receiverNo))]) {
+      if (!kept.some((l) => l.receiverNo === n)) c.add(F.REMOVE_LINES, `Receiver ${n} would have no SKUs left: keep one of its lines or reject the order`);
+    }
+    c.fail();
     for (const l of lines.filter((x) => d.remove.has(x.lineNo))) changed.push({ lineNo: l.lineNo, pepCode: l.pepCode, removed: true });
     if (d.remove.size) await m.getRepository(BulkOrderLine).delete({ orderId: id, lineNo: In([...d.remove]) });
     for (const n of next) {
       await m.getRepository(BulkOrderLine).update({ id: n.line.id }, { qty: n.qty, discountPct: n.discountPct, mrp: n.mrp, unitPrice: n.unitPrice, lineTotal: n.lineTotal });
+    }
+    // v2 piece 2: each receiver's units as approved (one UPDATE per receiver whose units moved)
+    const receivers = await m.getRepository(BulkOrderReceiver).find({ select: { id: true, receiverNo: true, totalUnits: true }, where: { orderId: id } });
+    for (const r of receivers) {
+      const units = next.filter((n) => n.line.receiverNo === r.receiverNo).reduce((s, n) => s + n.qty, 0);
+      if (units !== r.totalUnits) await m.getRepository(BulkOrderReceiver).update({ id: r.id }, { totalUnits: units });
     }
     const now = new Date();
     await m.getRepository(BulkOrder).update({ id }, {
@@ -891,6 +1085,8 @@ const orderOut = (o: BulkOrder, names: Map<number, string>, editCount = 0) => ({
   id: String(o.id), poNumber: o.poNumber, type: o.orderType, status: o.status,
   /** v2 1e: how many times the requester changed it after submitting ("Edited" tag for approvers). */
   editCount,
+  /** v2 piece 2: receivers of the order (the fields below = receiver 1; all of them in `receivers` on one order). */
+  receiverCount: o.receiverCount,
   orderedBy: o.orderedBy, receiverName: o.receiverName, receiverPhone: o.receiverPhone,
   location: { id: o.locationId ? String(o.locationId) : null, label: o.locationLabel, address: { line: o.addressLine, city: o.city, state: o.state, pincode: o.pincode } },
   neededBy: o.neededBy, mode: o.deliveryMode, priority: o.priority, note: o.note, fastTrackRemarks: o.fastTrackRemarks, purpose: o.purpose, brand: o.brand,
@@ -968,7 +1164,9 @@ const pageOfOrders = async (types: BulkOrderType[], l: ListQuery, me: number | n
   if (l.payment) qb.andWhere('o.paymentStatus = :payment', { payment: l.payment });
   if (l.search) {
     const like = `%${l.search.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
-    qb.andWhere('(o.poNumber LIKE :like OR o.orderedBy LIKE :like OR o.receiverName LIKE :like OR o.city LIKE :like OR o.locationLabel LIKE :like)', { like });
+    // v2 piece 2: any receiver's name / city too
+    qb.andWhere(`(o.poNumber LIKE :like OR o.orderedBy LIKE :like OR o.receiverName LIKE :like OR o.city LIKE :like OR o.locationLabel LIKE :like
+      OR o.id IN (SELECT r.order_id FROM ${TABLES.BULK_ORDER_RECEIVERS} r WHERE r.receiver_name LIKE :like OR r.city LIKE :like))`, { like });
   }
   const [found, total] = await qb.orderBy('o.createdAt', 'DESC').addOrderBy('o.id', 'DESC').skip((l.page - 1) * l.size).take(l.size).getManyAndCount();
   const [names, edits] = await Promise.all([
@@ -996,10 +1194,11 @@ export const listBulkOrders = async (actor: BulkActor, q: Record<string, unknown
 /** One order with lines + timeline (no access check: the callers check). */
 export const orderFull = async (o: BulkOrder) => {
   const id = String(o.id);
-  const [lines, events, docs] = await Promise.all([
+  const [lines, events, docs, receivers] = await Promise.all([
     AppDataSource.getRepository(BulkOrderLine).find({ where: { orderId: id }, order: { lineNo: 'ASC' } }),
     AppDataSource.getRepository(BulkOrderEvent).find({ where: { orderId: id }, order: { id: 'ASC' } }),
     AppDataSource.getRepository(BulkOrderDocument).find({ where: { orderId: id }, order: { id: 'DESC' } }),
+    AppDataSource.getRepository(BulkOrderReceiver).find({ where: { orderId: id }, order: { receiverNo: 'ASC' } }),
   ]);
   const names = await userNames([o.createdBy, o.decidedBy ?? 0, o.paymentBy ?? 0, o.processedBy ?? 0, ...events.map((e) => e.byUserId), ...docs.map((d) => d.uploadedBy)]);
   return {
@@ -1012,8 +1211,18 @@ export const orderFull = async (o: BulkOrder) => {
       by: { id: d.uploadedBy, name: names.get(d.uploadedBy) ?? null }, at: d.createdAt, replacedAt: d.replacedAt,
     })),
     events: events.map((e) => ({ action: e.action, by: { id: e.byUserId, name: names.get(e.byUserId) ?? null }, at: e.createdAt, note: e.note, changes: e.changes })),
+    // v2 piece 2: every receiver (1 on most orders) with its units; its sale order + tracking once processed (piece 2b)
+    receivers: receivers.map((r) => ({
+      receiverNo: r.receiverNo, receiverName: r.receiverName, receiverPhone: r.receiverPhone,
+      location: { id: r.locationId ? String(r.locationId) : null, label: r.locationLabel, address: { line: r.addressLine, city: r.city, state: r.state, pincode: r.pincode } },
+      totalUnits: r.totalUnits, status: r.receiverStatus, saleOrderCode: r.saleOrderCode,
+      tracking: r.awb || r.dispatchedAt || r.courierStatus ? {
+        awb: r.awb, courier: r.courier, courierStatus: r.courierStatus, link: r.trackingLink, dispatchedAt: r.dispatchedAt,
+        deliveredAt: r.deliveredAt, invoiceCode: r.invoiceCode, checkedAt: r.trackingCheckedAt,
+      } : null,
+    })),
     lines: lines.map((l) => ({
-      lineNo: l.lineNo, pepCode: l.pepCode, name: l.productName, mrp: l.mrp, qty: l.qty, discountPct: l.discountPct,
+      lineNo: l.lineNo, receiverNo: l.receiverNo, pepCode: l.pepCode, name: l.productName, mrp: l.mrp, qty: l.qty, discountPct: l.discountPct,
       unitPrice: l.unitPrice, lineTotal: l.lineTotal, requestedQty: l.requestedQty, requestedDiscountPct: l.requestedDiscountPct,
     })),
   };

@@ -282,9 +282,14 @@ export const BULK_ORDERS = {
     SETTING: '/settings/:type',
     /** v2 piece 3: the requester nudges our team. */
     REMIND: '/:id/remind',
+    /** v2 piece 2: checks the rows of an uploaded receivers file (nothing saved). Before '/:id' in the router. */
+    RECEIVERS_CHECK: '/receivers/check',
   },
-  /** Lines per order. */
+  /** Lines per order (per receiver on a several-receivers order). */
   LINES_MAX: 200,
+  /** v2 piece 2 (2026-11-24, user 'go'): receivers per Marketing / Head office order, and SKU lines over all of them (= rows of an upload). */
+  RECEIVERS_MAX: 50,
+  RECEIVER_LINES_MAX: 500,
   /** Units per line. */
   QTY_MAX: 1_000_000,
   /** Discount %: 0 up to BELOW this (2 decimals). v2 (2026-11-23): 100% is not allowed (a free line is not an order). */
@@ -410,6 +415,12 @@ export const BULK_INSTITUTION = {
 export const BULK_BODY = {
   TYPE: 'type',
   ORDERED_BY: 'orderedBy',
+  /** v2 piece 2: several receivers (Marketing / Head office), each { receiverName, receiverPhone, locationId | address, saveLocationAs, lines }. */
+  RECEIVERS: 'receivers',
+  RECEIVER_NO: 'receiverNo',
+  /** v2 piece 2: rows of an uploaded receivers file (receivers/check). */
+  ROWS: 'rows',
+  ROW: 'row',
   RECEIVER_NAME: 'receiverName',
   RECEIVER_PHONE: 'receiverPhone',
   LOCATION_ID: 'locationId',

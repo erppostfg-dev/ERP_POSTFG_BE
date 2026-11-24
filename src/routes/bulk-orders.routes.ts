@@ -7,6 +7,7 @@ import {
   approveBulkOrder,
   BulkActor,
   cancelBulkOrder,
+  checkBulkReceiverRows,
   createBulkOrder,
   getBulkOrder,
   listBulkLocations,
@@ -76,6 +77,8 @@ router.get(BULK_ORDERS.ROUTES.SKUS, requireAuth, send(async (req) => {
   await needAnyBulk(actor(req));
   return searchBulkSkus(req.query.q, req.query.brand);
 }));
+// v2 piece 2: an uploaded receivers file checked (nothing saved); before the /:id routes
+router.post(BULK_ORDERS.ROUTES.RECEIVERS_CHECK, requireAuth, send((req) => checkBulkReceiverRows(actor(req), body(req))));
 router.get(BULK_ORDERS.ROUTES.LOCATIONS, requireAuth, send((req) => listBulkLocations(actor(req), req.query.type)));
 router.post(BULK_ORDERS.ROUTES.LOCATIONS, requireAuth, send((req) => addBulkLocation(actor(req), body(req)), 201));
 // before '/:id', which would take "settings" as an id

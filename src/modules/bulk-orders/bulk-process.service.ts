@@ -233,6 +233,8 @@ export const processBulkOrder = async (actor: ProcessActor, id: string, body: Re
   const first = await loadOrder(id);
   if (!BULK_SALE.TYPES.includes(first.orderType as BulkOrderType)) throw appError(ERROR_CODES.BULK_PROCESS_TYPE_LATER, first.orderType);
   if (!BULK_PROCESSABLE_STATUSES.includes(first.status)) throw appError(ERROR_CODES.BULK_ORDER_NOT_APPROVED, first.poNumber, first.status);
+  // v2 piece 2a: one sale order per receiver comes with piece 2b
+  if (first.receiverCount > 1) throw appError(ERROR_CODES.BULK_PROCESS_RECEIVERS_LATER, first.poNumber, first.receiverCount);
   // the warehouse exactly as the facility master spells it (case matters: main vs child warehouse)
   const facility = await AppDataSource.getRepository(MasterFacility).findOne({ select: { id: true, code: true, isActive: true }, where: { code: facilityCode } });
   if (!facility || !facility.isActive) {

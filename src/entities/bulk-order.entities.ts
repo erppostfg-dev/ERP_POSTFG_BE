@@ -216,6 +216,10 @@ export class BulkOrder {
   /** Sale orders made so far (a send back + process again = 2, ...): S3 folder sale-order-<n>, external id. */
   @Column({ name: 'sale_order_count', type: 'int', default: 0 })
   saleOrderCount: number;
+
+  /** v2 piece 2 (2026-11-24, migration BulkOrderReceivers): receivers of the order (bulk_order_receivers); receiver 1 is also on this row. */
+  @Column({ name: 'receiver_count', type: 'int', default: 1 })
+  receiverCount: number;
 }
 
 /**
@@ -224,7 +228,7 @@ export class BulkOrder {
  */
 @Entity({ name: TABLES.BULK_ORDER_LINES })
 @Index('uq_bulk_order_lines_line', ['orderId', 'lineNo'], { unique: true })
-@Index('uq_bulk_order_lines_sku', ['orderId', 'pepCode'], { unique: true })
+@Index('uq_bulk_order_lines_sku', ['orderId', 'receiverNo', 'pepCode'], { unique: true })
 export class BulkOrderLine {
   @PrimaryGeneratedColumn({ name: 'id', type: 'bigint' })
   id: string;
@@ -232,9 +236,13 @@ export class BulkOrderLine {
   @Column({ name: 'order_id', type: 'bigint' })
   orderId: string;
 
-  /** 1, 2, ... in the order they were added. */
+  /** 1, 2, ... in the order they were added (numbered across all receivers of the order). */
   @Column({ name: 'line_no', type: 'int' })
   lineNo: number;
+
+  /** v2 piece 2: the receiver (bulk_order_receivers.receiver_no) the line goes to; 1 on a one-receiver order. */
+  @Column({ name: 'receiver_no', type: 'int', default: 1 })
+  receiverNo: number;
 
   @Column({ name: 'pep_code', type: 'varchar', length: 100 })
   pepCode: string;
@@ -263,6 +271,109 @@ export class BulkOrderLine {
 
   @Column({ name: 'line_total', type: 'decimal', precision: 14, scale: 2, transformer: decimal })
   lineTotal: number;
+}
+
+/**
+ * v2 piece 2 (2026-11-24, migration BulkOrderReceivers): one receiver of a bulk order (Marketing / Head office may have
+ * many; Institutional and older orders one). Each becomes its own Uniware sale order (piece 2b: its sale order + courier
+ * tracking here). The address is COPIED (a saved location may change later). Receiver 1 is also kept on bulk_orders.
+ */
+@Entity({ name: TABLES.BULK_ORDER_RECEIVERS })
+@Index('uq_bulk_order_receivers_no', ['orderId', 'receiverNo'], { unique: true })
+@Index('idx_bulk_order_receivers_po_uid', ['poUid'])
+@Index('idx_bulk_order_receivers_upload', ['uploadId'])
+export class BulkOrderReceiver {
+  @PrimaryGeneratedColumn({ name: 'id', type: 'bigint' })
+  id: string;
+
+  @Column({ name: 'order_id', type: 'bigint' })
+  orderId: string;
+
+  /** 1, 2, ... as on the form. */
+  @Column({ name: 'receiver_no', type: 'int' })
+  receiverNo: number;
+
+  @Column({ name: 'receiver_name', type: 'varchar', length: 150 })
+  receiverName: string;
+
+  /** 10 digits. */
+  @Column({ name: 'receiver_phone', type: 'varchar', length: 20 })
+  receiverPhone: string;
+
+  @Column({ name: 'location_id', type: 'bigint', nullable: true })
+  locationId: string | null;
+
+  @Column({ name: 'location_label', type: 'varchar', length: 100, nullable: true })
+  locationLabel: string | null;
+
+  @Column({ name: 'address_line', type: 'varchar', length: 500 })
+  addressLine: string;
+
+  @Column({ name: 'city', type: 'varchar', length: 100 })
+  city: string;
+
+  @Column({ name: 'state', type: 'varchar', length: 100 })
+  state: string;
+
+  @Column({ name: 'pincode', type: 'varchar', length: 10 })
+  pincode: string;
+
+  @Column({ name: 'total_units', type: 'int', default: 0 })
+  totalUnits: number;
+
+  /** NULL = no sale order yet; then processing / dispatched / delivered (BULK_ORDER_STATUS values). */
+  @Column({ name: 'receiver_status', type: 'varchar', length: 30, nullable: true })
+  receiverStatus: string | null;
+
+  // ---- its sale order (piece 2b) ----
+  @Column({ name: 'customer_code', type: 'varchar', length: 100, nullable: true })
+  customerCode: string | null;
+
+  @Column({ name: 'customer_id', type: 'bigint', nullable: true })
+  customerId: string | null;
+
+  @Column({ name: 'processed_by', type: 'int', nullable: true })
+  processedBy: number | null;
+
+  @Column({ name: 'processed_at', type: 'datetime', precision: 6, nullable: true })
+  processedAt: Date | null;
+
+  @Column({ name: 'upload_id', type: 'bigint', nullable: true })
+  uploadId: string | null;
+
+  @Column({ name: 'po_uid', type: 'bigint', nullable: true })
+  poUid: string | null;
+
+  @Column({ name: 'sale_order_code', type: 'varchar', length: 30, nullable: true })
+  saleOrderCode: string | null;
+
+  @Column({ name: 'sale_order_count', type: 'int', default: 0 })
+  saleOrderCount: number;
+
+  // ---- courier tracking from Uniware (piece 2b; as on bulk_orders) ----
+  @Column({ name: 'awb', type: 'varchar', length: 255, nullable: true })
+  awb: string | null;
+
+  @Column({ name: 'courier', type: 'varchar', length: 255, nullable: true })
+  courier: string | null;
+
+  @Column({ name: 'courier_status', type: 'varchar', length: 255, nullable: true })
+  courierStatus: string | null;
+
+  @Column({ name: 'tracking_link', type: 'varchar', length: 1000, nullable: true })
+  trackingLink: string | null;
+
+  @Column({ name: 'dispatched_at', type: 'datetime', precision: 6, nullable: true })
+  dispatchedAt: Date | null;
+
+  @Column({ name: 'delivered_at', type: 'datetime', precision: 6, nullable: true })
+  deliveredAt: Date | null;
+
+  @Column({ name: 'invoice_code', type: 'varchar', length: 255, nullable: true })
+  invoiceCode: string | null;
+
+  @Column({ name: 'tracking_checked_at', type: 'datetime', precision: 6, nullable: true })
+  trackingCheckedAt: Date | null;
 }
 
 /** A delivery address saved from the order form, per type (Marketing people never see Institutional addresses). */

@@ -3,6 +3,7 @@ import { BulkCustomerAddresses1795300000000 } from '../../src/migrations/1795300
 import { BulkOrderFields1795800000000 } from '../../src/migrations/1795800000000-BulkOrderFields';
 import { loadBulkSkus } from '../../src/modules/bulk-orders/bulk-skus-load';
 import { BulkOrderBrand1795900000000 } from '../../src/migrations/1795900000000-BulkOrderBrand';
+import { BulkOrderReceivers1796200000000 } from '../../src/migrations/1796200000000-BulkOrderReceivers';
 import { MARKETING_UNIT_PRICE } from '../../src/constants';
 import { runPoSyncPass } from '../../src/modules/po-uniware-sync/sync.service';
 import { api, loginAs, type TestLogin } from '../helpers/auth';
@@ -15,6 +16,7 @@ import { covers } from '../helpers/routes';
  * SKU search with MRP, price = MRP less discount % from OUR master (never the request's), unique PO numbers per type
  * and year (also under parallel creates), saved locations per type, validation, and nothing of the PO chain touched.
  */
+covers(['POST /bulk-orders/receivers/check']);
 covers(['GET /bulk-orders/settings/notifications', 'PUT /bulk-orders/settings/notifications', 'POST /bulk-orders/:id/remind']);
 covers(['GET /bulk-orders', 'POST /bulk-orders', 'GET /bulk-orders/skus', 'GET /bulk-orders/locations', 'POST /bulk-orders/locations', 'GET /bulk-orders/:id',
   'PUT /bulk-orders/:id', 'POST /bulk-orders/:id/cancel', 'POST /bulk-orders/:id/approve', 'POST /bulk-orders/:id/reject',
@@ -153,8 +155,8 @@ describe('bulk orders: create', () => {
       location: { id: null, label: null, address: ADDRESS }, createdBy: { id: inst.userId },
     });
     expect(o.lines).toEqual([
-      { lineNo: 1, pepCode: 'SKU_A', name: 'Coffee Body Scrub 100g', mrp: 100, qty: 10, discountPct: 30, unitPrice: 70, lineTotal: 700, requestedQty: 10, requestedDiscountPct: 30 },
-      { lineNo: 2, pepCode: 'SKU_B', name: 'Coffee Face Wash 100ml', mrp: 349, qty: 3, discountPct: 12.5, unitPrice: 305.38, lineTotal: 916.14, requestedQty: 3, requestedDiscountPct: 12.5 },
+      { lineNo: 1, receiverNo: 1, pepCode: 'SKU_A', name: 'Coffee Body Scrub 100g', mrp: 100, qty: 10, discountPct: 30, unitPrice: 70, lineTotal: 700, requestedQty: 10, requestedDiscountPct: 30 },
+      { lineNo: 2, receiverNo: 1, pepCode: 'SKU_B', name: 'Coffee Face Wash 100ml', mrp: 349, qty: 3, discountPct: 12.5, unitPrice: 305.38, lineTotal: 916.14, requestedQty: 3, requestedDiscountPct: 12.5 },
     ]);
     expect((await api().get(`${V}/${o.id}`).set('Cookie', inst.cookie).expect(200)).body.data).toEqual(o);
   });
@@ -1043,6 +1045,130 @@ describe('bulk orders v2: one brand per order, from the SKU master', () => {
       await qr.release();
     }
     expect(await rows('SELECT id, brand FROM bulk_orders ORDER BY id')).toEqual([{ id: one.id, brand: 'mCaffeine' }, { id: two.id, brand: null }]);
+  });
+});
+
+/*
+ * Bulk Orders Portal v2 piece 2a (2026-11-24, user "go"): a Marketing / Head office order goes to several receivers,
+ * each its own address + SKU lines (bulk_order_receivers; receiver 1 also on the order row); an uploaded receivers file
+ * is checked row by row (nothing saved). One sale order per receiver = piece 2b (until then processing refuses).
+ */
+describe('bulk orders v2: several receivers per order', () => {
+  const PUNE = { line: '4 Hill Rd, Baner', city: 'Pune', state: 'Maharashtra', pincode: '411045' };
+  const ravi = (lines: unknown[] = [{ pepCode: 'SKU_A', qty: 10 }, { pepCode: 'SKU_B', qty: 3 }]) => ({ receiverName: 'Ravi Kumar', receiverPhone: '+91 98765-43210', address: ADDRESS, lines });
+  const meera = (lines: unknown[] = [{ pepCode: 'SKU_A', qty: 5 }]) => ({ receiverName: 'Meera Shah', receiverPhone: '9988776655', address: PUNE, lines });
+  const meeraSaved = (lines?: unknown[]) => ({ ...meera(lines), saveLocationAs: 'Pune office' });
+  const many = (receivers: unknown[], over: Record<string, unknown> = {}) => {
+    const { receiverName: _n, receiverPhone: _p, address: _a, lines: _l, ...rest } = order(over);
+    return { ...rest, receivers };
+  };
+  beforeEach(async () => {
+    await rows("UPDATE bulk_type_settings SET approval_over_units = CASE order_type WHEN 'institutional' THEN NULL ELSE 100 END");
+  });
+  type Full = { id: string; poNumber: string; status: string; receiverCount: number; receivers: { receiverNo: number; receiverName: string; totalUnits: number }[]; lines: { lineNo: number; receiverNo: number; pepCode: string; qty: number }[]; events: { action: string; changes: Record<string, unknown> }[] };
+
+  it('create: each receiver its address + lines (same SKU on two receivers is fine), lines numbered across them, receiver 1 on the order, search finds any receiver', async () => {
+    const o = (await create(mkt, many([ravi(), meeraSaved()])).expect(201)).body.data as Full & Record<string, unknown>;
+    expect(o).toMatchObject({ status: 'submitted', receiverCount: 2, receiverName: 'Ravi Kumar', receiverPhone: '9876543210', lineCount: 3, totalUnits: 18 });
+    expect(o.receivers).toEqual([
+      { receiverNo: 1, receiverName: 'Ravi Kumar', receiverPhone: '9876543210', location: { id: null, label: null, address: ADDRESS }, totalUnits: 13, status: null, saleOrderCode: null, tracking: null },
+      { receiverNo: 2, receiverName: 'Meera Shah', receiverPhone: '9988776655', location: { id: expect.any(String), label: 'Pune office', address: PUNE }, totalUnits: 5, status: null, saleOrderCode: null, tracking: null },
+    ]);
+    expect(o.lines.map((l) => [l.lineNo, l.receiverNo, l.pepCode, l.qty])).toEqual([[1, 1, 'SKU_A', 10], [2, 1, 'SKU_B', 3], [3, 2, 'SKU_A', 5]]);
+    expect(await rows('SELECT receiver_no n, total_units u FROM bulk_order_receivers WHERE order_id = ? ORDER BY receiver_no', [o.id])).toEqual([{ n: 1, u: 13 }, { n: 2, u: 5 }]);
+    const found = (await api().get(V).query({ q: 'Meera' }).set('Cookie', mkt.cookie).expect(200)).body.data as { id: string; receiverCount: number }[];
+    expect(found.map((x) => [x.id, x.receiverCount])).toEqual([[o.id, 2]]);
+    // the approval rule counts every receiver's units (100 for Marketing): 60 + 50 = 110
+    const big = (await create(mkt, many([ravi([{ pepCode: 'SKU_A', qty: 60 }]), meera([{ pepCode: 'SKU_A', qty: 50 }])])).expect(201)).body.data;
+    expect(big.status).toBe('pending_approval');
+    // one receiver the old way: one receiver row too
+    const one = (await create(mkt, order()).expect(201)).body.data as Full;
+    expect([one.receiverCount, one.receivers.map((r) => r.receiverName)]).toEqual([1, ['Ravi Kumar']]);
+  });
+
+  it('checks per receiver (fields named receivers[i]...), Marketing / Head office only, at most 50, save-as names not twice', async () => {
+    expect(fields(await create(inst, many([ravi()], { type: 'institutional' })).expect(400))).toEqual(['receivers']);
+    expect(fields(await create(mkt, many([])).expect(400))).toEqual(['receivers']);
+    expect(fields(await create(mkt, many(Array.from({ length: 51 }, () => ravi()))).expect(400))).toEqual(['receivers']);
+    const bad = { receiverName: 'X', receiverPhone: '123', address: { ...PUNE, pincode: '0123' }, lines: [{ pepCode: 'SKU_A', qty: 0 }] };
+    expect(fields(await create(mkt, many([ravi(), bad])).expect(400)).sort()).toEqual(['receivers[1].address.pincode', 'receivers[1].lines[0].qty', 'receivers[1].receiverPhone']);
+    expect(fields(await create(mkt, many([meeraSaved(), meeraSaved()])).expect(400))).toEqual(['receivers[1].saveLocationAs']);
+    const off = await create(mkt, many([ravi(), meera([{ pepCode: 'NOPE', qty: 1 }])])).expect(400);
+    expect(fields(off)).toEqual(['receivers[1].lines[0].pepCode']);
+    expect(await count('bulk_orders')).toBe(0);
+  });
+
+  it('edit: receivers added / changed / removed + line changes per receiver in the history; approve keeps a line per receiver and updates their units; processing waits for 2b', async () => {
+    const o = (await create(mkt, many([ravi(), meera()])).expect(201)).body.data as Full;
+    const changed = (await edit(mkt, o.id, many([ravi([{ pepCode: 'SKU_A', qty: 12 }, { pepCode: 'SKU_B', qty: 3 }]), { ...meera(), receiverName: 'Meera S', saveLocationAs: undefined }, { ...meera([{ pepCode: 'SKU_B', qty: 2 }]), receiverName: 'Anil', saveLocationAs: undefined }]), 'Third person added').expect(200)).body.data as Full;
+    expect(changed.receivers.map((r) => [r.receiverNo, r.receiverName, r.totalUnits])).toEqual([[1, 'Ravi Kumar', 15], [2, 'Meera S', 5], [3, 'Anil', 2]]);
+    const ev = changed.events.find((e) => e.action === 'edited')!.changes;
+    expect(ev.receiverChanges).toEqual([
+      { receiverNo: 2, change: 'changed', name: 'Meera S', fields: [{ field: 'receiverName', from: 'Meera Shah', to: 'Meera S' }] },
+      { receiverNo: 3, change: 'added', name: 'Anil' },
+    ]);
+    expect(ev.lineChanges).toEqual([{ receiverNo: 1, pepCode: 'SKU_A', change: 'changed', qty: [10, 12] }, { receiverNo: 3, pepCode: 'SKU_B', change: 'added', qty: [0, 2] }]);
+    expect(ev.linesAfter).toEqual(['R1 SKU_A x12 @0%', 'R1 SKU_B x3 @0%', 'R2 SKU_A x5 @0%', 'R3 SKU_B x2 @0%']);
+    const fewer = (await edit(mkt, o.id, many([ravi()]), 'Only Ravi').expect(200)).body.data as Full;
+    expect([fewer.receiverCount, (fewer.events.filter((e) => e.action === 'edited')[1].changes.receiverChanges as { change: string }[]).map((x) => x.change)]).toEqual([1, ['removed', 'removed']]);
+
+    // approve: big order (pending), receiver 2's only line cannot go; a qty change moves its receiver's units
+    const big = (await create(mkt, many([ravi([{ pepCode: 'SKU_A', qty: 60 }]), meera([{ pepCode: 'SKU_B', qty: 50 }])])).expect(201)).body.data as Full;
+    const r2line = big.lines.find((l) => l.receiverNo === 2)!.lineNo;
+    expect(fields(await api().post(`${V}/${big.id}/approve`).set('Cookie', approver.cookie).send({ removeLines: [r2line] }).expect(400))).toEqual(['removeLines']);
+    const ok = (await api().post(`${V}/${big.id}/approve`).set('Cookie', approver.cookie).send({ lines: [{ lineNo: r2line, qty: 40 }] }).expect(200)).body.data as Full;
+    expect(ok.receivers.map((r) => r.totalUnits)).toEqual([60, 40]);
+    const res = await api().post(`/api/v1/po-review/bulk-orders/${big.id}/process`).set('Cookie', opsExec.cookie).send({ facilityCode: 'X', uniwareChannel: 'JIVA', customerCode: 'C1' }).expect(409);
+    expect(res.body.error.code).toBe('BULK_PROCESS_RECEIVERS_LATER');
+  });
+
+  it('drafts keep their receivers; submit checks them all', async () => {
+    const d = (await create(mkt, { ...many([ravi(), { receiverName: 'Half done', lines: [] }]), draft: true }).expect(201)).body.data as Full;
+    expect([d.status, d.receiverCount, d.receivers.map((r) => r.receiverName)]).toEqual(['draft', 2, ['Ravi Kumar', 'Half done']]);
+    expect(fields(await api().put(`${V}/${d.id}`).set('Cookie', mkt.cookie).send(many([ravi(), { receiverName: 'Half done', lines: [] }])).expect(400)).sort())
+      .toEqual(['receivers[1].address', 'receivers[1].address.city', 'receivers[1].address.line', 'receivers[1].address.pincode', 'receivers[1].address.state', 'receivers[1].lines', 'receivers[1].receiverPhone']);
+    const sent = (await api().put(`${V}/${d.id}`).set('Cookie', mkt.cookie).send(many([ravi(), meera()])).expect(200)).body.data as Full;
+    expect([sent.status, sent.poNumber, sent.receivers.length]).toEqual(['submitted', `MKT-${YEAR}-0001`, 2]);
+  });
+
+  it('receivers file check: rows grouped per receiver, each bad row with its reason, nothing saved; Marketing / Head office editors only', async () => {
+    const R = `${V}/receivers/check`;
+    const row = (over: Record<string, unknown>) => ({ receiverName: 'Ravi Kumar', receiverPhone: '+91 98765 43210', line: ADDRESS.line, city: 'Mumbai', state: 'Maharashtra', pincode: 400069, pepCode: 'SKU_A', qty: 10, ...over });
+    const rowsIn = [
+      row({ row: 2 }), row({ row: 3, pepCode: 'sku_b', qty: '3' }),
+      row({ row: 4, receiverName: 'Meera Shah', receiverPhone: 9988776655, line: PUNE.line, city: 'Pune', pincode: '411045' }),
+      row({ row: 5, receiverPhone: '123', pepCode: 'NOPE', qty: 0 }),
+      row({ row: 6, qty: 4 }),
+    ];
+    const out = (await api().post(R).set('Cookie', mkt.cookie).send({ type: 'marketing', brand: 'mCaffeine', rows: rowsIn }).expect(200)).body.data;
+    expect(out.rowCount).toBe(5);
+    expect(out.receivers).toEqual([
+      { receiverName: 'Ravi Kumar', receiverPhone: '9876543210', address: ADDRESS, rows: [2, 3], lines: [
+        { pepCode: 'SKU_A', name: 'Coffee Body Scrub 100g', mrp: 100, qty: 10 }, { pepCode: 'SKU_B', name: 'Coffee Face Wash 100ml', mrp: 349, qty: 3 }] },
+      { receiverName: 'Meera Shah', receiverPhone: '9988776655', address: PUNE, rows: [4], lines: [{ pepCode: 'SKU_A', name: 'Coffee Body Scrub 100g', mrp: 100, qty: 10 }] },
+    ]);
+    expect((out.errors as { row: number; field: string }[]).map((e) => [e.row, e.field])).toEqual([[5, 'receiverPhone'], [5, 'pepCode'], [5, 'qty'], [6, 'pepCode']]);
+    expect(out.errors[3].message).toMatch(/already on another row/);
+    expect(fields(await api().post(R).set('Cookie', inst.cookie).send({ type: 'institutional', brand: 'mCaffeine', rows: rowsIn }).expect(400))).toEqual(['type']);
+    await api().post(R).set('Cookie', inst.cookie).send({ type: 'marketing', brand: 'mCaffeine', rows: rowsIn }).expect(403);
+    expect(fields(await api().post(R).set('Cookie', mkt.cookie).send({ type: 'marketing', brand: 'mCaffeine', rows: [] }).expect(400))).toEqual(['rows']);
+    expect(await count('bulk_orders')).toBe(0);
+  });
+
+  it('migration BulkOrderReceivers: every existing order gets its receiver 1 (down + up)', async () => {
+    const a = (await create(mkt, order()).expect(201)).body.data as Full;
+    const b = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data as Full;
+    const before = await rows('SELECT order_id, receiver_no, receiver_name, receiver_phone, address_line, pincode, total_units FROM bulk_order_receivers ORDER BY order_id');
+    const qr = (await db()).createQueryRunner();
+    try {
+      await new BulkOrderReceivers1796200000000().down(qr);
+      await new BulkOrderReceivers1796200000000().up(qr);
+    } finally {
+      await qr.release();
+    }
+    expect(await rows('SELECT order_id, receiver_no, receiver_name, receiver_phone, address_line, pincode, total_units FROM bulk_order_receivers ORDER BY order_id')).toEqual(before);
+    expect(before.map((r) => (r as { order_id: string }).order_id).map(String)).toEqual([a.id, b.id]);
+    expect(await rows('SELECT DISTINCT receiver_no n FROM bulk_order_lines')).toEqual([{ n: 1 }]);
   });
 });
 
