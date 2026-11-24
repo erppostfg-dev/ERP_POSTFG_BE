@@ -27,7 +27,7 @@ import {
 import { CACHE_NS } from '../../constants/cache';
 import { LOG_SOURCE } from '../../constants/logging';
 import {
-  BulkCustomer, BulkOrder, BulkOrderLine, DetailsPurchaseOrder, MasterFacility, MasterPurchaseOrder, MasterSku, PoUpload, PoVerification, ShipmentLog,
+  BulkCustomer, BulkOrder, BulkOrderLine, BulkOrderReceiver, DetailsPurchaseOrder, MasterFacility, MasterPurchaseOrder, MasterSku, PoUpload, PoVerification, ShipmentLog,
 } from '../../entities';
 import { appError } from '../../utils/AppError';
 import { log } from '../../utils/logger';
@@ -150,15 +150,25 @@ const atFixedPrice = (type: BulkOrderType, lines: BulkOrderLine[]): BulkOrderLin
   return p === undefined ? lines : lines.map((l) => ({ ...l, discountPct: 0, unitPrice: p, lineTotal: Math.round(p * l.qty * 100) / 100 }));
 };
 
-/** The order as the "PO file" of the sale order (order.json): what was approved, by whom, for whom. */
-const orderJson = (o: BulkOrder, lines: BulkOrderLine[], code: string, f: { facilityCode: string; uniwareChannel: string; customerCode: string }) => ({
+type ReceiverRow = Pick<BulkOrderReceiver, 'receiverNo' | 'receiverName' | 'receiverPhone' | 'addressLine' | 'city' | 'state' | 'pincode' | 'totalUnits'>;
+
+/**
+ * The order as the "PO file" of the sale order (order.json): what was approved, by whom, for whom. Several receivers
+ * (user 2026-11-24: "one sale order, it can have several shipments; do it as we do"): ONE sale order for the whole order,
+ * every receiver listed with its address + SKUs so COPT makes the shipments.
+ */
+const orderJson = (o: BulkOrder, lines: BulkOrderLine[], code: string, f: { facilityCode: string; uniwareChannel: string; customerCode: string }, receivers: ReceiverRow[] = []) => ({
   poNumber: o.poNumber, orderId: String(o.id), type: o.orderType, saleOrderCode: code,
   institution: { name: o.institutionName, gstin: o.gstin, email: o.contactEmail, billingAddress: addressText(o.billingAddressLine, o.billingCity, o.billingState, o.billingPincode) },
   orderedBy: o.orderedBy, receiver: { name: o.receiverName, phone: o.receiverPhone },
   deliveryAddress: addressText(o.addressLine, o.city, o.state, o.pincode), neededBy: o.neededBy, priority: o.priority, note: o.note, fastTrackRemarks: o.fastTrackRemarks, purpose: o.purpose,
   approved: { at: o.decidedAt, note: o.decisionNote }, payment: o.paymentStatus,
   uniware: f,
-  lines: lines.map((l) => ({ lineNo: l.lineNo, pepCode: l.pepCode, name: l.productName, mrp: l.mrp, discountPct: l.discountPct, unitPrice: l.unitPrice, qty: l.qty, lineTotal: l.lineTotal })),
+  lines: lines.map((l) => ({ lineNo: l.lineNo, receiverNo: l.receiverNo, pepCode: l.pepCode, name: l.productName, mrp: l.mrp, discountPct: l.discountPct, unitPrice: l.unitPrice, qty: l.qty, lineTotal: l.lineTotal })),
+  receivers: receivers.map((r) => ({
+    receiverNo: r.receiverNo, name: r.receiverName, phone: r.receiverPhone, address: addressText(r.addressLine, r.city, r.state, r.pincode), units: r.totalUnits,
+    lines: lines.filter((l) => l.receiverNo === r.receiverNo).map((l) => ({ pepCode: l.pepCode, qty: l.qty })),
+  })),
   totals: { lines: o.lineCount, units: o.totalUnits, mrp: o.totalMrp, value: o.totalValue },
 });
 
@@ -192,7 +202,7 @@ const processedJson = (o: BulkOrder, lines: BulkOrderLine[], orderUrl: string, p
     qty: l.qty, free_qty: '', pep_mrp: l.mrp, channel_mrp: l.mrp, landing_rate: l.unitPrice, unit_cost: '', line_total: l.lineTotal,
     margin: '', hsn: '', gst: '', unmapped: { discount_pct: String(l.discountPct) },
   })),
-  unmapped: { bulk_order_id: String(o.id), receiver: `${o.receiverName} ${o.receiverPhone}`, billing_address: addressText(o.billingAddressLine, o.billingCity, o.billingState, o.billingPincode) },
+  unmapped: { bulk_order_id: String(o.id), receiver: `${o.receiverName} ${o.receiverPhone}`, receivers: String(o.receiverCount), billing_address: addressText(o.billingAddressLine, o.billingCity, o.billingState, o.billingPincode) },
   field_sources: {},
   cross_checks: [],
   warnings: [],
@@ -234,8 +244,6 @@ export const processBulkOrder = async (actor: ProcessActor, id: string, body: Re
   const first = await loadOrder(id);
   if (!BULK_SALE.TYPES.includes(first.orderType as BulkOrderType)) throw appError(ERROR_CODES.BULK_PROCESS_TYPE_LATER, first.orderType);
   if (!BULK_PROCESSABLE_STATUSES.includes(first.status)) throw appError(ERROR_CODES.BULK_ORDER_NOT_APPROVED, first.poNumber, first.status);
-  // v2 piece 2a: one sale order per receiver comes with piece 2b
-  if (first.receiverCount > 1) throw appError(ERROR_CODES.BULK_PROCESS_RECEIVERS_LATER, first.poNumber, first.receiverCount);
   // the warehouse exactly as the facility master spells it (case matters: main vs child warehouse)
   // a mother warehouse only (2026-11-24), exactly as the facility master spells it
   const facility = await AppDataSource.getRepository(MasterFacility).findOne({ select: { id: true, code: true }, where: { code: facilityCode, ...MOTHER_WHERE } });
@@ -249,6 +257,7 @@ export const processBulkOrder = async (actor: ProcessActor, id: string, body: Re
   const repriced = lines.filter((l, k) => l.unitPrice !== approvedLines[k].unitPrice || l.discountPct !== approvedLines[k].discountPct);
   const totalValue = Math.round(lines.reduce((s, l) => s + l.lineTotal, 0) * 100) / 100;
   const skus = new Map((await cachedPepSkus()).map((s) => [s.pepCode.toUpperCase(), s]));
+  const receivers = await AppDataSource.getRepository(BulkOrderReceiver).find({ where: { orderId: String(first.id) }, order: { receiverNo: 'ASC' } });
 
   const now = new Date();
   const today = todayIst(now);
@@ -315,6 +324,8 @@ export const processBulkOrder = async (actor: ProcessActor, id: string, body: Re
     });
     const uploadId = String(up.identifiers[0].id);
 
+    // every receiver of the order: the same (one) sale order
+    await m.getRepository(BulkOrderReceiver).update({ orderId: String(o.id) }, { receiverStatus: BULK_ORDER_STATUS.PROCESSING, saleOrderCode: code, uploadId, poUid, customerCode, processedBy: actor.id, processedAt: now, saleOrderCount: n });
     await m.getRepository(BulkOrder).update({ id: String(o.id) }, {
       status: BULK_ORDER_STATUS.PROCESSING, facilityCode: f.facilityCode, uniwareChannel, customerCode, customerId,
       processedBy: actor.id, processedAt: now, uploadId, poUid, saleOrderCode: code, saleOrderCount: n, updatedAt: now, totalValue,
@@ -325,7 +336,7 @@ export const processBulkOrder = async (actor: ProcessActor, id: string, body: Re
     });
 
     // S3 last: a failure here rolls the rows back (an unused file may stay, never a half-made sale order)
-    await writeS3Text(orderUrl, `${JSON.stringify(orderJson(sale, lines, code, f), null, 2)}\n`);
+    await writeS3Text(orderUrl, `${JSON.stringify(orderJson(sale, lines, code, f, receivers), null, 2)}\n`);
     await writeS3Text(processedUrl, `${JSON.stringify(processedJson(sale, lines, orderUrl, poDate, now), null, 2)}\n`);
     await writeS3Text(csvUrl, csvOf(v, poDate, code));
   });
@@ -370,6 +381,7 @@ export const bulkSendBack = async (uploadId: string, remark: string, by: Process
         status: o.decidedBy ? BULK_ORDER_STATUS.APPROVED : BULK_ORDER_STATUS.SUBMITTED, facilityCode: null, uniwareChannel: null, customerCode: null, customerId: null,
         processedBy: null, processedAt: null, uploadId: null, poUid: null, saleOrderCode: null, updatedAt: new Date(),
       });
+      await m.getRepository(BulkOrderReceiver).update({ orderId: String(o.id) }, { receiverStatus: null, saleOrderCode: null, uploadId: null, poUid: null, customerCode: null, processedBy: null, processedAt: null });
       await addEvent(m, String(o.id), BULK_EVENT.SENT_BACK, by.id, remark, { saleOrderCode: so, uploadId: String(u.id) });
     }
   });

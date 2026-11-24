@@ -2,7 +2,7 @@ import { In } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
 import { BULK_EVENT, BULK_ORDER_STATUS, BULK_TRACKING } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
-import { BulkOrder } from '../../entities';
+import { BulkOrder, BulkOrderReceiver } from '../../entities';
 import { log } from '../../utils/logger';
 import type { SoDetail } from '../po-uniware-sync/sale-order';
 import { addEvent } from './bulk-orders.service';
@@ -72,6 +72,8 @@ export const applyBulkTracking = async (o: BulkOrder, so: SoDetail, now = new Da
   }
   await AppDataSource.transaction(async (m) => {
     await m.getRepository(BulkOrder).update({ id: o.id }, { ...fields, trackingCheckedAt: now, ...(nextStatus ? { status: nextStatus, updatedAt: now } : {}) });
+    // one sale order for every receiver: they show the same tracking (Uniware joins several shipments' AWBs)
+    await m.getRepository(BulkOrderReceiver).update({ orderId: String(o.id) }, { ...fields, trackingCheckedAt: now, ...(nextStatus ? { receiverStatus: nextStatus } : {}) });
     if (nextStatus) await addEvent(m, String(o.id), BULK_EVENT.TRACKING, BULK_TRACKING.SYSTEM_USER, null, { status: [o.status, nextStatus], awb: t.awb, courier: t.courier });
   });
   if (nextStatus) log.info(LOG_SOURCE.APP, `[bulk-orders] ${o.poNumber} ${nextStatus} (Uniware: AWB ${t.awb ?? '-'}, ${t.courier ?? '-'})`);

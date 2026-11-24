@@ -1107,7 +1107,7 @@ describe('bulk orders v2: several receivers per order', () => {
     expect(await count('bulk_orders')).toBe(0);
   });
 
-  it('edit: receivers added / changed / removed + line changes per receiver in the history; approve keeps a line per receiver and updates their units; processing waits for 2b', async () => {
+  it('edit: receivers added / changed / removed + line changes per receiver in the history; approve keeps a line per receiver and updates their units; ONE sale order for all receivers', async () => {
     const o = (await create(mkt, many([ravi(), meera()])).expect(201)).body.data as Full;
     const changed = (await edit(mkt, o.id, many([ravi([{ pepCode: 'SKU_A', qty: 12 }, { pepCode: 'SKU_B', qty: 3 }]), { ...meera(), receiverName: 'Meera S', saveLocationAs: undefined }, { ...meera([{ pepCode: 'SKU_B', qty: 2 }]), receiverName: 'Anil', saveLocationAs: undefined }]), 'Third person added').expect(200)).body.data as Full;
     expect(changed.receivers.map((r) => [r.receiverNo, r.receiverName, r.totalUnits])).toEqual([[1, 'Ravi Kumar', 15], [2, 'Meera S', 5], [3, 'Anil', 2]]);
@@ -1127,8 +1127,12 @@ describe('bulk orders v2: several receivers per order', () => {
     expect(fields(await api().post(`${V}/${big.id}/approve`).set('Cookie', approver.cookie).send({ removeLines: [r2line] }).expect(400))).toEqual(['removeLines']);
     const ok = (await api().post(`${V}/${big.id}/approve`).set('Cookie', approver.cookie).send({ lines: [{ lineNo: r2line, qty: 40 }] }).expect(200)).body.data as Full;
     expect(ok.receivers.map((r) => r.totalUnits)).toEqual([60, 40]);
-    const res = await api().post(`/api/v1/po-review/bulk-orders/${big.id}/process`).set('Cookie', opsExec.cookie).send({ facilityCode: 'X', uniwareChannel: 'JIVA', customerCode: 'C1' }).expect(409);
-    expect(res.body.error.code).toBe('BULK_PROCESS_RECEIVERS_LATER');
+    // user 2026-11-24: ONE sale order for the whole order (several shipments in Uniware); every receiver carries it
+    await insert('master_facilities', { code: 'MUM_WAREHOUSE2', name: 'Bhiwandi', entity: 'PEP', state: 'Maharashtra', is_active: 1, intransit_type: 'MWH', source: 'manual', uniware_export: 0 });
+    const done = (await api().post(`/api/v1/po-review/bulk-orders/${big.id}/process`).set('Cookie', opsExec.cookie).send({ facilityCode: 'MUM_WAREHOUSE2', uniwareChannel: 'JIVA', customerCode: 'C1' }).expect(200)).body.data as Full & { saleOrder: { code: string } };
+    expect(done.receivers.map((r) => [r.receiverNo, (r as unknown as { saleOrderCode: string }).saleOrderCode])).toEqual([[1, done.saleOrder.code], [2, done.saleOrder.code]]);
+    const file = JSON.parse([...s3Objects().entries()].find(([k]) => k.endsWith('order.json'))![1]) as { receivers: { name: string; lines: unknown[] }[] };
+    expect(file.receivers.map((r) => [r.name, r.lines.length])).toEqual([['Ravi Kumar', 1], ['Meera Shah', 1]]);
   });
 
   it('drafts keep their receivers; submit checks them all', async () => {
