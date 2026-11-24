@@ -228,6 +228,8 @@ export const BULK_ORDERS = {
   ADDRESS_MAX: 500,
   CITY_MAX: 100,
   NOTE_MAX: 1000,
+  /** v2 1e: an edit's remark. */
+  EDIT_REMARK_MAX: 500,
   /** v2 1d: Fast-track remarks + Marketing purpose (= their columns). */
   FAST_TRACK_REMARKS_MAX: 500,
   PURPOSE_MAX: 200,
@@ -341,6 +343,8 @@ export const BULK_BODY = {
   STATE: 'state',
   PINCODE: 'pincode',
   REASON: 'reason',
+  /** v2 1e (2026-11-23): why the requester changes the order (required on every edit). */
+  EDIT_REMARK: 'remark',
   LINE_NO: 'lineNo',
   REMOVE_LINES: 'removeLines',
   KIND: 'kind',

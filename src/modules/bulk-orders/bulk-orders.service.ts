@@ -332,7 +332,7 @@ interface OrderIn {
 }
 
 /** Checks a create / edit body; `fixedType` = an edit (the type never changes). Throws 400 with every wrong field. */
-const parseOrder = (body: Record<string, unknown>, fixedType?: BulkOrderType): OrderIn => {
+const parseOrder = (body: Record<string, unknown>, fixedType?: BulkOrderType, more?: (c: Checker) => void): OrderIn => {
   const c = new Checker();
   const type = fixedType ?? typeParam(c, body[F.TYPE]);
   const orderedBy = c.text(body[F.ORDERED_BY], F.ORDERED_BY, BULK_ORDERS.NAME_MAX);
@@ -367,6 +367,7 @@ const parseOrder = (body: Record<string, unknown>, fixedType?: BulkOrderType): O
   }
   const lines = checkLines(c, body[F.LINES], type);
   const institution = type === BULK_ORDER_TYPE.INSTITUTIONAL ? checkInstitution(c, body) : null;
+  more?.(c);
   c.fail();
   return { type: type!, orderedBy, receiverName, phone: phone!, neededBy, priority: priority!, fastTrackRemarks, purpose, mode, note, locationId, address, saveAs, lines, institution };
 };
@@ -517,6 +518,24 @@ export const typeOfOrder = async (r: BulkRights, id: string): Promise<BulkOrderT
 
 const lineSummary = (ls: { pepCode: string; qty: number; discountPct: number }[]) => ls.map((l) => `${l.pepCode} x${l.qty} @${l.discountPct}%`);
 
+/** v2 1e: what an edit did to the lines, by SKU: added / removed / qty or discount changed (old -> new). */
+export const diffLines = (before: { pepCode: string; qty: number; discountPct: number }[], after: { pepCode: string; qty: number; discountPct: number }[]) => {
+  const key = (c: string) => c.toUpperCase();
+  const was = new Map(before.map((l) => [key(l.pepCode), l]));
+  const now = new Map(after.map((l) => [key(l.pepCode), l]));
+  const out: { pepCode: string; change: 'added' | 'removed' | 'changed'; qty?: [number, number]; discountPct?: [number, number] }[] = [];
+  for (const l of after) {
+    const b = was.get(key(l.pepCode));
+    if (!b) { out.push({ pepCode: l.pepCode, change: 'added', qty: [0, l.qty] }); continue; }
+    const c: (typeof out)[number] = { pepCode: l.pepCode, change: 'changed' };
+    if (b.qty !== l.qty) c.qty = [b.qty, l.qty];
+    if (Number(b.discountPct) !== Number(l.discountPct)) c.discountPct = [Number(b.discountPct), Number(l.discountPct)];
+    if (c.qty || c.discountPct) out.push(c);
+  }
+  for (const b of before) if (!now.has(key(b.pepCode))) out.push({ pepCode: b.pepCode, change: 'removed', qty: [b.qty, 0] });
+  return out;
+};
+
 /**
  * Edits an order still waiting for approval (user 2026-11-11: "it can get cancelled and editable"; editor on its type):
  * the same body as create (type cannot change), lines priced again on today's MRP, same PO number, still pending.
@@ -525,7 +544,9 @@ export const updateBulkOrder = async (actor: BulkActor, id: string, body: Record
   const r = await needAnyBulk(actor);
   const t = await typeOfOrder(r, id);
   needType(r, t, ACCESS_LEVEL.EDITOR);
-  const o = parseOrder(body, t);
+  // v2 1e: every edit says why (kept with the change); checked with the rest of the body (all problems in one 400)
+  let remark = '';
+  const o = parseOrder(body, t, (c) => { remark = c.text(body[F.EDIT_REMARK], F.EDIT_REMARK, BULK_ORDERS.EDIT_REMARK_MAX); });
   const priced = await priceLines(t, o.lines);
   const approval = approvalNeed(await settingOf(t), t, totalsOf(priced).totalUnits, o.mode);
   await AppDataSource.transaction(async (m) => {
@@ -540,11 +561,14 @@ export const updateBulkOrder = async (actor: BulkActor, id: string, body: Record
       deliveryMode: o.mode, priority: o.priority, note: o.note, ...institutionCols(o.institution, where),
     };
     const fields = (Object.keys(next) as (keyof typeof next)[]).filter((k) => String(cur[k] ?? '') !== String(next[k] ?? ''));
+    // v2 1e: field by field, old -> new (dates / text as stored), and the lines added / removed / changed
+    const fieldChanges = fields.map((k) => ({ field: k, from: cur[k] ?? null, to: next[k] ?? null }));
+    const lineChanges = diffLines(before, priced);
     await m.getRepository(BulkOrderLine).delete({ orderId: id });
     await m.getRepository(BulkOrderLine).insert(priced.map((l) => ({ ...l, orderId: id })));
     await m.getRepository(BulkOrder).update({ id }, { ...next, ...totalsOf(priced), status, updatedAt: new Date() });
-    await addEvent(m, id, BULK_EVENT.EDITED, actor.id, null, {
-      fields, linesBefore: lineSummary(before), linesAfter: lineSummary(priced),
+    await addEvent(m, id, BULK_EVENT.EDITED, actor.id, remark, {
+      fields, fieldChanges, lineChanges, linesBefore: lineSummary(before), linesAfter: lineSummary(priced),
       ...(status !== cur.status ? { status: [cur.status, status], approval: approval.why } : {}),
     });
     log.info(LOG_SOURCE.API, `[bulk-orders] ${cur.poNumber} edited by user ${actor.id}`);
@@ -690,8 +714,10 @@ export const rejectBulkOrder = async (actor: BulkActor, id: string, body: Record
   return getBulkOrder(actor, id);
 };
 
-const orderOut = (o: BulkOrder, names: Map<number, string>) => ({
+const orderOut = (o: BulkOrder, names: Map<number, string>, editCount = 0) => ({
   id: String(o.id), poNumber: o.poNumber, type: o.orderType, status: o.status,
+  /** v2 1e: how many times the requester changed it after submitting ("Edited" tag for approvers). */
+  editCount,
   orderedBy: o.orderedBy, receiverName: o.receiverName, receiverPhone: o.receiverPhone,
   location: { id: o.locationId ? String(o.locationId) : null, label: o.locationLabel, address: { line: o.addressLine, city: o.city, state: o.state, pincode: o.pincode } },
   neededBy: o.neededBy, mode: o.deliveryMode, priority: o.priority, note: o.note, fastTrackRemarks: o.fastTrackRemarks, purpose: o.purpose,
@@ -741,6 +767,13 @@ const parseListQuery = (q: Record<string, unknown>): ListQuery => {
 };
 
 /** One page of orders of these types (newest first) + the total: 1 count + 1 page query, no lines. */
+/** v2 1e: edits per order of a page (one GROUP BY). */
+const editCounts = async (ids: string[]): Promise<Map<string, number>> => {
+  if (!ids.length) return new Map();
+  const rows = await AppDataSource.getRepository(BulkOrderEvent).createQueryBuilder('e').select('e.orderId', 'id').addSelect('COUNT(*)', 'n')
+    .where('e.orderId IN (:...ids) AND e.action = :a', { ids, a: BULK_EVENT.EDITED }).groupBy('e.orderId').getRawMany<{ id: string; n: string }>();
+  return new Map(rows.map((r) => [String(r.id), Number(r.n)]));
+};
 const pageOfOrders = async (types: BulkOrderType[], l: ListQuery) => {
   if (!types.length) return { items: [], meta: { total: 0, page: l.page, pageSize: l.size } };
   const qb = AppDataSource.getRepository(BulkOrder).createQueryBuilder('o').where('o.orderType IN (:...types)', { types });
@@ -752,8 +785,11 @@ const pageOfOrders = async (types: BulkOrderType[], l: ListQuery) => {
     qb.andWhere('(o.poNumber LIKE :like OR o.orderedBy LIKE :like OR o.receiverName LIKE :like OR o.city LIKE :like OR o.locationLabel LIKE :like)', { like });
   }
   const [found, total] = await qb.orderBy('o.createdAt', 'DESC').addOrderBy('o.id', 'DESC').skip((l.page - 1) * l.size).take(l.size).getManyAndCount();
-  const names = await userNames(found.flatMap((o) => [o.createdBy, o.decidedBy ?? 0, o.paymentBy ?? 0, o.processedBy ?? 0]));
-  return { items: found.map((o) => orderOut(o, names)), meta: { total, page: l.page, pageSize: l.size } };
+  const [names, edits] = await Promise.all([
+    userNames(found.flatMap((o) => [o.createdBy, o.decidedBy ?? 0, o.paymentBy ?? 0, o.processedBy ?? 0])),
+    editCounts(found.map((o) => String(o.id))),
+  ]);
+  return { items: found.map((o) => orderOut(o, names, edits.get(String(o.id)) ?? 0)), meta: { total, page: l.page, pageSize: l.size } };
 };
 
 /** Orders of the types the person may see (portal), newest first; filters type / status / search (PO number, ordered by, receiver, city). */
@@ -781,7 +817,7 @@ export const orderFull = async (o: BulkOrder) => {
   ]);
   const names = await userNames([o.createdBy, o.decidedBy ?? 0, o.paymentBy ?? 0, o.processedBy ?? 0, ...events.map((e) => e.byUserId), ...docs.map((d) => d.uploadedBy)]);
   return {
-    ...orderOut(o, names),
+    ...orderOut(o, names, events.filter((e) => e.action === BULK_EVENT.EDITED).length),
     // newest first; replaced ones kept (replacedAt set)
     documents: docs.map((d) => ({
       id: String(d.id), kind: d.kind, fileName: d.fileName, contentType: d.contentType, sizeBytes: d.sizeBytes,

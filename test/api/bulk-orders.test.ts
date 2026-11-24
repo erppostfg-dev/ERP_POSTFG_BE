@@ -45,6 +45,8 @@ const order = (over: Record<string, unknown> = {}) => {
   return o.type === 'institutional' ? { ...INSTITUTION, ...o } : o;
 };
 const create = (who: TestLogin, body: Record<string, unknown>) => api().post(V).set('Cookie', who.cookie).send(body);
+/** An edit (v2 1e: every edit carries a remark). */
+const edit = (who: TestLogin, id: string, body: Record<string, unknown>, remark = 'Test edit') => api().put(`${V}/${id}`).set('Cookie', who.cookie).send({ remark, ...body });
 const fields = (res: { body: { error: { details: { field: string }[] } } }) => res.body.error.details.map((d) => d.field);
 
 beforeEach(async () => {
@@ -155,7 +157,7 @@ describe('bulk orders: create', () => {
     expect(fields(res)).toEqual(['lines[0].discountPct']);
     expect(res.body.error.details[0].message).toContain('take no discount');
     expect(res.body.error.details[0].message).not.toMatch(/marketing|head_office|₹/); // no type code or price shown (v2: free orders)
-    const edited = (await api().put(`${V}/${o.id}`).set('Cookie', mkt.cookie).send(order({ lines: [{ pepCode: 'SKU_B', qty: 5 }] })).expect(200)).body.data;
+    const edited = (await edit(mkt, o.id, order({ lines: [{ pepCode: 'SKU_B', qty: 5 }] })).expect(200)).body.data;
     expect(edited).toMatchObject({ totalValue: 0.05, totalMrp: 1745 });
   });
 
@@ -254,14 +256,13 @@ describe('bulk orders step 2: edit, cancel, approve, reject (timeline)', () => {
 
   it("the requester's type may edit a pending order: same PO number, lines priced again, still pending; others may not", async () => {
     const o = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
-    const edited = (await api().put(`${V}/${o.id}`).set('Cookie', inst.cookie)
-      .send(order({ type: 'marketing', ...INSTITUTION, receiverName: 'Asha', lines: [{ pepCode: 'SKU_B', qty: 2, discountPct: 10 }] })).expect(200)).body.data;
+    const edited = (await edit(inst, o.id, order({ type: 'marketing', ...INSTITUTION, receiverName: 'Asha', lines: [{ pepCode: 'SKU_B', qty: 2, discountPct: 10 }] })).expect(200)).body.data;
     expect(edited).toMatchObject({ poNumber: o.poNumber, type: 'institutional', status: 'pending_approval', receiverName: 'Asha', lineCount: 1, totalValue: 628.2 });
     expect(edited.lines).toEqual([expect.objectContaining({ lineNo: 1, pepCode: 'SKU_B', qty: 2, discountPct: 10, unitPrice: 314.1, requestedQty: 2, requestedDiscountPct: 10 })]);
     expect(edited.events.map((e: { action: string }) => e.action)).toEqual(['created', 'edited']);
     expect(edited.events[1].changes.fields).toEqual(['receiverName']);
-    await api().put(`${V}/${o.id}`).set('Cookie', approver.cookie).send(order({ type: 'institutional' })).expect(403);
-    await api().put(`${V}/${o.id}`).set('Cookie', mkt.cookie).send(order({ type: 'institutional' })).expect(404);
+    await edit(approver, o.id, order({ type: 'institutional' })).expect(403);
+    await edit(mkt, o.id, order({ type: 'institutional' })).expect(404);
   });
 
   it('cancel: by its type, reason optional; a cancelled order cannot be edited, approved or cancelled again', async () => {
@@ -272,7 +273,7 @@ describe('bulk orders step 2: edit, cancel, approve, reject (timeline)', () => {
     expect(c.events[1]).toMatchObject({ action: 'cancelled', note: 'Event postponed', by: { id: mkt.userId } });
     expect((await post(approver, o.id, 'approve').expect(409)).body.error.code).toBe('BULK_ORDER_NOT_PENDING');
     await post(mkt, o.id, 'cancel').expect(409);
-    await api().put(`${V}/${o.id}`).set('Cookie', mkt.cookie).send(order()).expect(409);
+    await edit(mkt, o.id, order()).expect(409);
     expect((await api().get(`${V}?status=cancelled`).set('Cookie', mkt.cookie).expect(200)).body.meta.total).toBe(1);
   });
 
@@ -784,7 +785,7 @@ describe('bulk orders v2: pricing rules', () => {
     expect(res.body.error.details[0].message).toContain('at least ₹1');
     const ok = (await create(inst, inst1([{ pepCode: 'SKU_A', qty: 2, discountPct: 99.5 }])).expect(201)).body.data;
     expect(ok.lines[0]).toMatchObject({ unitPrice: 0.5, lineTotal: 1 });
-    res = await api().put(`${V}/${ok.id}`).set('Cookie', inst.cookie).send(inst1([{ pepCode: 'SKU_A', qty: 1, discountPct: 99.5 }])).expect(400);
+    res = await edit(inst, ok.id, inst1([{ pepCode: 'SKU_A', qty: 1, discountPct: 99.5 }])).expect(400);
     expect(fields(res)).toEqual(['lines[0].discountPct']);
   });
 
@@ -834,16 +835,16 @@ describe('bulk orders v2: approval rules', () => {
 
   it('edits apply the rules again (both ways, on the timeline); a submitted order can be cancelled', async () => {
     const o = (await create(mkt, units(50)).expect(201)).body.data as { id: string };
-    let e = (await api().put(`${V}/${o.id}`).set('Cookie', mkt.cookie).send(units(150)).expect(200)).body.data;
+    let e = (await edit(mkt, o.id, units(150)).expect(200)).body.data;
     expect(e.status).toBe('pending_approval');
     expect(e.events.at(-1).changes).toMatchObject({ status: ['submitted', 'pending_approval'], approval: ['150 units (over 100)'] });
-    e = (await api().put(`${V}/${o.id}`).set('Cookie', mkt.cookie).send(units(20)).expect(200)).body.data;
+    e = (await edit(mkt, o.id, units(20)).expect(200)).body.data;
     expect(e.status).toBe('submitted');
     expect(e.events.at(-1).changes).toMatchObject({ status: ['pending_approval', 'submitted'], approval: [] });
-    e = (await api().put(`${V}/${o.id}`).set('Cookie', mkt.cookie).send(units(30)).expect(200)).body.data;
+    e = (await edit(mkt, o.id, units(30)).expect(200)).body.data;
     expect(e.events.at(-1).changes.status).toBeUndefined(); // status unchanged: no status entry
     expect((await api().post(`${V}/${o.id}/cancel`).set('Cookie', mkt.cookie).send({}).expect(200)).body.data.status).toBe('cancelled');
-    expect((await api().put(`${V}/${o.id}`).set('Cookie', mkt.cookie).send(units(30)).expect(409)).body.error.code).toBe('BULK_ORDER_NOT_EDITABLE');
+    expect((await edit(mkt, o.id, units(30)).expect(409)).body.error.code).toBe('BULK_ORDER_NOT_EDITABLE');
   });
 
   it('our team: a submitted order counts as waiting and is processed like an approved one; then no more edits; send back -> submitted again', async () => {
@@ -854,7 +855,7 @@ describe('bulk orders v2: approval rules', () => {
     await api().get(`${T}?status=nope`).set('Cookie', opsExec.cookie).expect(400);
     const done = (await api().post(`${T}/${o.id}/process`).set('Cookie', opsExec.cookie).send({ facilityCode: WH, uniwareChannel: 'JIVA', customerCode: 'C1' }).expect(200)).body.data;
     expect(done.status).toBe('processing');
-    expect((await api().put(`${V}/${o.id}`).set('Cookie', mkt.cookie).send(units(5)).expect(409)).body.error.code).toBe('BULK_ORDER_NOT_EDITABLE');
+    expect((await edit(mkt, o.id, units(5)).expect(409)).body.error.code).toBe('BULK_ORDER_NOT_EDITABLE');
     const [up] = await rows<{ id: string }>('SELECT id FROM po_uploads');
     await api().post(`/api/v1/po-verify/${up.id}/send-back`).set('Cookie', opsExec.cookie).send({ remark: 'wrong warehouse' }).expect(200);
     expect((await api().get(`${V}/${o.id}`).set('Cookie', mkt.cookie).expect(200)).body.data.status).toBe('submitted');
@@ -911,7 +912,7 @@ describe('bulk orders v2: order form fields', () => {
 
   it('edit keeps the new fields; switching to Normal drops the remarks', async () => {
     const o = (await create(mkt, order({ priority: 'Fast-track', fastTrackRemarks: 'Urgent', purpose: 'Event' })).expect(201)).body.data as { id: string };
-    const e = (await api().put(`${V}/${o.id}`).set('Cookie', mkt.cookie).send(order({ neededBy: undefined, purpose: 'Event 2' })).expect(200)).body.data;
+    const e = (await edit(mkt, o.id, order({ neededBy: undefined, purpose: 'Event 2' })).expect(200)).body.data;
     expect(e).toMatchObject({ priority: 'Normal', fastTrackRemarks: null, neededBy: null, purpose: 'Event 2' });
   });
 
@@ -927,5 +928,51 @@ describe('bulk orders v2: order form fields', () => {
     }
     expect((await rows<{ priority: string; delivery_mode: string }>('SELECT priority, delivery_mode FROM bulk_orders WHERE id = ?', [o.id]))[0])
       .toEqual({ priority: 'Normal', delivery_mode: 'Regular' });
+  });
+});
+
+/*
+ * Bulk Orders Portal v2, piece 1e (2026-11-24): every edit needs a remark (kept with it), the history keeps each changed
+ * field old -> new and each line added / removed / changed, and the order says how often it was edited ("Edited" tag).
+ */
+describe('bulk orders v2: edits with a remark and a field-by-field history', () => {
+  it('an edit without a remark is refused, reported with the other wrong fields; nothing saved', async () => {
+    const o = (await create(mkt, order()).expect(201)).body.data as { id: string };
+    const res = await api().put(`${V}/${o.id}`).set('Cookie', mkt.cookie).send(order({ receiverName: 'Asha' })).expect(400);
+    expect(fields(res)).toEqual(['remark']);
+    const both = await api().put(`${V}/${o.id}`).set('Cookie', mkt.cookie).send(order({ receiverPhone: '12' })).expect(400);
+    expect(fields(both).sort()).toEqual(['receiverPhone', 'remark']);
+    expect((await api().get(`${V}/${o.id}`).set('Cookie', mkt.cookie).expect(200)).body.data).toMatchObject({ receiverName: 'Ravi Kumar', editCount: 0 });
+  });
+
+  it('the history keeps the remark, every field old -> new and every line change; lists show the edit count', async () => {
+    await insert('master_skus', { pep_code: 'SKU_C', product_name: 'Coffee Lip Balm', mrp: 199, is_active: 1, created_at: new Date(), updated_at: new Date() });
+    const o = (await create(mkt, order()).expect(201)).body.data as { id: string }; // SKU_A 10, SKU_B 3, Normal
+    const e = (await edit(mkt, o.id, order({
+      receiverName: 'Asha', neededBy: undefined, purpose: 'Diwali event',
+      lines: [{ pepCode: 'SKU_A', qty: 12 }, { pepCode: 'SKU_C', qty: 1 }],
+    }), 'Receiver changed + one more kit').expect(200)).body.data;
+    const ev = e.events.at(-1);
+    expect(ev).toMatchObject({ action: 'edited', note: 'Receiver changed + one more kit' });
+    expect(ev.changes.fieldChanges).toEqual(expect.arrayContaining([
+      { field: 'receiverName', from: 'Ravi Kumar', to: 'Asha' },
+      { field: 'neededBy', from: TOMORROW, to: null },
+      { field: 'purpose', from: null, to: 'Diwali event' },
+    ]));
+    expect(ev.changes.lineChanges).toEqual([
+      { pepCode: 'SKU_A', change: 'changed', qty: [10, 12] },
+      { pepCode: 'SKU_C', change: 'added', qty: [0, 1] },
+      { pepCode: 'SKU_B', change: 'removed', qty: [3, 0] },
+    ]);
+    expect(e.editCount).toBe(1);
+    await edit(mkt, o.id, order({ receiverName: 'Asha', lines: [{ pepCode: 'SKU_A', qty: 12 }, { pepCode: 'SKU_C', qty: 1 }] }), 'Date back').expect(200);
+    const listed = (await api().get(V).set('Cookie', approver.cookie).expect(200)).body.data.find((x: { id: string }) => x.id === o.id);
+    expect(listed.editCount).toBe(2);
+  });
+
+  it('a discount change shows old -> new on its line (Institutional)', async () => {
+    const o = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data as { id: string }; // SKU_A @30, SKU_B @12.5
+    const e = (await edit(inst, o.id, order({ type: 'institutional', lines: [{ pepCode: 'SKU_A', qty: 10, discountPct: 25 }, { pepCode: 'SKU_B', qty: 3, discountPct: 12.5 }] }), 'Agreed 25%').expect(200)).body.data;
+    expect(e.events.at(-1).changes.lineChanges).toEqual([{ pepCode: 'SKU_A', change: 'changed', discountPct: [30, 25] }]);
   });
 });
