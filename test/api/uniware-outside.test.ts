@@ -11,7 +11,7 @@ import { covers } from '../helpers/routes';
  * whose PO number + Uniware channel match a PO that is In Review, Rejected, or Processed and not uploaded, under another
  * code than ours; the lists show it, and the team rejects / takes Uniware's code / acknowledges / dismisses it.
  */
-covers(['GET /po-review/uniware-outside', 'POST /po-review/uniware-outside/check', 'POST /po-review/uniware-outside/:id/resolve']);
+covers(['GET /po-review/uniware-outside', 'POST /po-review/uniware-outside/check', 'POST /po-review/uniware-outside/:id/resolve', 'GET /po-review/uniware-outside/:id/live', 'POST /po-review/uniware-outside/bulk-resolve']);
 
 const V = '/api/v1/po-review';
 let calls: { path: string; body: Record<string, unknown> }[];
@@ -136,5 +136,46 @@ describe('resolving a finding', () => {
     await api().post(`${V}/uniware-outside/${f2.id}/resolve`).set('Cookie', admin.cookie).send({ action: 'acknowledge' }).expect(200);
     expect(await finding('sf_2')).toMatchObject({ state: 'resolved', resolution: 'acknowledge' });
     expect((await api().get(`${V}/uniware-outside`).set('Cookie', admin.cookie).expect(200)).body.data.counts).toEqual({ review: 0, rejected: 0, processed: 0 });
+  });
+});
+
+describe('live read on open + many at once (2026-11-25)', () => {
+  it('live: one search by PO number; a new status is stored; cancelled closes the warning; read again soon = no call', async () => {
+    await upload('PO-1', 'needs_review');
+    await upload('PO-3', 'completed', { code: 'erp_20261120001' });
+    elements = [order('sf_1', 'PO-1'), order('sf_3', 'PO-3')];
+    await runOutsideCheck('test');
+    const viewer = await loginAs('viewer');
+    const f1 = await finding('sf_1');
+    const f3 = await finding('sf_3');
+    calls = [];
+    elements = [order('sf_1', 'PO-1', { status: 'COMPLETE' })];
+    const live1 = (await api().get(`${V}/uniware-outside/${f1.id}/live`).set('Cookie', viewer.cookie).expect(200)).body.data;
+    expect(calls).toEqual([{ path: '/services/rest/v1/oms/saleOrder/search', body: { orderCategory: 'B2B', displayOrderCode: 'PO-1' } }]);
+    expect(live1).toMatchObject({ checked: true, closed: false, status: 'COMPLETE' });
+    expect((await rows<{ s: string }>('SELECT uniware_status s FROM uniware_outside_orders WHERE id = ?', [f1.id]))[0].s).toBe('COMPLETE');
+    await api().get(`${V}/uniware-outside/${f1.id}/live`).set('Cookie', viewer.cookie).expect(200);
+    expect(calls).toHaveLength(1); // fresh: no second call
+    elements = [order('sf_3', 'PO-3', { status: 'CANCELLED' })];
+    expect((await api().get(`${V}/uniware-outside/${f3.id}/live`).set('Cookie', viewer.cookie).expect(200)).body.data).toMatchObject({ closed: true, status: 'CANCELLED' });
+    expect(await finding('sf_3')).toMatchObject({ state: 'resolved', resolution: 'dismiss' });
+    await api().get(`${V}/uniware-outside/999999/live`).set('Cookie', viewer.cookie).expect(404);
+  });
+
+  it('bulk: each like the single resolve; one that does not fit is skipped with why; bad input = 400 for all', async () => {
+    await upload('PO-3', 'completed', { code: 'erp_20261120001' });
+    await upload('PO-4', 'completed', { code: 'erp_20261120002' });
+    await upload('PO-1', 'needs_review');
+    elements = [order('sf_3', 'PO-3'), order('sf_4', 'PO-4'), order('sf_1', 'PO-1')];
+    await runOutsideCheck('test');
+    const ids = [(await finding('sf_3')).id, (await finding('sf_4')).id, (await finding('sf_1')).id];
+    const admin = await loginAs('admin');
+    const B = `${V}/uniware-outside/bulk-resolve`;
+    await api().post(B).set('Cookie', (await loginAs('viewer')).cookie).send({ ids, action: 'use_code' }).expect(403);
+    await api().post(B).set('Cookie', admin.cookie).send({ ids: [], action: 'use_code' }).expect(400);
+    await api().post(B).set('Cookie', admin.cookie).send({ ids, action: 'dismiss' }).expect(400); // remark required
+    const r = (await api().post(B).set('Cookie', admin.cookie).send({ ids, action: 'use_code' }).expect(200)).body.data as { id: string; result: string }[];
+    expect(r.map((x) => x.result)).toEqual(['done', 'done', 'skipped']); // the In Review one cannot take a code
+    expect(await rows('SELECT uid FROM master_purchase_orders WHERE orderNo1 IN (?, ?)', ['sf_3', 'sf_4'])).toHaveLength(2);
   });
 });

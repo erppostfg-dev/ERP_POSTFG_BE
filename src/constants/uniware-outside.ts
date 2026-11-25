@@ -41,7 +41,18 @@ export const UNIWARE_OUTSIDE = {
   /** Uniware statuses that are not a real order (nothing to warn about). */
   IGNORED_STATUSES: ['CANCELLED'] as readonly string[],
   REMARK_MAX: 500,
-  ROUTES: { STATUS: '/uniware-outside', CHECK: '/uniware-outside/check', RESOLVE: '/uniware-outside/:id/resolve' },
+  /**
+   * 2026-11-25 (user: "once flagged, is it necessary to check it again in Uniware?" -> no timer; a live read when a person
+   * opens the warning): ONE saleOrder/search { orderCategory B2B, displayOrderCode } (no warehouse needed; saleorder/get
+   * needs one, In Review POs have none); the same finding is not read again within LIVE_FRESH_MS (per server).
+   */
+  LIVE_FRESH_MS: 2 * 60_000,
+  /** Bulk resolve: at most BULK_MAX findings a call, done one by one (each like the single resolve). */
+  BULK_MAX: 200,
+  ROUTES: {
+    STATUS: '/uniware-outside', CHECK: '/uniware-outside/check', RESOLVE: '/uniware-outside/:id/resolve',
+    LIVE: '/uniware-outside/:id/live', BULK_RESOLVE: '/uniware-outside/bulk-resolve',
+  },
 } as const;
 
 /** Where the PO was in POST_FG when Uniware was found to have it. */
@@ -71,6 +82,8 @@ export const UNIWARE_OUTSIDE_ACTIONS_FOR: Record<UniwareOutsideKind, readonly Un
 
 export const UNIWARE_OUTSIDE_TEXT = {
   REJECT_REMARK: (code: string, remark: string) => `Punched in Uniware outside POST_FG as ${code}${remark ? `: ${remark}` : ''}`,
+  /** A live read found the order cancelled in Uniware (or gone): the warning closes itself with this remark. */
+  GONE_REMARK: (status: string | null) => (status ? `${status} in Uniware (checked live)` : 'no longer in Uniware (checked live)'),
   USE_CODE_REMARK: (code: string, ours: string | null, remark: string) =>
     `${code} found in Uniware (punched outside POST_FG)${ours ? `; our ${ours} not used` : ''}${remark ? `: ${remark}` : ''}`,
 } as const;

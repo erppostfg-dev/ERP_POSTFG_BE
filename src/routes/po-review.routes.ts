@@ -37,7 +37,7 @@ import { getRejection, reopenRejected } from '../modules/po-review/po-review-reo
 import { LineCorrection, rejectPo, ResubmitBody, submitForApproval } from '../modules/po-review/po-review-actions.service';
 import { appError } from '../utils/AppError';
 import { dismissFailed, reopenMany, rereadUploads, retryFailed } from '../modules/po-review/po-review-failed.service';
-import { checkNow, outsideStatus, resolveOutside } from '../modules/uniware-outside/outside.service';
+import { bulkResolveOutside, checkNow, liveOutside, outsideStatus, resolveOutside } from '../modules/uniware-outside/outside.service';
 
 /*
  * PO review routes (API contract "PO review", 2026-10-09):
@@ -222,6 +222,22 @@ router.get(UNIWARE_OUTSIDE.ROUTES.STATUS, requireAuth, requirePage(PAGE.PO_REVIE
 router.post(UNIWARE_OUTSIDE.ROUTES.CHECK, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
   try {
     res.status(202).json({ data: await checkNow(req.auth!.user.email) });
+  } catch (err) {
+    next(err);
+  }
+});
+/** POST /po-review/uniware-outside/bulk-resolve { ids, action, remark }: many findings, one by one. Editor. */
+router.post(UNIWARE_OUTSIDE.ROUTES.BULK_RESOLVE, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
+  try {
+    res.json({ data: await bulkResolveOutside(req.body, who(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+/** GET /po-review/uniware-outside/:id/live: this order in Uniware now (one read; cancelled / gone closes it). Viewer. */
+router.get(UNIWARE_OUTSIDE.ROUTES.LIVE, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.VIEWER), async (req, res, next) => {
+  try {
+    res.json({ data: await liveOutside(String(req.params.id)) });
   } catch (err) {
     next(err);
   }

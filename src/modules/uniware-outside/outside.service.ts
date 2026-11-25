@@ -318,3 +318,67 @@ export const resolveOutside = async (id: string, body: unknown, by: Actor) => {
   log.info(LOG_SOURCE.APP, `${LOG} finding ${row.id} ${action} by ${by.email}`);
   return { id: row.id, uploadId: String(row.uploadId), action, kind };
 };
+
+// ---- live read when a person opens a warning (2026-11-25) -------------------------------------------------------------
+
+const lastLive = new Map<string, number>();
+
+/**
+ * GET /po-review/uniware-outside/:id/live: reads THIS order in Uniware now (one search by PO number, B2B). Still there =
+ * its current status is stored (when it changed); cancelled or gone = the warning closes itself (resolution dismiss,
+ * remark GONE_REMARK, nobody as the person). Read again within LIVE_FRESH_MS = the stored answer, no call.
+ */
+export const liveOutside = async (id: string) => {
+  if (!/^[1-9]\d{0,18}$/.test(id)) throw appError(ERROR_CODES.UNIWARE_OUTSIDE_NOT_FOUND, id);
+  const repo = AppDataSource.getRepository(UniwareOutsideOrder);
+  const row = await repo.findOneBy({ id });
+  if (!row) throw appError(ERROR_CODES.UNIWARE_OUTSIDE_NOT_FOUND, id);
+  const fresh = (lastLive.get(id) ?? 0) > Date.now() - UNIWARE_OUTSIDE.LIVE_FRESH_MS;
+  if (row.state !== UNIWARE_OUTSIDE_STATE.OPEN || fresh) {
+    return { id, state: row.state, status: row.uniwareStatus, closed: row.state !== UNIWARE_OUTSIDE_STATE.OPEN, checked: false, otherCodes: [] as string[] };
+  }
+  const body = await poUniwareClient().post<{ elements?: unknown }>(UNIWARE_OUTSIDE.SEARCH, { orderCategory: UNIWARE_OUTSIDE.ORDER_CATEGORY, displayOrderCode: row.displayOrderCode });
+  lastLive.set(id, Date.now());
+  const found = ordersOf(body.elements);
+  const me = found.find((o) => o.code === row.uniwareCode);
+  const otherCodes = found.filter((o) => o.code !== row.uniwareCode && o.channel === row.uniwareChannel).map((o) => o.code);
+  const gone = !me || (me.status !== null && UNIWARE_OUTSIDE.IGNORED_STATUSES.includes(me.status.toUpperCase()));
+  if (gone) {
+    await repo.update({ id: row.id, state: UNIWARE_OUTSIDE_STATE.OPEN }, {
+      state: UNIWARE_OUTSIDE_STATE.RESOLVED, resolution: UNIWARE_OUTSIDE_ACTION.DISMISS, remark: UNIWARE_OUTSIDE_TEXT.GONE_REMARK(me?.status ?? null),
+      resolvedBy: null, resolvedAt: new Date(), uniwareStatus: me?.status?.slice(0, 50) ?? row.uniwareStatus,
+    });
+    bumpReview();
+    log.info(LOG_SOURCE.APP, `${LOG} finding ${row.id} (${row.uniwareCode}) closed: ${me?.status ?? 'not found'} in Uniware`);
+  } else if (me.status !== row.uniwareStatus) {
+    await repo.update({ id: row.id }, { uniwareStatus: me.status?.slice(0, 50) ?? null, lastSeenAt: new Date() });
+  }
+  return { id, state: gone ? UNIWARE_OUTSIDE_STATE.RESOLVED : row.state, status: me?.status ?? null, closed: gone, checked: true, otherCodes };
+};
+
+// ---- many at once (2026-11-25) ----------------------------------------------------------------------------------------
+
+/**
+ * POST /po-review/uniware-outside/bulk-resolve { ids, action, remark }: each finding like the single resolve, one by one;
+ * one that does not fit (another tab's PO, already resolved) is skipped with why. 1..BULK_MAX ids.
+ */
+export const bulkResolveOutside = async (body: unknown, by: Actor) => {
+  const b = (body && typeof body === 'object' ? body : {}) as { ids?: unknown; action?: unknown; remark?: unknown };
+  const ids = Array.isArray(b.ids) ? [...new Set(b.ids.map(String))] : [];
+  if (!ids.length || ids.length > UNIWARE_OUTSIDE.BULK_MAX || !ids.every((x) => /^[1-9]\d{0,18}$/.test(x))) {
+    throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails([{ field: 'ids', code: ERROR_CODES.FIELD_BAD_FORMAT, message: errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, 'ids', `a list of 1 to ${UNIWARE_OUTSIDE.BULK_MAX} finding ids`) }]);
+  }
+  const results: { id: string; result: 'done' | 'skipped'; reason?: string }[] = [];
+  for (const id of ids) {
+    try {
+      await resolveOutside(id, { action: b.action, remark: b.remark }, by);
+      results.push({ id, result: 'done' });
+    } catch (err) {
+      // a bad action / remark is the same for every id: stop at once with the 400
+      if (err instanceof Error && 'code' in err && (err as { code?: string }).code === ERROR_CODES.VALIDATION_FAILED) throw err;
+      results.push({ id, result: 'skipped', reason: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return results;
+};
+
