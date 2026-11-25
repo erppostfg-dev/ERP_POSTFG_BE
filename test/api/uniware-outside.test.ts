@@ -11,7 +11,7 @@ import { covers } from '../helpers/routes';
  * whose PO number + Uniware channel match a PO that is In Review, Rejected, or Processed and not uploaded, under another
  * code than ours; the lists show it, and the team rejects / takes Uniware's code / acknowledges / dismisses it.
  */
-covers(['GET /po-review/uniware-outside', 'POST /po-review/uniware-outside/check', 'POST /po-review/uniware-outside/:id/resolve', 'GET /po-review/uniware-outside/:id/live', 'POST /po-review/uniware-outside/bulk-resolve']);
+covers(['GET /po-review/uniware-outside', 'POST /po-review/uniware-outside/check', 'POST /po-review/uniware-outside/:id/resolve', 'GET /po-review/uniware-outside/:id/live', 'POST /po-review/uniware-outside/bulk-resolve', 'POST /po-review/uniware-outside/precheck', 'POST /po-review/uniware-outside/ack']);
 
 const V = '/api/v1/po-review';
 let calls: { path: string; body: Record<string, unknown> }[];
@@ -177,5 +177,32 @@ describe('live read on open + many at once (2026-11-25)', () => {
     const r = (await api().post(B).set('Cookie', admin.cookie).send({ ids, action: 'use_code' }).expect(200)).body.data as { id: string; result: string }[];
     expect(r.map((x) => x.result)).toEqual(['done', 'done', 'skipped']); // the In Review one cannot take a code
     expect(await rows('SELECT uid FROM master_purchase_orders WHERE orderNo1 IN (?, ?)', ['sf_3', 'sf_4'])).toHaveLength(2);
+  });
+});
+
+describe('check at the moment of action (2026-11-25: warn, never block)', () => {
+  it('precheck reads Uniware up to now (once; not again within 2 min) and returns these POs\' findings, also one waiting for approval; ack records going ahead', async () => {
+    const done = await upload('PO-3', 'completed', { code: 'erp_20261120001' });
+    const clean = await upload('PO-9', 'completed', { code: 'erp_20261120009' });
+    const waiting = await upload('PO-7', 'pending_approval');
+    elements = [order('sf_3', 'PO-3'), order('sf_7', 'PO-7')];
+    const viewer = await loginAs('viewer');
+    const P = `${V}/uniware-outside/precheck`;
+    await api().post(P).set('Cookie', viewer.cookie).send({ uploadIds: [] }).expect(400);
+    const r = (await api().post(P).set('Cookie', viewer.cookie).send({ uploadIds: [done.id, clean.id, waiting.id] }).expect(200)).body.data;
+    expect(r.checked).toBe(true);
+    expect(r.found.map((f: { uploadId: string; code: string }) => `${f.uploadId}:${f.code}`).sort()).toEqual([`${done.id}:sf_3`, `${waiting.id}:sf_7`].sort());
+    const n = calls.length;
+    await api().post(P).set('Cookie', viewer.cookie).send({ uploadIds: [done.id] }).expect(200);
+    expect(calls.length).toBe(n); // fresh: Uniware not read again
+    // a PO waiting for approval is rejected on the Approvals page, not here
+    const fw = r.found.find((f: { uploadId: string }) => f.uploadId === waiting.id);
+    const admin = await loginAs('admin');
+    expect((await api().post(`${V}/uniware-outside/${fw.id}/resolve`).set('Cookie', admin.cookie).send({ action: 'reject' }).expect(400)).body.error.code).toBe('UNIWARE_OUTSIDE_BAD_ACTION');
+    // going ahead anyway: recorded, the warning stays
+    await api().post(`${V}/uniware-outside/ack`).set('Cookie', viewer.cookie).send({ ids: [fw.id], action: 'nope' }).expect(400);
+    expect((await api().post(`${V}/uniware-outside/ack`).set('Cookie', viewer.cookie).send({ ids: [fw.id], action: 'approve', remark: 'urgent' }).expect(200)).body.data).toEqual({ recorded: 1 });
+    expect(await rows('SELECT id FROM activity_log WHERE path LIKE ?', ['uniware-outside: approve anyway%urgent'])).toHaveLength(1);
+    expect(await finding('sf_7')).toMatchObject({ state: 'open' });
   });
 });

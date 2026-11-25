@@ -89,9 +89,9 @@ const candidatesFor = async (poNumbers: string[]): Promise<Candidate[]> => {
          LEFT JOIN ${TABLES.MASTER_PURCHASE_ORDERS} po ON po.uid = u.po_uid
          LEFT JOIN ${TABLES.MASTER_CHANNELS} mc ON mc.display_name = u.channel
          LEFT JOIN ${TABLES.DETAILS_CHANNELS} dc ON dc.channel_id = mc.id AND dc.channel_code IS NOT NULL
-        WHERE u.po_number IN (?) AND u.status IN (?, ?, ?)
+        WHERE u.po_number IN (?) AND u.status IN (?, ?, ?, ?)
         GROUP BY u.id, u.status, u.po_number, u.uniware_uploaded_at, po.orderNo1`,
-      [part, UPLOAD_STATUS.NEEDS_REVIEW, UPLOAD_STATUS.REJECTED, UPLOAD_STATUS.COMPLETED],
+      [part, UPLOAD_STATUS.NEEDS_REVIEW, UPLOAD_STATUS.PENDING_APPROVAL, UPLOAD_STATUS.REJECTED, UPLOAD_STATUS.COMPLETED],
     );
     for (const r of rows) {
       out.push({
@@ -289,6 +289,8 @@ export const resolveOutside = async (id: string, body: unknown, by: Actor) => {
   const kind = upload ? kindOf({ status: upload.status, uploaded: !!upload.uniwareUploadedAt }) : null;
   if (!upload || !kind) throw appError(ERROR_CODES.UNIWARE_OUTSIDE_DONE, id);
   if (!UNIWARE_OUTSIDE_ACTIONS_FOR[kind].includes(action)) throw appError(ERROR_CODES.UNIWARE_OUTSIDE_BAD_ACTION, action, kind);
+  // waiting for approval: reject it on the Approvals page (its submission is closed there), not here
+  if (upload.status === UPLOAD_STATUS.PENDING_APPROVAL && action === UNIWARE_OUTSIDE_ACTION.REJECT) throw appError(ERROR_CODES.UNIWARE_OUTSIDE_BAD_ACTION, action, 'waiting for approval (reject it on the Approvals page)');
 
   const done = { state: UNIWARE_OUTSIDE_STATE.RESOLVED, resolution: action, remark: remark || null, resolvedBy: by.id, resolvedAt: new Date() };
   if (action === UNIWARE_OUTSIDE_ACTION.REJECT) {
@@ -380,5 +382,67 @@ export const bulkResolveOutside = async (body: unknown, by: Actor) => {
     }
   }
   return results;
+};
+
+// ---- check at the moment of action (2026-11-25) ------------------------------------------------------------------------
+
+/**
+ * Uniware read up to now: the B2B orders created since the last check (normally ONE call), unless a check ended less than
+ * PRECHECK_FRESH_MS ago or another server is running one (then the stored findings are as fresh as they get). Never throws.
+ */
+const freshCheck = async (): Promise<{ checked: boolean; error: string | null }> => {
+  try {
+    const rec = await readState<RunRecord>(UNIWARE_OUTSIDE.STATE_KEY, EMPTY);
+    if (rec.lastOkAt && Date.parse(rec.lastOkAt) > Date.now() - UNIWARE_OUTSIDE.PRECHECK_FRESH_MS) return { checked: true, error: null };
+    const r = await withRunLock(UNIWARE_OUTSIDE.LOCK, () => runJob(UNIWARE_OUTSIDE.JOB, () => runOutsideCheck('action'), { trigger: 'action' }), 5);
+    return r ? { checked: !r.lastError, error: r.lastError } : { checked: true, error: null };
+  } catch (err) {
+    logError(LOG_SOURCE.APP, `${LOG} check before an action failed`, err);
+    return { checked: false, error: err instanceof Error ? err.message.slice(0, 200) : String(err) };
+  }
+};
+
+const idList = (v: unknown, field: string, max: number): string[] => {
+  const ids = Array.isArray(v) ? [...new Set(v.map(String))] : [];
+  if (!ids.length || ids.length > max || !ids.every((x) => /^[1-9]\d{0,18}$/.test(x))) {
+    throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails([{ field, code: ERROR_CODES.FIELD_BAD_FORMAT, message: errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, field, `a list of 1 to ${max} ids`) }]);
+  }
+  return ids;
+};
+
+/**
+ * POST /po-review/uniware-outside/precheck { uploadIds }: Uniware read up to now (freshCheck), then the open findings of
+ * these POs: { checked, error, found: [{ id, uploadId, poNumber, code, channel, status }] }. The screen warns; nothing is refused.
+ */
+export const precheckOutside = async (body: unknown) => {
+  const uploadIds = idList((body as { uploadIds?: unknown } | null)?.uploadIds, 'uploadIds', UNIWARE_OUTSIDE.PRECHECK_MAX);
+  const fresh = await freshCheck();
+  const rows = await AppDataSource.query<{ id: string; upload_id: string; po_number: string | null; uniware_code: string; uniware_channel: string; uniware_status: string | null }[]>(
+    `SELECT o.id, o.upload_id, u.po_number, o.uniware_code, o.uniware_channel, o.uniware_status
+       FROM ${TABLES.UNIWARE_OUTSIDE_ORDERS} o JOIN ${TABLES.PO_UPLOADS} u ON u.id = o.upload_id
+      WHERE o.upload_id IN (?) AND o.state = ? ORDER BY o.id`,
+    [uploadIds, UNIWARE_OUTSIDE_STATE.OPEN],
+  );
+  return {
+    ...fresh,
+    found: rows.map((r) => ({ id: String(r.id), uploadId: String(r.upload_id), poNumber: r.po_number, code: r.uniware_code, channel: r.uniware_channel, status: r.uniware_status })),
+  };
+};
+
+/**
+ * POST /po-review/uniware-outside/ack { ids, action download|mark|submit|approve, remark? }: the person went ahead
+ * although these POs are in Uniware; recorded (audit + log), the warnings stay open. Never refused for the choice itself.
+ */
+export const ackOutside = async (body: unknown, by: Actor) => {
+  const b = (body && typeof body === 'object' ? body : {}) as { ids?: unknown; action?: unknown; remark?: unknown };
+  const ids = idList(b.ids, 'ids', UNIWARE_OUTSIDE.PRECHECK_MAX);
+  const action = typeof b.action === 'string' ? b.action : '';
+  const remark = typeof b.remark === 'string' ? b.remark.trim().slice(0, UNIWARE_OUTSIDE.REMARK_MAX) : '';
+  if (!UNIWARE_OUTSIDE.ACK_ACTIONS.includes(action)) {
+    throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails([{ field: 'action', code: ERROR_CODES.FIELD_BAD_FORMAT, message: errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, 'action', `one of ${UNIWARE_OUTSIDE.ACK_ACTIONS.join(', ')}`) }]);
+  }
+  await audit(by, `uniware-outside: ${action} anyway for finding(s) ${ids.join(',')}${remark ? `: ${remark}` : ''}`);
+  log.info(LOG_SOURCE.APP, `${LOG} ${by.email} went ahead (${action}) despite ${ids.length} finding(s)${remark ? `: ${remark}` : ''}`);
+  return { recorded: ids.length };
 };
 

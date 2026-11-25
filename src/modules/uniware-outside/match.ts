@@ -38,7 +38,8 @@ export const poKey = (v: string | null | undefined): string => (v ?? '').trim().
 
 /** Where a PO is that a Uniware order would be a warning for, or null (anything else: nothing to warn about). */
 export const kindOf = (c: Pick<Candidate, 'status' | 'uploaded'>): UniwareOutsideKind | null => {
-  if (c.status === UPLOAD_STATUS.NEEDS_REVIEW) return UNIWARE_OUTSIDE_KIND.REVIEW;
+  // 2026-11-25: waiting for approval counts as review (Approve makes the sale order: warn there too)
+  if (c.status === UPLOAD_STATUS.NEEDS_REVIEW || c.status === UPLOAD_STATUS.PENDING_APPROVAL) return UNIWARE_OUTSIDE_KIND.REVIEW;
   if (c.status === UPLOAD_STATUS.REJECTED) return UNIWARE_OUTSIDE_KIND.REJECTED;
   if (c.status === UPLOAD_STATUS.COMPLETED && !c.uploaded) return UNIWARE_OUTSIDE_KIND.PROCESSED;
   return null;

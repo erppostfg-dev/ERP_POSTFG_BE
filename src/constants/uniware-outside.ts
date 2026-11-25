@@ -49,9 +49,19 @@ export const UNIWARE_OUTSIDE = {
   LIVE_FRESH_MS: 2 * 60_000,
   /** Bulk resolve: at most BULK_MAX findings a call, done one by one (each like the single resolve). */
   BULK_MAX: 200,
+  /**
+   * Check at the moment of action (2026-11-25, user: "when they download the sale order, and in review, check and warn;
+   * we don't block, we warn"): before a CSV download / Mark uploaded / Submit / Approve the screen asks PRECHECK: Uniware's
+   * B2B orders created since the last check are read (normally 1 call; none when a check ended less than FRESH_MS ago),
+   * then the open findings of those POs are returned. Continuing anyway is recorded (ACK, audit), never refused.
+   */
+  PRECHECK_FRESH_MS: 2 * 60_000,
+  PRECHECK_MAX: 500,
+  ACK_ACTIONS: ['download', 'mark', 'submit', 'approve'] as readonly string[],
   ROUTES: {
     STATUS: '/uniware-outside', CHECK: '/uniware-outside/check', RESOLVE: '/uniware-outside/:id/resolve',
     LIVE: '/uniware-outside/:id/live', BULK_RESOLVE: '/uniware-outside/bulk-resolve',
+    PRECHECK: '/uniware-outside/precheck', ACK: '/uniware-outside/ack',
   },
 } as const;
 
