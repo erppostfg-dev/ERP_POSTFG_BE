@@ -49,7 +49,7 @@ afterEach(() => setPoUniwareClient(null));
 afterAll(closeDb);
 
 describe('the check', () => {
-  it('B2B search in day windows (first run 30 days back, at most 8 calls); finds only POs here that are not in Uniware through us', async () => {
+  it('B2B search in day windows (first run 30 days back in 48 h windows, at most 15 calls); finds only POs here that are not in Uniware through us', async () => {
     const review = await upload('PO-1', 'needs_review');
     const rejected = await upload('PO-2', 'rejected');
     const processed = await upload('PO-3', 'completed', { code: 'erp_20261120001' });
@@ -65,9 +65,9 @@ describe('the check', () => {
     ];
     const now = Date.parse('2026-11-25T12:00:00Z');
     const r = await runOutsideCheck('test', now);
-    expect(calls).toHaveLength(8);
+    expect(calls).toHaveLength(15);
     expect(calls[0]).toMatchObject({ path: '/services/rest/v1/oms/saleOrder/search', body: { orderCategory: 'B2B', dateType: 'CREATED', fromDate: now - 30 * 86_400_000 } });
-    expect(r.counts).toMatchObject({ calls: 8, findings: 3, newFindings: 3 });
+    expect(r.counts).toMatchObject({ calls: 15, findings: 3, newFindings: 3 });
     expect(await finding('sf_1')).toMatchObject({ upload_id: review.id, kind: 'review', state: 'open' });
     expect(await finding('sf_2')).toMatchObject({ upload_id: rejected.id, kind: 'rejected' });
     expect(await finding('sf_3')).toMatchObject({ upload_id: processed.id, kind: 'processed' });
@@ -76,7 +76,7 @@ describe('the check', () => {
     // the next run goes on from where this one stopped, nothing new is written
     calls = [];
     const again = await runOutsideCheck('test', now);
-    expect(calls[0].body.fromDate).toBe(now - 30 * 86_400_000 + 8 * 86_400_000 - 30 * 60_000);
+    expect(calls[0].body.fromDate).toBe(now - 30 * 60_000); // all 30 days were read: on from the end, less the overlap
     expect(again.counts.newFindings).toBe(0);
   });
 

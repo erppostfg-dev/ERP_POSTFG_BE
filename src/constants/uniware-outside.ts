@@ -24,10 +24,14 @@ export const UNIWARE_OUTSIDE = {
   /** Timed runs every EVERY_MIN; the first one FIRST_DELAY_MS after a start (not with the deploy's other jobs). */
   EVERY_MIN: 120,
   FIRST_DELAY_MS: 6 * 60_000,
-  /** First run reads BACKFILL_DAYS back; each call reads at most STEP_HOURS; at most MAX_CALLS_PER_RUN calls a run. */
+  /**
+   * First run reads BACKFILL_DAYS back; each call reads at most STEP_HOURS; at most MAX_CALLS_PER_RUN calls a run.
+   * 2026-11-25 (first dev run: 8 calls of 24 h = 1,009 B2B orders in 14.5 s, ~126 a day): 48 h a call + 15 calls = the
+   * 30-day catch-up in ONE run (~30 s, ~250 orders / ~100 KB a call); a normal run (2 h) stays 1 call.
+   */
   BACKFILL_DAYS: 30,
-  STEP_HOURS: 24,
-  MAX_CALLS_PER_RUN: 8,
+  STEP_HOURS: 48,
+  MAX_CALLS_PER_RUN: 15,
   /** A new run starts OVERLAP_MIN before the end of the last one (orders created during a run are not missed). */
   OVERLAP_MIN: 30,
   /** The API user is shared with in-transit, D2C and the PO sync: one call at a time, a pause between. */

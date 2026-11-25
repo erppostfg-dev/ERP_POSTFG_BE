@@ -19,9 +19,9 @@ describe('findingsOf (2026-11-25)', () => {
     expect(ordersOf([{ code: 'a', displayOrderCode: 'P', channel: 'X', status: 'COMPLETE', created: 5 }, { code: 'b', channel: 'X' }, null]).map((x) => x.code)).toEqual(['a']);
     expect(ordersOf(undefined)).toEqual([]);
   });
-  it('windowsOf: 30 days back the first time, then from the last end less 30 min, 24 h each', () => {
+  it('windowsOf: 30 days back the first time, then from the last end less 30 min, 48 h each', () => {
     const now = 100 * 86_400_000;
-    expect(windowsOf(null, now)).toHaveLength(30);
+    expect(windowsOf(null, now)).toHaveLength(15);
     expect(windowsOf(now - 3_600_000, now)).toEqual([[now - 3_600_000 - 1_800_000, now]]);
   });
 });
