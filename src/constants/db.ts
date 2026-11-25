@@ -90,6 +90,8 @@ export const TABLES = {
   MARGIN_CHANGE_REQUESTS: 'margin_change_requests',
   // Create in Uniware (2026-11-09, constants/uniware-create.ts): one row per request to create a PO's sale order.
   UNIWARE_CREATES: 'uniware_creates',
+  // POs punched in Uniware outside POST_FG (2026-11-25, constants/uniware-outside.ts): one row per match found.
+  UNIWARE_OUTSIDE_ORDERS: 'uniware_outside_orders',
   // Notices (2026-11-10, constants/notices.ts): one-way notes in the bell, kept 2 days; seen = newest notice id per person.
   NOTICES: 'notices',
   NOTICE_SEEN: 'notice_seen',

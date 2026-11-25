@@ -127,6 +127,11 @@ export const ERRORS = {
   DATA_SYNC_RUNNING: define(409, (job: string) => `${job} is running now: wait for it to finish (Admin > Data sync shows it)`),
   DATA_SYNC_NOT_HERE: define(409, (db: string, target: string) => `Data sync writes only into ${target}; this server's database is ${db}, so nothing was run (open it on prod)`),
   UNIWARE_SYNC_TOO_SOON: define(409, (ago: number, by: string, left: number) => `Sync from Uniware was run ${ago} min ago by ${by}: available again in ${left} min (the server also syncs every 30 min by itself)`),
+  // --- POs punched in Uniware outside POST_FG (2026-11-25) ---
+  UNIWARE_OUTSIDE_TOO_SOON: define(409, (ago: number, by: string, left: number) => `Uniware was checked ${ago} min ago by ${by}: available again in ${left} min (the server also checks every 2 hours by itself)`),
+  UNIWARE_OUTSIDE_NOT_FOUND: define(404, (id: string) => `Uniware finding ${id} not found`),
+  UNIWARE_OUTSIDE_DONE: define(409, (id: string) => `Uniware finding ${id} was already resolved, or its PO moved on: refresh the list`),
+  UNIWARE_OUTSIDE_BAD_ACTION: define(400, (action: string, kind: string) => `"${action}" does not fit a PO that is ${kind}`),
   // --- Notices (2026-11-10) ---
   NOTICES_OFF: define(409, () => 'Notices are switched off (Users & Roles -> Settings)'),
   NOTICE_EVERYONE_NOT_ALLOWED: define(403, () => 'Only an admin or a developer can send a notice to everyone'),

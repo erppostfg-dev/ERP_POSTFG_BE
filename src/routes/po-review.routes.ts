@@ -21,6 +21,7 @@ import {
   UPLOAD_ID_PATTERN,
   UPLOAD_STATUS,
   UploadStatus,
+  UNIWARE_OUTSIDE,
 } from '../constants';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
 import { hasCapability } from '../modules/auth/access.service';
@@ -36,6 +37,7 @@ import { getRejection, reopenRejected } from '../modules/po-review/po-review-reo
 import { LineCorrection, rejectPo, ResubmitBody, submitForApproval } from '../modules/po-review/po-review-actions.service';
 import { appError } from '../utils/AppError';
 import { dismissFailed, reopenMany, rereadUploads, retryFailed } from '../modules/po-review/po-review-failed.service';
+import { checkNow, outsideStatus, resolveOutside } from '../modules/uniware-outside/outside.service';
 
 /*
  * PO review routes (API contract "PO review", 2026-10-09):
@@ -202,6 +204,32 @@ router.post(FAILED_ACTIONS.ROUTES.REOPEN, requireAuth, requirePage(PAGE.PO_REVIE
   try {
     const { ids, remark } = bulkBody(req.body, true);
     res.json({ data: await reopenMany(ids, remark, who(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---- POs punched in Uniware outside POST_FG (2026-11-25, constants/uniware-outside.ts; before /:uploadId) ----------
+/** GET /po-review/uniware-outside: POs with a finding per tab, the last check, the button. Viewer. */
+router.get(UNIWARE_OUTSIDE.ROUTES.STATUS, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.VIEWER), async (_req, res, next) => {
+  try {
+    res.json({ data: await outsideStatus() });
+  } catch (err) {
+    next(err);
+  }
+});
+/** POST /po-review/uniware-outside/check: read Uniware now (one click per 30 min for the whole team). Editor. 202. */
+router.post(UNIWARE_OUTSIDE.ROUTES.CHECK, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
+  try {
+    res.status(202).json({ data: await checkNow(req.auth!.user.email) });
+  } catch (err) {
+    next(err);
+  }
+});
+/** POST /po-review/uniware-outside/:id/resolve { action, remark }: reject / use_code / acknowledge / dismiss. Editor. */
+router.post(UNIWARE_OUTSIDE.ROUTES.RESOLVE, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
+  try {
+    res.json({ data: await resolveOutside(String(req.params.id), req.body, who(req)) });
   } catch (err) {
     next(err);
   }

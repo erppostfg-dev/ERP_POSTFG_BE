@@ -16,6 +16,7 @@ import { startChannelApis } from './modules/channel-api/scheduler';
 import { startRobotSchedule } from './modules/channel-api/flipkart/consignments.service';
 import { startD2cSync } from './modules/d2c-transfers/sync.service';
 import { startPoUniwareSync } from './modules/po-uniware-sync/sync.service';
+import { startUniwareOutside } from './modules/uniware-outside/outside.service';
 import { startUniwareCreate } from './modules/uniware-create/create.service';
 import { startDataSyncTimer } from './modules/pepims-sync/sync-runner';
 import { resumeManualQueue } from './modules/manual-upload/manual-upload.service';
@@ -123,6 +124,8 @@ const start = async (): Promise<void> => {
   const d2cSync = AppDataSource.isInitialized && !env.laptopMode ? startD2cSync() : undefined;
   // Channel POs (2026-11-06): their Uniware sale order status, the same way (read-only); same rules.
   const poUniwareSync = AppDataSource.isInitialized && !env.laptopMode ? startPoUniwareSync() : undefined;
+  // POs punched in Uniware outside POST_FG (2026-11-25): a read-only search every 2 h; same rules.
+  const uniwareOutside = AppDataSource.isInitialized && !env.laptopMode ? startUniwareOutside() : undefined;
   // Create in Uniware (2026-11-09): the queued requests, only with UNIWARE_CREATE_ENABLED=true (never on a laptop).
   const uniwareCreate = AppDataSource.isInitialized && !env.laptopMode ? startUniwareCreate() : undefined;
   // Data sync (2026-11-17, Admin > Data sync): PEPIMS -> prod + dev -> prod every night 01:00 IST; only on the server
@@ -194,6 +197,7 @@ const start = async (): Promise<void> => {
     channelApis?.stop();
     robotSchedule?.stop();
     poUniwareSync?.stop();
+    uniwareOutside?.stop();
     uniwareCreate?.stop();
     d2cSync?.stop();
     strRetry?.stop();
