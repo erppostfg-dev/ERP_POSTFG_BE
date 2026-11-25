@@ -117,11 +117,11 @@ describe('Transfer routes upload (template, preview, import)', () => {
     const csv = [HEAD, `${m.facilityCode},BigBasket,TransferLoc,D2C_TRANSFER_TEST,,,VEND_1,No`, `${m.facilityCode},BigBasket,TransferLoc2,D2C_NEW,CUST_2,New cust,VEND_2,`].join('\n');
     const res = await send('import', csv, admin, { remark: 'bulk' }).expect(201);
     expect(res.body.data).toMatchObject({ added: 1, updated: 1, switchedOn: expect.arrayContaining(['TEST_WH3']) });
-    const all = await rows<{ location_id: number; uniware_channel_code: string; customer_code: string | null; customer_name: string; vendor_code: string; is_active: number }>(
+    const all = await rows<{ location_id: string; uniware_channel_code: string; customer_code: string | null; customer_name: string; vendor_code: string; is_active: number }>(
       'SELECT location_id, uniware_channel_code, customer_code, customer_name, vendor_code, is_active FROM d2c_transfer_routes ORDER BY id');
     expect(all).toMatchObject([
       { uniware_channel_code: 'D2C_TRANSFER_TEST', customer_code: null, customer_name: 'PEP', vendor_code: 'VEND_1', is_active: 0 },
-      { location_id: second, uniware_channel_code: 'D2C_NEW', customer_code: 'CUST_2', customer_name: 'New cust', vendor_code: 'VEND_2', is_active: 1 },
+      { location_id: String(second), uniware_channel_code: 'D2C_NEW', customer_code: 'CUST_2', customer_name: 'New cust', vendor_code: 'VEND_2', is_active: 1 },
     ]);
     const logs = await rows<{ master_type: string; action: string; remark: string }>('SELECT master_type, action, remark FROM master_change_logs ORDER BY id');
     expect(logs.every((l) => l.remark === 'bulk')).toBe(true);
