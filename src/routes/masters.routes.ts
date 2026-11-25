@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response, Router } from 'express';
-import { ACCESS_LEVEL, CACHE_NS, ERROR_CODES, MASTER_LOG_TYPE, MASTER_ROUTES, MasterLogType, PAGE } from '../constants';
+import multer from 'multer';
+import { ACCESS_LEVEL, CACHE_NS, ERROR_CODES, MASTER_LOG_TYPE, MASTER_ROUTES, MasterLogType, PAGE, ROUTE_UPLOAD } from '../constants';
 import { USER_ADMIN_ROLES } from '../constants/users';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
 import { accessFrom, allows, loadAccess } from '../modules/auth/access.service';
@@ -14,6 +15,7 @@ import { listChannelSkus } from '../modules/masters/channel-skus.service';
 import { listPepSkus } from '../modules/masters/pep-skus.service';
 import { listChannelWarehouses, listPepWarehouses } from '../modules/masters/warehouses.service';
 import { editTransferRoute, listTransferRoutes } from '../modules/masters/transfer-routes.service';
+import { importRoutesUpload, previewRoutesUpload, routesTemplateCsv, UploadFile } from '../modules/masters/transfer-routes-upload';
 import { env } from '../config/env';
 import { readSettings } from '../modules/d2c-transfers/settings';
 import { testCodesOf } from '../modules/d2c-transfers/test-mode';
@@ -70,6 +72,11 @@ import { testCodesOf } from '../modules/d2c-transfers/test-mode';
  *                                       transfer_route); 400 / 404 / 409 as the edit above. The location's PO prefix and
  *                                       receiving facility: PATCH /masters/edit/location/:locationId (transferPoPrefix,
  *                                       transferFacilityId).
+ *   GET   /masters/transfer-routes/template          (viewer) the upload .csv: header + one real route as the example
+ *   POST  /masters/transfer-routes/upload/preview    (Warehouses editor) multipart "file" (.csv) -> every row: new / update /
+ *                                                    same / error, its changes, warehouses to switch on; nothing saved
+ *   POST  /masters/transfer-routes/upload/import     the same file (+ remark) -> 201 { added, updated, unchanged, switchedOn };
+ *                                                    all or nothing: 422 ROUTE_UPLOAD_INVALID [{ row, message }] (transfer-routes-upload.ts)
  */
 
 const router = Router();
@@ -204,5 +211,21 @@ router.get(MASTER_ROUTES.TRANSFER_ROUTES, requireAuth, requirePage(PAGE.WAREHOUS
   }
 });
 router.patch(MASTER_ROUTES.TRANSFER_ROUTE, requireAuth, editorOf(PAGE.WAREHOUSES), ok((req) => editTransferRoute(req.params.id, req.body, actor(req))));
+
+// Transfer routes bulk upload (2026-11-25): the template (a real route as the example), preview, import (all or nothing)
+const routesFile = multer({ storage: multer.memoryStorage(), limits: { files: 1, fileSize: ROUTE_UPLOAD.MAX_BYTES } }).single(ROUTE_UPLOAD.FIELD);
+const fileOf = (req: Request): UploadFile | undefined => (req.file ? { originalname: req.file.originalname, buffer: req.file.buffer } : undefined);
+router.get(MASTER_ROUTES.TRANSFER_ROUTES_TEMPLATE, requireAuth, requirePage(PAGE.WAREHOUSES, ACCESS_LEVEL.VIEWER), (_req, res, next) => {
+  routesTemplateCsv().then((csv) => {
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="transfer-routes-template.csv"');
+    res.send(csv);
+  }).catch(next);
+});
+router.post(MASTER_ROUTES.TRANSFER_ROUTES_PREVIEW, requireAuth, editorOf(PAGE.WAREHOUSES), routesFile, (req, res, next) => {
+  previewRoutesUpload(fileOf(req)).then((data) => res.json({ data })).catch(next);
+});
+router.post(MASTER_ROUTES.TRANSFER_ROUTES_IMPORT, requireAuth, editorOf(PAGE.WAREHOUSES), routesFile,
+  created((req) => importRoutesUpload(fileOf(req), req.body, actor(req))));
 
 export default router;

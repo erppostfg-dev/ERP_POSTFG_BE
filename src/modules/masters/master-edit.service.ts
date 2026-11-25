@@ -163,6 +163,8 @@ const SPECS: Record<MasterLogType, MasterSpec> = {
     fields: {
       uniwareChannelCode: col('uniware_channel_code', text(D2C_UNIWARE_CODE_MAX)), customerCode: col('customer_code', text(D2C_UNIWARE_CODE_MAX)),
       vendorCode: col('vendor_code', text(D2C_UNIWARE_CODE_MAX)),
+      // the routes upload changes it too (2026-11-25)
+      customerName: col('customer_name', text(255)),
     },
   },
 };
