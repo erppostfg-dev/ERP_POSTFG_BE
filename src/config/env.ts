@@ -302,7 +302,9 @@ export const env = {
   // Laptop mode (npm run dev) always forces it on (LAPTOP_MODE_OFF).
   // Uniware sale order status of channel POs (2026-11-06, modules/po-uniware-sync): the timer (read-only on Uniware);
   // off on a laptop; Sync now on PO Overview works either way.
-  poUniwareSync: { enabled: flag('PO_UNIWARE_SYNC_ENABLED', 'true') },
+  // tenantFallback (2026-11-25): our read-only Uniware client (PO sync + outside check) also takes UNIWARE_BASE_URL when
+  // UNIWARE_TENANT is empty (the laptop .env names it so); in-transit / D2C clients are unchanged.
+  poUniwareSync: { enabled: flag('PO_UNIWARE_SYNC_ENABLED', 'true'), tenantFallback: (process.env.UNIWARE_BASE_URL ?? '').trim() },
   // POs punched in Uniware outside POST_FG (2026-11-25, constants/uniware-outside.ts): the timed read-only search; off on
   // a laptop or with UNIWARE_OUTSIDE_ENABLED=false (Check now works either way).
   uniwareOutside: { enabled: flag('UNIWARE_OUTSIDE_ENABLED', 'true') },

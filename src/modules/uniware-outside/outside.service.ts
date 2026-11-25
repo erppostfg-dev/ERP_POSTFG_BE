@@ -187,6 +187,12 @@ const once = async (trigger: string) => {
     if (!r) log.info(LOG_SOURCE.APP, `${LOG} another server is running it: skipped`);
   } catch (err) {
     logError(LOG_SOURCE.APP, `${LOG} run failed`, err);
+    // 2026-11-25: a run that could not even start (e.g. Uniware not set up) shows its error on the strip, and a click that
+    // ended so gives the button back (it read nothing; the team may try again at once)
+    const msg = err instanceof Error ? err.message.slice(0, 300) : String(err);
+    const prev = await readState<RunRecord>(UNIWARE_OUTSIDE.STATE_KEY, EMPTY).catch(() => EMPTY);
+    await saveState(UNIWARE_OUTSIDE.STATE_KEY, { ...prev, lastEndedAt: new Date().toISOString(), lastError: msg, trigger }).catch(() => undefined);
+    if (trigger === 'button') await saveState(UNIWARE_OUTSIDE.BUTTON_STATE_KEY, { at: null, by: null }).catch(() => undefined);
   } finally {
     running = false;
   }
