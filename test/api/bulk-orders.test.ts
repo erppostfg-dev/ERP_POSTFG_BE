@@ -1477,6 +1477,19 @@ describe('bulk orders: free orders without amounts in the portal, duplicate warn
     expect(fields(await api().get(`${T}?waitingDays=0`).set('Cookie', opsExec.cookie).expect(400))).toEqual(['waitingDays']);
     expect(fresh.status).toBe('submitted');
   });
+
+  it('our team filters by several types / statuses / payments at once (comma separated); a wrong value = 400', async () => {
+    const T = '/api/v1/po-review/bulk-orders';
+    const m = (await create(mkt, order()).expect(201)).body.data;
+    const i = (await create(inst, order({ type: 'institutional' })).expect(201)).body.data;
+    await api().post(`${V}/${m.id}/cancel`).set('Cookie', mkt.cookie).send({}).expect(200);
+    const ids = async (qs: string) => ((await api().get(`${T}?${qs}`).set('Cookie', opsExec.cookie).expect(200)).body.data as { id: string }[]).map((x) => x.id).sort();
+    expect(await ids('type=marketing,institutional')).toEqual([m.id, i.id].sort());
+    expect(await ids('type=marketing,institutional&status=cancelled,pending_approval')).toEqual([m.id, i.id].sort());
+    expect(await ids('status=cancelled')).toEqual([m.id]);
+    expect(await ids('payment=unbilled,paid')).toEqual([i.id]);
+    expect(fields(await api().get(`${T}?type=marketing,nope`).set('Cookie', opsExec.cookie).expect(400))).toEqual(['type']);
+  });
 });
 
 /*

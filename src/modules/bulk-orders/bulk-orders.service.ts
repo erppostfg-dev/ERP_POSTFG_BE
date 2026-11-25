@@ -1213,18 +1213,23 @@ export const userNames = async (ids: number[]): Promise<Map<number, string>> => 
   return new Map(us.map((u) => [u.id, u.name || u.email]));
 };
 
-interface ListQuery { type: BulkOrderType | null; status: string | null; payment: string | null; page: number; size: number; search: string; archived: boolean; waitingDays: number | null }
+/** 2026-11-25: type / status / payment may each be several (comma separated: the team's Filters panel). */
+interface ListQuery { types: BulkOrderType[]; statuses: string[]; payments: string[]; page: number; size: number; search: string; archived: boolean; waitingDays: number | null }
 
 /** Checks a list query (type, status, q, page, pageSize); 400 with every wrong one. */
 const parseListQuery = (q: Record<string, unknown>): ListQuery => {
   const c = new Checker();
-  const type = q.type === undefined || q.type === '' ? null : typeParam(c, q.type);
+  // 2026-11-25: each may be one value or several, comma separated (every one checked)
+  const many = <T extends string>(v: unknown, field: string, allowed: readonly T[]): T[] =>
+    (typeof v === 'string' && v !== '' ? v.split(',').map((x) => x.trim()).filter(Boolean) : v === undefined || v === '' ? [] : [v])
+      .map((x) => c.oneOf(x, field, allowed)).filter((x): x is T => x !== null);
+  const types = many(q.type, F.TYPE, BULK_ORDER_TYPES);
   // a status, or BULK_LIST_READY = approved + submitted (v2 1c: what our team may process)
-  const status = q.status === undefined || q.status === '' ? null : c.oneOf(q.status, 'status', [...BULK_ORDER_STATUSES, BULK_LIST_READY, BULK_LIST_ACTIVE]);
+  const statuses = many(q.status, 'status', [...BULK_ORDER_STATUSES, BULK_LIST_READY, BULK_LIST_ACTIVE] as string[]);
   // v2 1g: 1 / true = only the archive (closed orders not changed for BULK_ARCHIVE.DAYS); else they are left out
   const archived = q[F.ARCHIVED] === '1' || q[F.ARCHIVED] === 'true';
   // payment status (2026-11-13: "Payments to verify"; v2 5b: = payment_submitted)
-  const payment = q.payment === undefined || q.payment === '' ? null : c.oneOf(q.payment, 'payment', BULK_PAYMENT_STATUSES);
+  const payments = many(q.payment, 'payment', BULK_PAYMENT_STATUSES as string[]);
   const page = q.page === undefined ? 1 : Number(q.page);
   const size = q.pageSize === undefined ? BULK_ORDERS.PAGE_SIZE : Number(q.pageSize);
   if (!Number.isInteger(page) || page < 1) c.add('page', errorMessage(ERROR_CODES.FIELD_NOT_INT_RANGE, 'page', 1, 1_000_000));
@@ -1235,7 +1240,7 @@ const parseListQuery = (q: Record<string, unknown>): ListQuery => {
   const waitingDays = w === undefined || w === '' ? null : Number(w);
   if (waitingDays !== null && !(Number.isInteger(waitingDays) && waitingDays >= 1 && waitingDays <= BULK_ORDERS.WAITING_DAYS_MAX)) c.add(F.WAITING_DAYS, errorMessage(ERROR_CODES.FIELD_NOT_INT_RANGE, F.WAITING_DAYS, 1, BULK_ORDERS.WAITING_DAYS_MAX));
   c.fail();
-  return { type, status, payment, page, size, search, archived, waitingDays };
+  return { types, statuses, payments, page, size, search, archived, waitingDays };
 };
 
 /** One page of orders of these types (newest first) + the total: 1 count + 1 page query, no lines. */
@@ -1256,10 +1261,10 @@ const pageOfOrders = async (types: BulkOrderType[], l: ListQuery, me: number | n
   // v2 1g: the archive = closed orders not changed for BULK_ARCHIVE.DAYS
   const cutoff = new Date(Date.now() - BULK_ARCHIVE.DAYS * 86_400_000);
   qb.andWhere(l.archived ? '(o.status IN (:...closed) AND o.updatedAt < :cutoff)' : 'NOT (o.status IN (:...closed) AND o.updatedAt < :cutoff)', { closed: [...BULK_ARCHIVE.STATUSES], cutoff });
-  if (l.status === BULK_LIST_READY) qb.andWhere('o.status IN (:...ready)', { ready: [...BULK_PROCESSABLE_STATUSES] });
-  else if (l.status === BULK_LIST_ACTIVE) qb.andWhere('o.status IN (:...active)', { active: [...BULK_ACTIVE_STATUSES] });
-  else if (l.status) qb.andWhere('o.status = :status', { status: l.status });
-  if (l.payment) qb.andWhere('o.paymentStatus = :payment', { payment: l.payment });
+  // ready / active stand for their statuses; several = any of them
+  const wanted = [...new Set(l.statuses.flatMap((x) => (x === BULK_LIST_READY ? [...BULK_PROCESSABLE_STATUSES] : x === BULK_LIST_ACTIVE ? [...BULK_ACTIVE_STATUSES] : [x])))];
+  if (wanted.length) qb.andWhere('o.status IN (:...wanted)', { wanted });
+  if (l.payments.length) qb.andWhere('o.paymentStatus IN (:...payments)', { payments: l.payments });
   if (l.waitingDays !== null) {
     qb.andWhere('o.status IN (:...waitReady) AND COALESCE(o.decidedAt, o.createdAt) < :waitCut', { waitReady: [...BULK_PROCESSABLE_STATUSES], waitCut: new Date(Date.now() - l.waitingDays * 86_400_000) });
   }
@@ -1282,8 +1287,8 @@ const pageOfOrders = async (types: BulkOrderType[], l: ListQuery, me: number | n
 export const listBulkOrders = async (actor: BulkActor, q: Record<string, unknown>) => {
   const l = parseListQuery(q);
   const r = await needAnyBulk(actor);
-  if (l.type) needType(r, l.type, ACCESS_LEVEL.VIEWER);
-  const types = l.type ? [l.type] : viewable(r);
+  for (const t of l.types) needType(r, t, ACCESS_LEVEL.VIEWER);
+  const types = l.types.length ? l.types : viewable(r);
   // v2 1c: the approval rules of the types I see, so the order form can say before Submit whether approval is needed
   const [found, settings, brands] = await Promise.all([pageOfOrders(types, l, actor.id, r.org), AppDataSource.getRepository(BulkTypeSetting).find(), bulkBrands()]);
   const approvalRules = Object.fromEntries(types.map((t) => [t, {
@@ -1360,7 +1365,7 @@ export const teamBulkOrders = async (q: Record<string, unknown>) => {
   const l = parseListQuery(q);
   // per type: approved orders waiting to be processed + proofs of payment waiting to be checked (open orders); 1 GROUP BY
   const [found, counts] = await Promise.all([
-    pageOfOrders(l.type ? [l.type] : BULK_ORDER_TYPES, l, null),
+    pageOfOrders(l.types.length ? l.types : BULK_ORDER_TYPES, l, null),
     AppDataSource.getRepository(BulkOrder).createQueryBuilder('o').select('o.orderType', 'type')
       .addSelect('SUM(o.status IN (:...ready))', 'n').addSelect('SUM(o.paymentStatus = :p AND o.status NOT IN (:...closed))', 'pay')
       .where('(o.status IN (:...ready) OR o.paymentStatus = :p)', { ready: [...BULK_PROCESSABLE_STATUSES], p: BULK_PAYMENT_STATUS.PAYMENT_SUBMITTED, closed: [BULK_ORDER_STATUS.REJECTED, BULK_ORDER_STATUS.CANCELLED] })
