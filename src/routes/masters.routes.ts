@@ -2,6 +2,7 @@ import { NextFunction, Request, Response, Router } from 'express';
 import { ACCESS_LEVEL, CACHE_NS, ERROR_CODES, MASTER_LOG_TYPE, MASTER_ROUTES, MasterLogType, PAGE } from '../constants';
 import { USER_ADMIN_ROLES } from '../constants/users';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
+import { accessFrom, allows, loadAccess } from '../modules/auth/access.service';
 import { cached } from '../modules/cache/cache.service';
 import { forgetMasters } from '../modules/masters/masters.cache';
 import { addChannel, addChannelLocation, addChannelSku, addPepSku, formOptions } from '../modules/masters/master-add.service';
@@ -32,9 +33,9 @@ import { testCodesOf } from '../modules/d2c-transfers/test-mode';
  *                                    (Channel Location Master, 2026-10-16; was /masters/warehouses/channel).
  * All: { data: Item[], meta: { total } }.
  *
- * Add forms (2026-10-27; admin / developer only, every field required; 400 VALIDATION_FAILED with details
- * [{ field, code, message }] lists every problem, nothing saved; 403 MASTER_ADD_NOT_ALLOWED for other roles):
- *   GET  /masters/form-options     dropdowns: channels, active facilities, PEP SKUs, SKU types, GST rates, states, Yes / No
+ * Add forms (2026-10-27; admin / developer, or EDITOR on that master's page since 2026-11-25; every field required; 400 VALIDATION_FAILED with details
+ * [{ field, code, message }] lists every problem, nothing saved; 403 MASTER_ADD_NOT_ALLOWED for everyone else):
+ *   GET  /masters/form-options     (editor of any Masters page) dropdowns: channels, active facilities, PEP SKUs, SKU types, GST rates, states, Yes / No
  *   POST /masters/pep-skus          { pepCode, productName, brand, productType, mrp, gstTaxType, eanCode, hsnCode,
  *                                     lengthMm, widthMm, heightMm, weightG, shelfLife, isActive } -> 201 { id, pepCode }
  *   POST /masters/channel-skus      { channelId, channelCode, pepCode, productName, brand, mrp, marginPercent,
@@ -53,7 +54,7 @@ import { testCodesOf } from '../modules/d2c-transfers/test-mode';
  *                                    viewer on /masters. { data: MasterHistoryItem[] }
  *   400 MASTER_HISTORY_BAD_REQUEST for an unknown type / bad id / bad days.
  *
- * Edit + switch on / off (2026-10-28; admin / developer; keys locked; one master_change_logs row per change):
+ * Edit + switch on / off (2026-10-28; admin / developer, or EDITOR on that master's page since 2026-11-25; keys locked; one master_change_logs row per change):
  *   PATCH /masters/edit/:type/:id    { changes: { field: value }, original: { field: value seen }, remark? }
  *                                    -> { changed: string[] }; 400 VALIDATION_FAILED (FIELD_LOCKED / FIELD_NOT_EDITABLE /
  *                                    the Add rules), 404 MASTER_ROW_NOT_FOUND, 409 MASTER_EDIT_CONFLICT [{ field, now }]
@@ -65,7 +66,7 @@ import { testCodesOf } from '../modules/d2c-transfers/test-mode';
  *                                       channel / customer / vendor codes, active, missingVendor / missingCustomer /
  *                                       missingChannel). Viewer on /masters/warehouses. { data: TransferRouteItem[], meta: { total, testOnly, testFacilities } }
  *   PATCH /masters/transfer-routes/:id  { changes: { uniwareChannelCode?, customerCode?, vendorCode?, isActive? }, original?,
- *                                       remark? } -> { changed: string[] }; admin / developer; logged (history type
+ *                                       remark? } -> { changed: string[] }; admin / developer or Warehouses editor; logged (history type
  *                                       transfer_route); 400 / 404 / 409 as the edit above. The location's PO prefix and
  *                                       receiving facility: PATCH /masters/edit/location/:locationId (transferPoPrefix,
  *                                       transferFacilityId).
@@ -73,37 +74,8 @@ import { testCodesOf } from '../modules/d2c-transfers/test-mode';
 
 const router = Router();
 
-/** Adding to the masters: admin / developer only for now (user, 2026-10-27). */
-const requireMasterAdmin = (req: Request, _res: Response, next: NextFunction) => {
-  if (!req.auth?.roles.some((r) => (USER_ADMIN_ROLES as readonly string[]).includes(r))) {
-    return next(appError(ERROR_CODES.MASTER_ADD_NOT_ALLOWED, USER_ADMIN_ROLES.join(' / ')));
-  }
-  next();
-};
-const actor = (req: Request) => ({ id: req.auth!.user.id, email: req.auth!.user.email });
-// every write drops the cached Masters lists before it answers (the screen reloads right after; 2026-11-10)
-const created = (fn: (req: Request) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => {
-  fn(req).then(async (data) => { await forgetMasters(); res.status(201).json({ data }); }).catch(next);
-};
-
-router.get(MASTER_ROUTES.FORM_OPTIONS, requireAuth, requireMasterAdmin, (_req, res, next) => {
-  cached(CACHE_NS.MASTERS, 'form-options', formOptions).then((data) => res.json({ data })).catch(next);
-});
-router.post(MASTER_ROUTES.PEP_SKUS, requireAuth, requireMasterAdmin, created((req) => addPepSku(req.body, actor(req))));
-router.post(MASTER_ROUTES.CHANNEL_SKUS, requireAuth, requireMasterAdmin, created((req) => addChannelSku(req.body, actor(req))));
-router.post(MASTER_ROUTES.CHANNELS, requireAuth, requireMasterAdmin, created((req) => addChannel(req.body, actor(req))));
-router.post(MASTER_ROUTES.CHANNEL_LOCATIONS, requireAuth, requireMasterAdmin, created((req) => addChannelLocation(req.body, actor(req))));
-
-// ---- Edit + switch on / off (2026-10-28) -------------------------------------
-const ok = (fn: (req: Request) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => {
-  fn(req).then(async (data) => { await forgetMasters(); res.json({ data }); }).catch(next);
-};
-router.patch(MASTER_ROUTES.EDIT, requireAuth, requireMasterAdmin, ok((req) => editRow(req.params.type, req.params.id, req.body, actor(req))));
-router.post(MASTER_ROUTES.ACTIVE, requireAuth, requireMasterAdmin, ok((req) => setActive(req.params.type, req.params.id, req.body, actor(req))));
-
-// ---- History (2026-10-28) ---------------------------------------------------
-/** The page whose viewers may read a master's history. */
-const HISTORY_PAGE: Record<MasterLogType, string> = {
+/** The Masters page whose access decides who may read / change a master (history, add, edit, switch). */
+const MASTER_PAGE: Record<MasterLogType, string> = {
   [MASTER_LOG_TYPE.PEP_SKU]: PAGE.PEP_SKUS,
   [MASTER_LOG_TYPE.CHANNEL_SKU]: PAGE.CHANNEL_SKUS,
   [MASTER_LOG_TYPE.CHANNEL]: PAGE.CHANNEL_CUSTOMERS,
@@ -111,11 +83,59 @@ const HISTORY_PAGE: Record<MasterLogType, string> = {
   [MASTER_LOG_TYPE.FACILITY]: PAGE.WAREHOUSES,
   [MASTER_LOG_TYPE.TRANSFER_ROUTE]: PAGE.WAREHOUSES,
 };
+const EDITABLE_PAGES = [...new Set(Object.values(MASTER_PAGE))];
+const isMasterAdmin = (req: Request) => !!req.auth?.roles.some((r) => (USER_ADMIN_ROLES as readonly string[]).includes(r));
+
+/*
+ * Changing the masters (add / edit / switch on-off): admin / developer always; anyone else needs EDITOR on that master's
+ * page (Users & Roles -> Roles, or their own page access). Was admin / developer only (2026-10-27); user 2026-11-25:
+ * "the role's page access must work" (Saurabh, Operations Executive, Editor on Channel SKUs, had no Edit / Add).
+ * Margin / rate changes still wait for their approvals (margin-requests.ts), whoever asks.
+ */
+const requireMasterEditor = (pages: (req: Request) => string[] | null) => (req: Request, _res: Response, next: NextFunction) => {
+  if (!req.auth) return next(appError(ERROR_CODES.UNAUTHENTICATED));
+  if (isMasterAdmin(req)) return next();
+  const wanted = pages(req);
+  if (!wanted) return next(); // unknown master type: the service answers 400 (nothing is written)
+  loadAccess(req.auth.user.id, req.auth.roles)
+    .then((rows) => {
+      if (wanted.some((p) => allows(accessFrom(rows, p), ACCESS_LEVEL.EDITOR))) return next();
+      next(appError(ERROR_CODES.MASTER_ADD_NOT_ALLOWED, `admin / developer or an editor of ${wanted.join(' / ')}`));
+    })
+    .catch(next);
+};
+/** Editor of this one page. */
+const editorOf = (page: string) => requireMasterEditor(() => [page]);
+/** Editor of the page of the :type in the address (edit / switch). */
+const editorOfType = requireMasterEditor((req) => (isMasterLogType(req.params.type) ? [MASTER_PAGE[req.params.type]] : null));
+const actor = (req: Request) => ({ id: req.auth!.user.id, email: req.auth!.user.email });
+// every write drops the cached Masters lists before it answers (the screen reloads right after; 2026-11-10)
+const created = (fn: (req: Request) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => {
+  fn(req).then(async (data) => { await forgetMasters(); res.status(201).json({ data }); }).catch(next);
+};
+
+// the Add / Edit forms' dropdowns: an editor of any Masters page
+router.get(MASTER_ROUTES.FORM_OPTIONS, requireAuth, requireMasterEditor(() => EDITABLE_PAGES), (_req, res, next) => {
+  cached(CACHE_NS.MASTERS, 'form-options', formOptions).then((data) => res.json({ data })).catch(next);
+});
+router.post(MASTER_ROUTES.PEP_SKUS, requireAuth, editorOf(PAGE.PEP_SKUS), created((req) => addPepSku(req.body, actor(req))));
+router.post(MASTER_ROUTES.CHANNEL_SKUS, requireAuth, editorOf(PAGE.CHANNEL_SKUS), created((req) => addChannelSku(req.body, actor(req))));
+router.post(MASTER_ROUTES.CHANNELS, requireAuth, editorOf(PAGE.CHANNEL_CUSTOMERS), created((req) => addChannel(req.body, actor(req))));
+router.post(MASTER_ROUTES.CHANNEL_LOCATIONS, requireAuth, editorOf(PAGE.CHANNEL_LOCATIONS), created((req) => addChannelLocation(req.body, actor(req))));
+
+// ---- Edit + switch on / off (2026-10-28) -------------------------------------
+const ok = (fn: (req: Request) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => {
+  fn(req).then(async (data) => { await forgetMasters(); res.json({ data }); }).catch(next);
+};
+router.patch(MASTER_ROUTES.EDIT, requireAuth, editorOfType, ok((req) => editRow(req.params.type, req.params.id, req.body, actor(req))));
+router.post(MASTER_ROUTES.ACTIVE, requireAuth, editorOfType, ok((req) => setActive(req.params.type, req.params.id, req.body, actor(req))));
+
+// ---- History (2026-10-28) ---------------------------------------------------
 router.get(MASTER_ROUTES.HISTORY, requireAuth, (req, res, next) => {
   const type = req.params.type;
   // an unknown type is answered by rowHistory (400); a known one needs that master's page
   if (!isMasterLogType(type)) return void rowHistory(type, req.params.id).catch(next);
-  void requirePage(HISTORY_PAGE[type], ACCESS_LEVEL.VIEWER)(req, res, (err?: unknown) => {
+  void requirePage(MASTER_PAGE[type], ACCESS_LEVEL.VIEWER)(req, res, (err?: unknown) => {
     if (err) return next(err);
     rowHistory(type, req.params.id).then((data) => res.json({ data })).catch(next);
   });
@@ -183,6 +203,6 @@ router.get(MASTER_ROUTES.TRANSFER_ROUTES, requireAuth, requirePage(PAGE.WAREHOUS
     next(err);
   }
 });
-router.patch(MASTER_ROUTES.TRANSFER_ROUTE, requireAuth, requireMasterAdmin, ok((req) => editTransferRoute(req.params.id, req.body, actor(req))));
+router.patch(MASTER_ROUTES.TRANSFER_ROUTE, requireAuth, editorOf(PAGE.WAREHOUSES), ok((req) => editTransferRoute(req.params.id, req.body, actor(req))));
 
 export default router;
