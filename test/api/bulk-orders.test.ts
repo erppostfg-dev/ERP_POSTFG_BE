@@ -573,8 +573,13 @@ describe('bulk orders step 3b: Institutional requester details + our team create
     expect(fields(await processIt(opsExec, i.id, { ...SALE, facilityCode: 'OLD_WH' }).expect(400))).toEqual(['facilityCode']);
     expect(fields(await processIt(opsExec, i.id, { ...SALE, facilityCode: 'mum_warehouse2' }).expect(400))).toEqual(['facilityCode']); // case = another warehouse
     const opts = (await api().get(`${T}/${i.id}/process-options`).set('Cookie', opsExec.cookie).expect(200)).body.data;
-    expect(opts).toEqual({ facilities: [{ code: WH, name: 'Bhiwandi', parentCode: null }], customers: [] }); // mother warehouses only: no child, dark store, D2C
-    for (const not of ['MUM_Warehouse2', 'DS_NCR_TEST', 'HYP_AHMD']) expect(fields(await processIt(opsExec, i.id, { ...SALE, facilityCode: not }).expect(400))).toEqual(['facilityCode']);
+    // 2026-11-25: mother (MWH, no parent) + child (D2C, or MWH under a mother) warehouses, each with its group; no dark store
+    expect(opts).toEqual({ facilities: [
+      { code: 'HYP_AHMD', name: 'D2C', group: 'child', parentCode: null },
+      { code: WH, name: 'Bhiwandi', group: 'mother', parentCode: null },
+      { code: 'MUM_Warehouse2', name: 'Bhiwandi child', group: 'child', parentCode: WH },
+    ], customers: [] });
+    expect(fields(await processIt(opsExec, i.id, { ...SALE, facilityCode: 'DS_NCR_TEST' }).expect(400))).toEqual(['facilityCode']);
     expect(await count('master_purchase_orders')).toBe(0);
   });
 

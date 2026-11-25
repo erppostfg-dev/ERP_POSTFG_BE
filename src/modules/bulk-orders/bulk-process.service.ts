@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { Brackets, IsNull } from 'typeorm';
+import { Brackets, In, IsNull } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
 import {
   BULK_BODY as F,
@@ -122,20 +122,24 @@ export const hideBulkCustomer = async (actorId: number, customerId: string) => {
   return { id: String(c.id), hidden: true };
 };
 
-/** A mother warehouse (BULK_SALE.MOTHER_TYPE, 2026-11-24): the only warehouses a bulk order ships from. */
-const MOTHER_WHERE = { isActive: true, intransitType: BULK_SALE.MOTHER_TYPE, parentFacilityId: IsNull() };
+/** The warehouses a bulk order ships from (BULK_SALE.WAREHOUSE_TYPES, 2026-11-25): active MWH (mothers + their children) and D2C. */
+const SHIP_FROM_WHERE = { isActive: true, intransitType: In([...BULK_SALE.WAREHOUSE_TYPES]) };
+/** mother = MWH without a parent; anything else offered (D2C, MWH under a mother) = child. */
+const groupOf = (f: Pick<MasterFacility, 'intransitType' | 'parentFacilityId'>) =>
+  f.intransitType === BULK_SALE.MOTHER_TYPE && f.parentFacilityId === null ? BULK_SALE.GROUP.MOTHER : BULK_SALE.GROUP.CHILD;
 
 /**
- * What the Process panel needs: the MOTHER warehouses (user 2026-11-24: only those; no child, dark store, D2C, return)
- * + matching saved customers. parentCode stays in the answer (always null now) for the panel's warehouse picker.
+ * What the Process panel needs: the warehouses, each with its `group` (mother / child: the panel shows them in two
+ * groups, user 2026-11-25) and parentCode (its mother's code when it has one), + matching saved customers.
  */
 export const bulkProcessOptions = async (id: string) => {
   const o = await loadOrder(id);
   const facilities = await AppDataSource.getRepository(MasterFacility).find({
-    select: { id: true, code: true, name: true }, where: MOTHER_WHERE, order: { code: 'ASC' }, take: BULK_SALE.FACILITIES_MAX,
+    select: { id: true, code: true, name: true, intransitType: true, parentFacilityId: true }, where: SHIP_FROM_WHERE, order: { code: 'ASC' }, take: BULK_SALE.FACILITIES_MAX,
   });
+  const codeOf = new Map(facilities.map((f) => [f.id, f.code]));
   return {
-    facilities: facilities.map((f) => ({ code: f.code, name: f.name, parentCode: null })),
+    facilities: facilities.map((f) => ({ code: f.code, name: f.name, group: groupOf(f), parentCode: (f.parentFacilityId !== null && codeOf.get(f.parentFacilityId)) || null })),
     customers: await matchesFor(o),
   };
 };
@@ -245,10 +249,10 @@ export const processBulkOrder = async (actor: ProcessActor, id: string, body: Re
   if (!BULK_SALE.TYPES.includes(first.orderType as BulkOrderType)) throw appError(ERROR_CODES.BULK_PROCESS_TYPE_LATER, first.orderType);
   if (!BULK_PROCESSABLE_STATUSES.includes(first.status)) throw appError(ERROR_CODES.BULK_ORDER_NOT_APPROVED, first.poNumber, first.status);
   // the warehouse exactly as the facility master spells it (case matters: main vs child warehouse)
-  // a mother warehouse only (2026-11-24), exactly as the facility master spells it
-  const facility = await AppDataSource.getRepository(MasterFacility).findOne({ select: { id: true, code: true }, where: { code: facilityCode, ...MOTHER_WHERE } });
+  // a mother or child warehouse (MWH / D2C, 2026-11-25), exactly as the facility master spells it
+  const facility = await AppDataSource.getRepository(MasterFacility).findOne({ select: { id: true, code: true }, where: { code: facilityCode, ...SHIP_FROM_WHERE } });
   if (!facility) {
-    c.add(F.FACILITY, `${facilityCode} is not an active mother warehouse in the facility master (bulk orders ship from mother warehouses only)`);
+    c.add(F.FACILITY, `${facilityCode} is not an active mother or child warehouse in the facility master (bulk orders ship from MWH / D2C warehouses)`);
     c.fail();
   }
   const type = first.orderType as BulkOrderType;

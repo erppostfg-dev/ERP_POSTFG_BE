@@ -469,11 +469,15 @@ export const BULK_SALE = {
   CUSTOMERS_MAX: 5,
   FACILITIES_MAX: 500,
   /**
-   * Bulk orders ship from MOTHER warehouses only (user 2026-11-24): active, facility master intransit_type = MWH (the
-   * in-transit report's mother warehouse type: GGN / KOL / MUM groups on dev) and not a child (no parent_facility_id).
-   * Dark stores, D2C, Return and child warehouses are never offered, and a process request with one is refused.
+   * Warehouses a bulk order ships from (user 2026-11-25: "show the mother or the child warehouses, from the D2C and the
+   * MWH ones, segregated"): active facilities whose in-transit type is MWH or D2C. Mother = MWH without a parent
+   * (GGN / KOL / MUM groups on dev); child = D2C, or MWH under a mother (parent_facility_id set). Dark stores, Return and
+   * the rest are never offered, and a process request with one is refused.
    */
   MOTHER_TYPE: 'MWH',
+  WAREHOUSE_TYPES: ['MWH', 'D2C'] as readonly string[],
+  /** process-options `group` of a warehouse. */
+  GROUP: { MOTHER: 'mother', CHILD: 'child' },
 } as const;
 
 /** Institutional requester details (portal; user 2026-11-12: "name and all details are from the requester only"). */
