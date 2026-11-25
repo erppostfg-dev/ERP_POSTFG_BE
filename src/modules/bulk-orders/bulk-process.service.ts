@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { Brackets, In, IsNull, Not } from 'typeorm';
+import { Brackets, In, IsNull } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
 import {
   BULK_BODY as F,
@@ -131,8 +131,6 @@ const groupOf = (f: Pick<MasterFacility, 'intransitType' | 'parentFacilityId'>) 
 /**
  * What the Process panel needs: the warehouses, each with its `group` (mother / child: the panel shows them in two
  * groups, user 2026-11-25) and parentCode (its mother's code when it has one), + matching saved customers.
- * defaultFacility (2026-11-25, user 'add something default'): the warehouse of the last processed bulk order of the
- * same type when it is still offered, else the first mother warehouse (null = none offered). One extra small query.
  */
 export const bulkProcessOptions = async (id: string) => {
   const o = await loadOrder(id);
@@ -140,11 +138,7 @@ export const bulkProcessOptions = async (id: string) => {
     select: { id: true, code: true, name: true, intransitType: true, parentFacilityId: true }, where: SHIP_FROM_WHERE, order: { code: 'ASC' }, take: BULK_SALE.FACILITIES_MAX,
   });
   const codeOf = new Map(facilities.map((f) => [f.id, f.code]));
-  const last = await AppDataSource.getRepository(BulkOrder).findOne({ select: { id: true, facilityCode: true }, where: { orderType: o.orderType, facilityCode: Not(IsNull()) }, order: { processedAt: 'DESC' } });
-  const offered = (code: string | null | undefined) => !!code && facilities.some((f) => f.code === code);
-  const firstMother = facilities.find((f) => groupOf(f) === BULK_SALE.GROUP.MOTHER)?.code ?? null;
   return {
-    defaultFacility: offered(last?.facilityCode) ? last!.facilityCode : firstMother,
     facilities: facilities.map((f) => ({ code: f.code, name: f.name, group: groupOf(f), parentCode: (f.parentFacilityId !== null && codeOf.get(f.parentFacilityId)) || null })),
     customers: await matchesFor(o),
   };
