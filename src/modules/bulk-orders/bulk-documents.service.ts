@@ -23,13 +23,13 @@ import {
   errorMessage,
 } from '../../constants';
 import { LOG_SOURCE } from '../../constants/logging';
-import { BulkOrder, BulkOrderDocument, BulkTypeSetting } from '../../entities';
+import { AppState, BulkOrder, BulkOrderDocument, BulkTypeSetting } from '../../entities';
 import { appError } from '../../utils/AppError';
 import { log } from '../../utils/logger';
 import { accessFrom, allows, hasCapability, loadAccess } from '../auth/access.service';
 import { openS3File, s3UrlOfKey, writeS3File } from '../email-intake/s3-mirror.service';
 import {
-  addEvent, BulkActor, Checker, getBulkOrder, isId, needAnyBulk, teamBulkOrder, typeOfOrder, userNames,
+  addEvent, BulkActor, Checker, checkAddress, getBulkOrder, HeadOffice, isId, needAnyBulk, normalPhone, readHeadOffice, teamBulkOrder, typeOfOrder, userNames,
 } from './bulk-orders.service';
 import { notifyBulk } from './bulk-notify.service';
 
@@ -304,3 +304,29 @@ export const updateBulkSetting = async (actor: BulkActor, type: string, body: Re
   return listBulkSettings(actor);
 };
 
+// ---- head office address (2026-11-25, user: 'the default is our main Boomerang office in Mumbai') -----------------------
+
+/** The head office address (admin = editor on /bulk-orders); null = not set yet. */
+export const getHeadOfficeSetting = async (actor: BulkActor) => {
+  await needSettingsAdmin(actor);
+  return readHeadOffice();
+};
+
+/**
+ * { receiverName, receiverPhone, address: { line, city, state, pincode } } -> the head office address used as the default
+ * of Head office orders; any other address on one needs approval (bulk-orders.service offHeadOfficeOf).
+ */
+export const saveHeadOfficeSetting = async (actor: BulkActor, body: Record<string, unknown>) => {
+  await needSettingsAdmin(actor);
+  const c = new Checker();
+  const receiverName = c.text(body[F.RECEIVER_NAME], F.RECEIVER_NAME, BULK_ORDERS.NAME_MAX);
+  const phoneText = c.text(body[F.RECEIVER_PHONE], F.RECEIVER_PHONE, 20);
+  const receiverPhone = phoneText ? normalPhone(phoneText) : null;
+  if (phoneText && !receiverPhone) c.add(F.RECEIVER_PHONE, errorMessage(ERROR_CODES.FIELD_BAD_FORMAT, F.RECEIVER_PHONE, 'a 10-digit phone number'));
+  const a = checkAddress(c, body[F.ADDRESS]);
+  c.fail();
+  const value: HeadOffice = { receiverName, receiverPhone: receiverPhone!, line: a.line, city: a.city, state: a.state, pincode: a.pincode };
+  await AppDataSource.getRepository(AppState).save({ key: BULK_APPROVAL.HEAD_OFFICE_KEY, value: { ...value, updatedBy: actor.id }, updatedAt: new Date() });
+  log.info(LOG_SOURCE.API, `[bulk-orders] head office address set (${a.city} ${a.pincode}) by user ${actor.id}`);
+  return readHeadOffice();
+};

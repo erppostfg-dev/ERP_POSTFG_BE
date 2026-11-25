@@ -36,6 +36,7 @@
   "GET /bulk-orders/customers",
   "GET /bulk-orders/locations",
   "GET /bulk-orders/settings",
+  "GET /bulk-orders/settings/head-office",
   "GET /bulk-orders/settings/notifications",
   "GET /bulk-orders/settings/orgs",
   "GET /bulk-orders/skus",
@@ -250,6 +251,7 @@
   "PUT /bulk-orders/customers/:customerId",
   "PUT /bulk-orders/customers/:customerId/addresses/:addressId",
   "PUT /bulk-orders/settings/:type",
+  "PUT /bulk-orders/settings/head-office",
   "PUT /bulk-orders/settings/notifications",
   "PUT /bulk-orders/settings/orgs/:orgId",
   "PUT /notices/settings"

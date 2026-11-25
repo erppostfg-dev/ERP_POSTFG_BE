@@ -20,6 +20,7 @@ import { covers } from '../helpers/routes';
  * SKU search with MRP, price = MRP less discount % from OUR master (never the request's), unique PO numbers per type
  * and year (also under parallel creates), saved locations per type, validation, and nothing of the PO chain touched.
  */
+covers(['GET /bulk-orders/settings/head-office', 'PUT /bulk-orders/settings/head-office']);
 covers(['GET /bulk-orders/settings/orgs', 'POST /bulk-orders/settings/orgs', 'PUT /bulk-orders/settings/orgs/:orgId']);
 covers(['POST /bulk-orders/receivers/check', 'POST /bulk-orders/duplicate-check', 'GET /bulk-orders/:id/stock', 'GET /po-review/bulk-orders/:id/stock']);
 covers(['GET /bulk-orders/customers', 'POST /bulk-orders/customers', 'PUT /bulk-orders/customers/:customerId',
@@ -1578,6 +1579,49 @@ describe('bulk orders: buyer organisations (outside buyers see only their own)',
       await qr.release();
     }
     expect(await count('bulk_buyer_orgs')).toBe(0);
+  });
+});
+
+/*
+ * Head office orders (2026-11-25, user): the default delivery address is our head office (Boomerang, Mumbai; an admin
+ * setting); any other address (also one receiver of several) needs approval by the bulk approvers.
+ */
+describe('bulk orders: Head office orders go to the head office; another address needs approval', () => {
+  const HS = `${V}/settings/head-office`;
+  const BOOMERANG = { line: 'Boomerang, Chandivali Farm Road, Powai', city: 'Mumbai', state: 'Maharashtra', pincode: '400072' };
+  const HO = (over: Record<string, unknown> = {}) => order({ type: 'head_office', lines: [{ pepCode: 'SKU_A', qty: 5 }], ...over });
+  beforeEach(async () => {
+    await rows("UPDATE bulk_type_settings SET approval_over_units = CASE order_type WHEN 'institutional' THEN NULL ELSE 100 END");
+  });
+
+  it('admins set the head office address (checked); others cannot; the order form reads it from the list', async () => {
+    const admin = await loginAs('admin');
+    await api().put(HS).set('Cookie', mkt.cookie).send({ receiverName: 'Front desk', receiverPhone: '9820000000', address: BOOMERANG }).expect(403);
+    expect(fields(await api().put(HS).set('Cookie', admin.cookie).send({ receiverName: 'Front desk', receiverPhone: '12', address: { ...BOOMERANG, pincode: '0' } }).expect(400)).sort())
+      .toEqual(['address.pincode', 'receiverPhone']);
+    expect((await api().get(HS).set('Cookie', admin.cookie).expect(200)).body.data).toBeNull();
+    const saved = (await api().put(HS).set('Cookie', admin.cookie).send({ receiverName: 'Front desk', receiverPhone: '+91 98200 00000', address: BOOMERANG }).expect(200)).body.data;
+    expect(saved).toEqual({ receiverName: 'Front desk', receiverPhone: '9820000000', ...BOOMERANG, updatedBy: admin.userId });
+    expect((await api().get(V).set('Cookie', mkt.cookie).expect(200)).body.meta.headOffice).toMatchObject({ city: 'Mumbai', pincode: '400072' });
+  });
+
+  it('to the head office = straight to our team; another address (or one receiver elsewhere) = approval with the reason; not set = as before', async () => {
+    const off = (await create(mkt, HO()).expect(201)).body.data; // no head office set yet
+    expect(off.status).toBe('submitted');
+    const admin = await loginAs('admin');
+    await api().put(HS).set('Cookie', admin.cookie).send({ receiverName: 'Front desk', receiverPhone: '9820000000', address: BOOMERANG }).expect(200);
+    const home = (await create(mkt, HO({ address: { ...BOOMERANG, line: 'boomerang chandivali farm road powai' } })).expect(201)).body.data; // same, spelling aside
+    expect(home.status).toBe('submitted');
+    const away = (await create(mkt, HO()).expect(201)).body.data; // ADDRESS = Andheri
+    expect(away.status).toBe('pending_approval');
+    expect(away.events[0].changes.approval).toEqual(['delivery to an address other than the head office (Mumbai)']);
+    const { receiverName: _n, receiverPhone: _p, address: _a, lines: _l, ...rest } = HO();
+    const two = (await create(mkt, { ...rest, receivers: [
+      { receiverName: 'Front desk', receiverPhone: '9820000000', address: BOOMERANG, lines: [{ pepCode: 'SKU_A', qty: 2 }] },
+      { receiverName: 'Ravi', receiverPhone: '9876543210', address: ADDRESS, lines: [{ pepCode: 'SKU_A', qty: 2 }] },
+    ] }).expect(201)).body.data;
+    expect(two.status).toBe('pending_approval');
+    expect((await create(mkt, order({ lines: [{ pepCode: 'SKU_A', qty: 5 }] })).expect(201)).body.data.status).toBe('submitted'); // Marketing: no such rule
   });
 });
 

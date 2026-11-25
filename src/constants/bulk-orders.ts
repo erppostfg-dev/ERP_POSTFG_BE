@@ -200,6 +200,10 @@ export const BULK_APPROVAL = {
   /** Why words on the timeline / API (approval.why). */
   WHY_UNITS: (units: number, over: number) => `${units} units (over ${over})`,
   WHY_MODE: (mode: string) => `${mode} delivery`,
+  /** 2026-11-25 (user): a Head office order to any address other than the head office (Boomerang, Mumbai) needs approval. */
+  WHY_NOT_HEAD_OFFICE: (city: string) => `delivery to an address other than the head office (${city})`,
+  /** app_state key of the head office address (admin: Users & Roles > Settings > Bulk Orders). */
+  HEAD_OFFICE_KEY: 'bulk-head-office:address',
 } as const;
 
 /** Timeline rows (bulk_order_events.action), one per change of an order, in the same transaction as the change. */
@@ -323,6 +327,8 @@ export const BULK_ORDERS = {
     REMIND: '/:id/remind',
     /** 2026-11-24: buyer organisations (admin = editor on BULK_PAGE.ROOT). Before SETTING / '/:id'. */
     ORGS: '/settings/orgs',
+    /** 2026-11-25: the head office address (admin). Before SETTING. */
+    HEAD_OFFICE: '/settings/head-office',
     ORG: '/settings/orgs/:orgId',
     /** v2 piece 2: checks the rows of an uploaded receivers file (nothing saved). Before '/:id' in the router. */
     RECEIVERS_CHECK: '/receivers/check',

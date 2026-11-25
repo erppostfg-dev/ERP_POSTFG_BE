@@ -36,7 +36,7 @@ import {
   IST_OFFSET_MS,
   TABLES,
 } from '../../constants';
-import { BulkBuyerOrgUser, BulkInstitutionCustomer, BulkLocation, BulkOrder, BulkOrderDocument, BulkOrderEvent, BulkOrderLine, BulkOrderReceiver, BulkTypeSetting, MasterSku, User } from '../../entities';
+import { AppState, BulkBuyerOrgUser, BulkInstitutionCustomer, BulkLocation, BulkOrder, BulkOrderDocument, BulkOrderEvent, BulkOrderLine, BulkOrderReceiver, BulkTypeSetting, MasterSku, User } from '../../entities';
 import { appError } from '../../utils/AppError';
 import { log } from '../../utils/logger';
 import { LOG_SOURCE } from '../../constants/logging';
@@ -598,14 +598,43 @@ export const addEvent = (m: EntityManager, orderId: string, action: BulkEventAct
  * Does an order need approval (v2 1c, BULK_APPROVAL)? More units than the type's threshold, or a Porter delivery
  * (Marketing-like types). `why` = the reasons for the timeline / API, empty when not needed.
  */
-const approvalNeed = (setting: BulkTypeSetting | null, type: BulkOrderType, units: number, mode: string | null): { needed: boolean; why: string[] } => {
+const approvalNeed = (setting: BulkTypeSetting | null, type: BulkOrderType, units: number, mode: string | null, offHeadOffice: string | null = null): { needed: boolean; why: string[] } => {
   const why: string[] = [];
+  // 2026-11-25: a Head office order to another address than the head office (the city given)
+  if (offHeadOffice) why.push(BULK_APPROVAL.WHY_NOT_HEAD_OFFICE(offHeadOffice));
   const over = setting?.approvalOverUnits ?? null;
   if (over !== null && units > over) why.push(BULK_APPROVAL.WHY_UNITS(units, over));
   if (isMarketingLike(type) && mode && BULK_APPROVAL.MODES.includes(mode)) why.push(BULK_APPROVAL.WHY_MODE(mode));
   return { needed: why.length > 0, why };
 };
 const settingOf = (type: BulkOrderType) => AppDataSource.getRepository(BulkTypeSetting).findOneBy({ orderType: type });
+
+/** 2026-11-25: the head office address (admin setting; null = not set yet: no default, no extra rule). */
+export interface HeadOffice { receiverName: string; receiverPhone: string; line: string; city: string; state: string; pincode: string }
+export const readHeadOffice = async (): Promise<HeadOffice | null> => {
+  const row = await AppDataSource.getRepository(AppState).findOneBy({ key: BULK_APPROVAL.HEAD_OFFICE_KEY });
+  const v = row?.value as Partial<HeadOffice> | undefined;
+  return v?.line && v.pincode ? (v as HeadOffice) : null;
+};
+const sameAddress = (a: { line: string; pincode: string }, b: { line: string; pincode: string }) =>
+  a.pincode.trim() === b.pincode.trim() && a.line.toLowerCase().replace(/[^a-z0-9]+/g, '') === b.line.toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+/**
+ * A Head office order going anywhere but the head office -> the head office's city (= approval needed), else null. Saved
+ * locations are read (one query) to compare their address. Other types / no head office set = null.
+ */
+const offHeadOfficeOf = async (o: OrderIn): Promise<string | null> => {
+  if (o.type !== BULK_ORDER_TYPE.HEAD_OFFICE) return null;
+  const ho = await readHeadOffice();
+  if (!ho) return null;
+  const ids = o.receivers.flatMap((r) => (r.locationId ? [r.locationId] : []));
+  const saved = ids.length ? await AppDataSource.getRepository(BulkLocation).find({ select: { id: true, addressLine: true, pincode: true }, where: { id: In(ids) } }) : [];
+  const off = o.receivers.some((r) => {
+    const a = r.address ?? (() => { const l = saved.find((x) => String(x.id) === r.locationId); return l ? { line: l.addressLine, pincode: l.pincode } : null; })();
+    return !a || !sameAddress(a, ho);
+  });
+  return off ? ho.city : null;
+};
 
 /**
  * Creates a bulk order (editor on its type): prices from the PEP SKU master, a new PO number; pending approval when the
@@ -618,7 +647,7 @@ export const createBulkOrder = async (actor: BulkActor, body: Record<string, unk
   const priced = await priceLines(o.type, o.receivers, o.brand);
   const setting = await settingOf(o.type);
   const paymentCheck = setting?.paymentCheck === true;
-  const approval = approvalNeed(setting, o.type, totalsOf(priced).totalUnits, o.mode);
+  const approval = approvalNeed(setting, o.type, totalsOf(priced).totalUnits, o.mode, await offHeadOfficeOf(o));
 
   const id = await withDeadlockRetry(() => AppDataSource.transaction(async (m) => {
     const { places, cols } = await placeAll(m, o, actor.id);
@@ -742,7 +771,7 @@ export const updateBulkOrder = async (actor: BulkActor, id: string, body: Record
   let remark = '';
   const o = await withCustomer(parseOrder(body, t, (c) => { remark = c.text(body[F.EDIT_REMARK], F.EDIT_REMARK, BULK_ORDERS.EDIT_REMARK_MAX); }), await buyerOrgOf(actor.id));
   const priced = await priceLines(t, o.receivers, o.brand);
-  const approval = approvalNeed(await settingOf(t), t, totalsOf(priced).totalUnits, o.mode);
+  const approval = approvalNeed(await settingOf(t), t, totalsOf(priced).totalUnits, o.mode, await offHeadOfficeOf(o));
   let moved = false;
   await AppDataSource.transaction(async (m) => {
     const cur = await lockEditable(m, id);
@@ -990,7 +1019,7 @@ const submitDraft = async (actor: BulkActor, id: string, type: BulkOrderType, bo
   const o = await withCustomer(parseOrder(body, type), await buyerOrgOf(actor.id));
   const priced = await priceLines(type, o.receivers, o.brand);
   const setting = await settingOf(type);
-  const approval = approvalNeed(setting, type, totalsOf(priced).totalUnits, o.mode);
+  const approval = approvalNeed(setting, type, totalsOf(priced).totalUnits, o.mode, await offHeadOfficeOf(o));
   await withDeadlockRetry(() => AppDataSource.transaction(async (m) => {
     await lockEditable(m, id, actor.id);
     const { places, cols } = await placeAll(m, o, actor.id);
@@ -1290,12 +1319,12 @@ export const listBulkOrders = async (actor: BulkActor, q: Record<string, unknown
   for (const t of l.types) needType(r, t, ACCESS_LEVEL.VIEWER);
   const types = l.types.length ? l.types : viewable(r);
   // v2 1c: the approval rules of the types I see, so the order form can say before Submit whether approval is needed
-  const [found, settings, brands] = await Promise.all([pageOfOrders(types, l, actor.id, r.org), AppDataSource.getRepository(BulkTypeSetting).find(), bulkBrands()]);
+  const [found, settings, brands, headOffice] = await Promise.all([pageOfOrders(types, l, actor.id, r.org), AppDataSource.getRepository(BulkTypeSetting).find(), bulkBrands(), readHeadOffice()]);
   const approvalRules = Object.fromEntries(types.map((t) => [t, {
     overUnits: settings.find((s) => s.orderType === t)?.approvalOverUnits ?? null,
     modes: isMarketingLike(t) ? [...BULK_APPROVAL.MODES] : [],
   }]));
-  return { ...found, items: found.items.map(hideFreeMoney), meta: { ...found.meta, approvalRules, brands } };
+  return { ...found, items: found.items.map(hideFreeMoney), meta: { ...found.meta, approvalRules, brands, headOffice } };
 };
 
 /**
