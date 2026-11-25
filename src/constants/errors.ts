@@ -182,6 +182,8 @@ export const ERRORS = {
   // --- Users & Roles admin (2026-10-15) ---
   DEVELOPER_ONLY: define(403, () => 'Only developers see the server page'),
   NOT_A_USER_ADMIN: define(403, (roles: string) => `Only ${roles} can add or change users and roles`),
+  ROUTE_UPLOAD_FILE: define(400, (reason: string) => `Upload rejected: ${reason}`),
+  ROUTE_UPLOAD_INVALID: define(422, (rows: number) => `Nothing was saved: ${rows} row(s) have problems, see details`),
   MASTER_ADD_NOT_ALLOWED: define(403, (who: string) => `Only ${who} can change this master`),
   MASTER_HISTORY_BAD_REQUEST: define(400, (what: string) => `Masters history: ${what}`),
   MASTER_ROW_NOT_FOUND: define(404, (type: string, id: string) => `No ${type} row ${id}`),

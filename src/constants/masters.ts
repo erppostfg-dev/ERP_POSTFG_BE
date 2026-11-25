@@ -27,7 +27,24 @@ export const MASTER_ROUTES = {
   /** D2C internal transfer routes (2026-11-03): GET the grid, PATCH /:id one route's codes / on-off. */
   TRANSFER_ROUTES: '/transfer-routes',
   TRANSFER_ROUTE: '/transfer-routes/:id',
+  /** Bulk upload of transfer routes (2026-11-25): GET the template, POST the .csv to preview, then to import. */
+  TRANSFER_ROUTES_TEMPLATE: '/transfer-routes/template',
+  TRANSFER_ROUTES_PREVIEW: '/transfer-routes/upload/preview',
+  TRANSFER_ROUTES_IMPORT: '/transfer-routes/upload/import',
 } as const;
+
+/**
+ * Transfer routes bulk upload (2026-11-25): the .csv columns. A row = one route, found by Sender + Channel + Location +
+ * Uniware Channel (else the only route of that Sender + Location: its Uniware channel changes); not found = a new route.
+ * An empty cell keeps the current value; Active = Yes / No (empty = keep, new route = Yes).
+ */
+export const ROUTE_UPLOAD_COLUMN = {
+  SENDER: 'Sender', CHANNEL: 'Channel', LOCATION: 'Location', UNIWARE_CHANNEL: 'Uniware Channel', CUSTOMER_CODE: 'Customer Code',
+  CUSTOMER_NAME: 'Customer Name', VENDOR_CODE: 'Vendor Code', ACTIVE: 'Active',
+} as const;
+export const ROUTE_UPLOAD_COLUMNS = Object.values(ROUTE_UPLOAD_COLUMN);
+export const ROUTE_UPLOAD_REQUIRED = [ROUTE_UPLOAD_COLUMN.SENDER, ROUTE_UPLOAD_COLUMN.CHANNEL, ROUTE_UPLOAD_COLUMN.LOCATION, ROUTE_UPLOAD_COLUMN.UNIWARE_CHANNEL];
+export const ROUTE_UPLOAD = { FIELD: 'file', MAX_BYTES: 2 * 1024 * 1024, MAX_ROWS: 5000, CUSTOMER_NAME_MAX: 255 } as const;
 
 /** Masters history (2026-10-28): most entries one call returns, and the "recent changes" look-back (days). */
 export const MASTER_HISTORY = {

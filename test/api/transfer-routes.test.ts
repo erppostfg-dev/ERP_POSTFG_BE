@@ -8,7 +8,10 @@ import { covers } from '../helpers/routes';
  * D2C internal transfer routes in Masters (2026-11-03): the grid (viewer on /masters/warehouses) and the route edit
  * (admin / developer; codes + switch on / off in one call; every change in master_change_logs, type transfer_route).
  */
-covers(['GET /masters/transfer-routes', 'PATCH /masters/transfer-routes/:id']);
+covers([
+  'GET /masters/transfer-routes', 'PATCH /masters/transfer-routes/:id', 'GET /masters/transfer-routes/template',
+  'POST /masters/transfer-routes/upload/preview', 'POST /masters/transfer-routes/upload/import',
+]);
 
 const P = '/api/v1/masters';
 let m: Masters;
@@ -74,5 +77,65 @@ describe('PATCH /masters/transfer-routes/:id', () => {
     expect((await patch({ changes: { vendorCode: 'V' } }, viewer)).status).toBe(403);
     expect((await api().patch(`${P}/transfer-routes/999999`).set('Cookie', admin.cookie).send({ changes: { vendorCode: 'V' } })).status).toBe(404);
     expect(await count('master_change_logs')).toBe(0);
+  });
+});
+
+describe('Transfer routes upload (template, preview, import)', () => {
+  const HEAD = 'Sender,Channel,Location,Uniware Channel,Customer Code,Customer Name,Vendor Code,Active';
+  const send = (path: string, csv: string, who = admin, fields: Record<string, string> = {}) => {
+    const req = api().post(`${P}/transfer-routes/upload/${path}`).set('Cookie', who.cookie);
+    for (const [k, v] of Object.entries(fields)) req.field(k, v);
+    return req.attach('file', Buffer.from(csv, 'utf8'), 'routes.csv');
+  };
+  let second: number;
+  beforeEach(async () => {
+    const kol = await insert('master_facilities', { code: 'TEST_WH3', name: 'Receiving 2', is_active: 1, source: 'manual', uniware_export: 0, allow_internal_transfer: 0 });
+    second = await insert('details_channels', {
+      channel_id: m.channelId, channel_name: 'BigBasket', channel_location_code: 'TransferLoc2', transfer_facility_id: kol,
+      transfer_po_prefix: 'TEST_PFX2', is_active: 1, created_at: new Date(), updated_at: new Date(),
+    });
+  });
+
+  it('template: the header and one real route as the example', async () => {
+    await api().patch(`${P}/transfer-routes/${routeId}`).set('Cookie', admin.cookie).send({ changes: { customerCode: 'C1', vendorCode: 'V1' } }).expect(200);
+    const res = await api().get(`${P}/transfer-routes/template`).set('Cookie', admin.cookie).expect(200);
+    expect(res.headers['content-type']).toMatch(/text\/csv/);
+    expect(res.text.split('\r\n')).toEqual([HEAD, `${m.facilityCode},BigBasket,TransferLoc,D2C_TRANSFER_TEST,C1,PEP,V1,Yes`, '']);
+  });
+
+  it('preview: change + new + no change; nothing written', async () => {
+    const csv = [HEAD, `${m.facilityCode},BigBasket,TransferLoc,D2C_TRANSFER_TEST,,,VEND_1,`, `${m.facilityCode},bigbasket,transferloc2,D2C_NEW,CUST_2,,VEND_2,Yes`].join('\n');
+    const before = await count('master_change_logs');
+    const res = await send('preview', csv).expect(200);
+    expect(res.body.data).toMatchObject({ canImport: true, added: 1, updated: 1, unchanged: 0, errors: 0, enable: ['TEST_WH1', 'TEST_WH3'] });
+    expect(res.body.data.rows[0].changes).toEqual([{ field: 'vendorCode', old: null, value: 'VEND_1' }]);
+    expect(await count('master_change_logs')).toBe(before);
+    expect(await count('d2c_transfer_routes')).toBe(1);
+  });
+
+  it('import: saves every row in one go, logged; switches the receiving warehouse on', async () => {
+    const csv = [HEAD, `${m.facilityCode},BigBasket,TransferLoc,D2C_TRANSFER_TEST,,,VEND_1,No`, `${m.facilityCode},BigBasket,TransferLoc2,D2C_NEW,CUST_2,New cust,VEND_2,`].join('\n');
+    const res = await send('import', csv, admin, { remark: 'bulk' }).expect(201);
+    expect(res.body.data).toMatchObject({ added: 1, updated: 1, switchedOn: expect.arrayContaining(['TEST_WH3']) });
+    const all = await rows<{ location_id: number; uniware_channel_code: string; customer_code: string | null; customer_name: string; vendor_code: string; is_active: number }>(
+      'SELECT location_id, uniware_channel_code, customer_code, customer_name, vendor_code, is_active FROM d2c_transfer_routes ORDER BY id');
+    expect(all).toMatchObject([
+      { uniware_channel_code: 'D2C_TRANSFER_TEST', customer_code: null, customer_name: 'PEP', vendor_code: 'VEND_1', is_active: 0 },
+      { location_id: second, uniware_channel_code: 'D2C_NEW', customer_code: 'CUST_2', customer_name: 'New cust', vendor_code: 'VEND_2', is_active: 1 },
+    ]);
+    const logs = await rows<{ master_type: string; action: string; remark: string }>('SELECT master_type, action, remark FROM master_change_logs ORDER BY id');
+    expect(logs.every((l) => l.remark === 'bulk')).toBe(true);
+    expect(logs.map((l) => `${l.master_type}:${l.action}`)).toEqual(expect.arrayContaining(['transfer_route:created', 'transfer_route:field_changed', 'transfer_route:deactivated', 'facility:field_changed']));
+  });
+
+  it('all or nothing: one bad row -> 422 with the row, nothing saved; a viewer is refused; a non-csv is refused', async () => {
+    const csv = [HEAD, `${m.facilityCode},BigBasket,TransferLoc,D2C_TRANSFER_TEST,,,VEND_1,`, 'NOPE,BigBasket,TransferLoc2,X,,,,'].join('\n');
+    const res = await send('import', csv).expect(422);
+    expect(res.body.error.code).toBe('ROUTE_UPLOAD_INVALID');
+    expect(res.body.error.details[0]).toMatchObject({ row: 3 });
+    expect(await count('master_change_logs')).toBe(0);
+    const viewer = await loginAs('operations-executive');
+    expect((await send('preview', csv, viewer)).status).toBe(403);
+    expect((await api().post(`${P}/transfer-routes/upload/preview`).set('Cookie', admin.cookie).attach('file', Buffer.from('x'), 'r.xlsx')).body.error.code).toBe('ROUTE_UPLOAD_FILE');
   });
 });
