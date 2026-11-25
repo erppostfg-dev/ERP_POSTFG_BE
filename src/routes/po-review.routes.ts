@@ -21,6 +21,7 @@ import {
   UPLOAD_ID_PATTERN,
   UPLOAD_STATUS,
   UploadStatus,
+  UNIWARE_OUTSIDE,
 } from '../constants';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
 import { hasCapability } from '../modules/auth/access.service';
@@ -36,6 +37,7 @@ import { getRejection, reopenRejected } from '../modules/po-review/po-review-reo
 import { LineCorrection, rejectPo, ResubmitBody, submitForApproval } from '../modules/po-review/po-review-actions.service';
 import { appError } from '../utils/AppError';
 import { dismissFailed, reopenMany, rereadUploads, retryFailed } from '../modules/po-review/po-review-failed.service';
+import { ackOutside, bulkResolveOutside, checkNow, liveOutside, outsideStatus, precheckOutside, resolveOutside } from '../modules/uniware-outside/outside.service';
 
 /*
  * PO review routes (API contract "PO review", 2026-10-09):
@@ -49,7 +51,7 @@ import { dismissFailed, reopenMany, rereadUploads, retryFailed } from '../module
  *   POST /po-review/line-items   { uploadIds }   every line of processed POs, for a CSV / Excel download (read-only).
  *   GET /po-review/:uploadId/file   the PO file itself, streamed from S3 (for the panel's PDF viewer). Viewer.
  *   POST /po-review/:uploadId/submit   { location?: { detailsChannelId }, lines?: [{ lineNo, pepCode?, qty?, mrp?, rate? }],
- *                                        accept?: [{ issueId, remark? }], remark? }   corrections -> validate -> must pass
+ *                                        accept?: [{ issueId, remark? }], acceptTotal?, remark? }   corrections -> validate -> must pass
  *                                        completely -> pending_approval (Approvals page; 2026-10-15, replaces /resubmit,
  *                                        which saved the PO at once).
  *   POST /po-review/:uploadId/reject   { remark }   the reviewer rejects directly (kept in po_review_submissions).
@@ -207,6 +209,64 @@ router.post(FAILED_ACTIONS.ROUTES.REOPEN, requireAuth, requirePage(PAGE.PO_REVIE
   }
 });
 
+// ---- POs punched in Uniware outside POST_FG (2026-11-25, constants/uniware-outside.ts; before /:uploadId) ----------
+/** GET /po-review/uniware-outside: POs with a finding per tab, the last check, the button. Viewer. */
+router.get(UNIWARE_OUTSIDE.ROUTES.STATUS, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.VIEWER), async (_req, res, next) => {
+  try {
+    res.json({ data: await outsideStatus() });
+  } catch (err) {
+    next(err);
+  }
+});
+/** POST /po-review/uniware-outside/check: read Uniware now (one click per 30 min for the whole team). Editor. 202. */
+router.post(UNIWARE_OUTSIDE.ROUTES.CHECK, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
+  try {
+    res.status(202).json({ data: await checkNow(req.auth!.user.email) });
+  } catch (err) {
+    next(err);
+  }
+});
+/** POST /po-review/uniware-outside/precheck { uploadIds }: Uniware read up to now + these POs' findings (warn before an action). Viewer. */
+router.post(UNIWARE_OUTSIDE.ROUTES.PRECHECK, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.VIEWER), async (req, res, next) => {
+  try {
+    res.json({ data: await precheckOutside(req.body) });
+  } catch (err) {
+    next(err);
+  }
+});
+/** POST /po-review/uniware-outside/ack { ids, action, remark? }: went ahead anyway (recorded). Viewer. */
+router.post(UNIWARE_OUTSIDE.ROUTES.ACK, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.VIEWER), async (req, res, next) => {
+  try {
+    res.json({ data: await ackOutside(req.body, who(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+/** POST /po-review/uniware-outside/bulk-resolve { ids, action, remark }: many findings, one by one. Editor. */
+router.post(UNIWARE_OUTSIDE.ROUTES.BULK_RESOLVE, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
+  try {
+    res.json({ data: await bulkResolveOutside(req.body, who(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+/** GET /po-review/uniware-outside/:id/live: this order in Uniware now (one read; cancelled / gone closes it). Viewer. */
+router.get(UNIWARE_OUTSIDE.ROUTES.LIVE, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.VIEWER), async (req, res, next) => {
+  try {
+    res.json({ data: await liveOutside(String(req.params.id)) });
+  } catch (err) {
+    next(err);
+  }
+});
+/** POST /po-review/uniware-outside/:id/resolve { action, remark }: reject / use_code / acknowledge / dismiss. Editor. */
+router.post(UNIWARE_OUTSIDE.ROUTES.RESOLVE, requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.EDITOR), async (req, res, next) => {
+  try {
+    res.json({ data: await resolveOutside(String(req.params.id), req.body, who(req)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/:uploadId', requireAuth, requirePage(PAGE.PO_REVIEW, ACCESS_LEVEL.VIEWER), async (req, res, next) => {
   try {
     const { uploadId } = req.params;
@@ -317,9 +377,12 @@ const parseResubmit = (body: unknown): ResubmitBody => {
     return { issueId, remark: r.remark(a[B.REMARK], `${B.ACCEPT}[${i}].${B.REMARK}`, false) };
   });
   const remark = r.remark(b[B.REMARK], B.REMARK, false);
+  const acceptTotal = b[B.ACCEPT_TOTAL];
+  if (acceptTotal !== undefined && typeof acceptTotal !== 'boolean') r.bad(B.ACCEPT_TOTAL, 'FIELD_NOT_BOOLEAN', B.ACCEPT_TOTAL);
 
   if (problems.length) throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails(problems);
   return {
+    acceptTotal: acceptTotal === true || undefined,
     locationId,
     lines: lines.filter((l): l is LineCorrection => !!l),
     accept: accept.filter((a): a is { issueId: string; remark: string | undefined } => !!a),

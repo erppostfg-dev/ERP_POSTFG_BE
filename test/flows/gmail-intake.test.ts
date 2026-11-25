@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { kickCatchUps, requestCatchUp, resumeCatchUps } from '../../src/modules/email-intake/catchup.service';
-import { processGmailChanges } from '../../src/modules/email-intake/label-router.service';
+import { labelSafetyPass, processGmailChanges } from '../../src/modules/email-intake/label-router.service';
+import { startSafetyNet } from '../../src/modules/email-intake/safety-net';
 import { writeState } from '../../src/modules/email-intake/gmail-watch.service';
 import { api, loginAs, type TestLogin } from '../helpers/auth';
 import { closeDb, count, insert, resetDb, rows } from '../helpers/db';
@@ -216,5 +217,93 @@ describe('rate limits and failures heal by themselves', () => {
     const row = await catchUp('bigbasket');
     expect(new Date(row.from_at as string).toISOString()).toBe('2026-10-20T00:00:00.000Z');
     expect(row).toMatchObject({ status: 'failed', attempts: 1 }); // asked again = counted from the start
+  });
+});
+
+/*
+ * Safety net for missed Pub/Sub notifications (2026-11-23): a notification that never reached this server (prod's
+ * listener shared the subscription: Zepto P6336538 waited 2 h) must not leave its email waiting for the next one.
+ * User: "no unnecessary Gmail calls, a delay is fine".
+ */
+describe('safety net: an email whose notification never came is still taken', () => {
+  const MIN = 60_000;
+  const recent = (minAgo: number) => new Date(Date.now() - minAgo * MIN).toISOString();
+
+  it('label check: takes the email no one has taken; known and OFF-channel emails need no Gmail read the next time', async () => {
+    await switchOn('bigbasket', '2026-10-25T00:00:00Z');
+    await settle();
+    await expect.poll(() => posted.filter((id) => id.startsWith('bb')).length, { timeout: 5000 }).toBe(3);
+    // two emails whose notifications never came: BigBasket (ON) and Zepto (OFF)
+    box.emails.push(bb(5, recent(60)), zepto(5, recent(50)));
+    posted.length = 0;
+    let before = { ...box.calls };
+    expect(await labelSafetyPass([LABEL], 4 * 60 * MIN)).toBe(1);
+    expect(posted).toEqual(['bb5']);
+    expect(box.calls.list - before.list).toBe(1); // one list for the label (last 4 h only: the old emails are not looked at)
+    expect(box.calls.full - before.full).toBe(2); // only the two unknown emails read
+    expect(await count('gmail_messages', "gmail_id = 'ze5' AND channel = 'zepto' AND done_at IS NULL")).toBe(1);
+
+    // the next check: nothing new -> one list, no read, nothing sent
+    posted.length = 0;
+    before = { ...box.calls };
+    expect(await labelSafetyPass([LABEL], 4 * 60 * MIN)).toBe(0);
+    expect(posted).toEqual([]);
+    expect(box.calls.list - before.list).toBe(1);
+    expect(box.calls.full + box.calls.meta - before.full - before.meta).toBe(0);
+  });
+
+  it('quiet check: no Gmail call while notifications keep coming; after 15 quiet minutes one history read takes the missed email', async () => {
+    await switchOn('bigbasket', '2026-10-25T00:00:00Z');
+    await settle();
+    await expect.poll(() => posted.filter((id) => id.startsWith('bb')).length, { timeout: 5000 }).toBe(3);
+    await writeState({ historyId: '100' });
+    box.emails.push(bb(6, recent(5)));
+    box.history = ['bb6']; // in the mailbox history, but its notification went elsewhere
+    posted.length = 0;
+    const jobs: (() => Promise<void>)[] = [];
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    try {
+      const net = startSafetyNet([LABEL], (job) => jobs.push(job), { quietMs: 15 * MIN, labelMs: 0 });
+      await vi.advanceTimersByTimeAsync(14 * MIN);
+      expect(jobs).toHaveLength(0);
+      net.markRead(); // a notification was handled at minute 14: quiet again from here
+      await vi.advanceTimersByTimeAsync(10 * MIN);
+      expect(jobs).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(6 * MIN); // 16 quiet minutes
+      expect(jobs).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(5 * MIN); // the check itself counts as a read: not again at once
+      expect(jobs).toHaveLength(1);
+      net.stop();
+      await vi.advanceTimersByTimeAsync(60 * MIN);
+      expect(jobs).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+    const before = { ...box.calls };
+    await jobs[0]();
+    expect(posted).toEqual(['bb6']);
+    expect(box.calls.history - before.history).toBe(1);
+    expect(box.calls.list - before.list).toBe(0);
+  });
+
+  it('label check runs every LABEL_CHECK_HOURS; 0 turns a check off', async () => {
+    const jobs: (() => Promise<void>)[] = [];
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    try {
+      const net = startSafetyNet([LABEL], (job) => jobs.push(job), { quietMs: 0, labelMs: 120 * MIN });
+      await vi.advanceTimersByTimeAsync(119 * MIN);
+      expect(jobs).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(1 * MIN);
+      expect(jobs).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(240 * MIN);
+      expect(jobs).toHaveLength(3);
+      net.stop();
+      const off = startSafetyNet([LABEL], (job) => jobs.push(job), { quietMs: 0, labelMs: 0 });
+      await vi.advanceTimersByTimeAsync(24 * 60 * MIN);
+      expect(jobs).toHaveLength(3);
+      off.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

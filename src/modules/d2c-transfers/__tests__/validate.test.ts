@@ -85,6 +85,33 @@ describe('validateRows: a clean transfer', () => {
     expect(out.transfers[0]).toMatchObject({ poDate: '2026-11-05', priority: 'P1', type: 'Internal', channel: 'McaffeineB2C', expiry: '2026-11-30' });
   });
 
+  it('PO Number from the sheet: kept, rows with the same one are one transfer, empty = generated later', () => {
+    const out = validateRows([
+      row({ poNumber: 'PEP-1', skuCode: 'MCAFF_A' }, 2), row({ poNumber: 'pep-1', skuCode: 'MCAFF_B' }, 3), row({ poNumber: ' PEP-2 ' }, 4), row({}, 5),
+    ], masters());
+    expect(out.errorCount).toBe(0);
+    expect(out.transfers.map((t) => [t.poNumber, t.rows])).toEqual([['PEP-1', [2, 3]], ['PEP-2', [4]], [null, [5]]]);
+  });
+
+  it('PO Number: one per transfer, not already a transfer or a PO of the same channel, agrees within a Group', () => {
+    const used = new Map([['t-1', [{ channel: 'McaffeineB2C', transferCode: 'IT-2627-11-001' }]], ['po-9', [{ channel: 'McaffeineB2C', transferCode: null }]], ['other', [{ channel: 'Nykaa', transferCode: null }]]]);
+    const m = masters({ usedPoNumbers: used });
+    expect(errorsOf([row({ poNumber: 'T-1' })], m)).toEqual(['PO Number T-1 is already used by transfer IT-2627-11-001']);
+    expect(errorsOf([row({ poNumber: 'PO-9' })], m)).toEqual(['PO Number PO-9 is already a McaffeineB2C PO']);
+    expect(errorsOf([row({ poNumber: 'OTHER' })], m)).toEqual([]);
+    expect(errorsOf([row({ group: 'A', poNumber: 'X1' }, 2), row({ group: 'B', poNumber: 'x1' }, 3)])).toEqual([
+      'PO Number x1 is also on another transfer (row 2): one PO number per transfer',
+    ]);
+    expect(errorsOf([row({ group: 'A', poNumber: 'X1' }, 2), row({ group: 'A', poNumber: 'X2' }, 3)])).toEqual(['Group A: PO Number differs from row 2']);
+    expect(errorsOf([row({ poNumber: 'Y'.repeat(256) })])).toEqual(['PO Number must be at most 255 characters']);
+  });
+
+  it('priority: p0 -> P0, any other text kept as typed, longer than 20 characters refused', () => {
+    const out = validateRows([row({ priority: 'p0', group: 'A' }), row({ priority: ' Urgent ', group: 'B' }), row({ priority: 'X'.repeat(21), group: 'C' })], masters());
+    expect(out.transfers.map((t) => t.priority)).toEqual(['P0', 'Urgent', null]);
+    expect(out.rows[2].errors.map((e) => e.message)).toEqual(['Priority must be at most 20 characters']);
+  });
+
   it('uses settings.defaultExpiryDays', () => {
     const m = masters();
     m.settings.defaultExpiryDays = 7;
@@ -109,7 +136,7 @@ describe('validateRows: errors', () => {
     [{ poDate: '' }, 'PO Date is required'],
     [{ poDate: '2026-02-30' }, 'PO Date 2026-02-30 is not a date'],
     [{ poDate: '11/05/2026' }, 'is not a date'],
-    [{ priority: 'P4' }, 'Priority P4 must be P1, P2 or P3'],
+    [{ priority: 'X'.repeat(21) }, 'Priority must be at most 20 characters'],
     [{ type: 'Gift' }, 'Type Gift must be one of Regular, Internal, Freebee'],
     [{ expiry: '2026-11-01' }, 'is before the PO date'],
     [{ expiry: 'soon' }, 'PO Expiry Date soon is not a date'],

@@ -79,6 +79,7 @@ const aliasesOf = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : 
 /** A DB text / number cell as text ('' for anything else). */
 const str = (v: unknown): string => (typeof v === 'string' || typeof v === 'number' ? String(v) : '');
 
+const YES_NO = ['Yes', 'No'] as const;
 const col = (c: string, check: FieldSpec['check'], more: Partial<FieldSpec> = {}): FieldSpec => ({ col: c, check, ...more });
 
 const SPECS: Record<MasterLogType, MasterSpec> = {
@@ -90,6 +91,8 @@ const SPECS: Record<MasterLogType, MasterSpec> = {
       eanCode: col('ean_code', (c, k) => c.format(k, MASTER_ADD.EAN)), hsnCode: col('hsn_code', (c, k) => c.format(k, MASTER_ADD.HSN)),
       lengthMm: col('length_mm', num), widthMm: col('width_mm', num), heightMm: col('height_mm', num), weightG: col('weight_g', num),
       shelfLife: col('shelf_life', (c, k) => c.number(k, { min: 1, max: 3650, int: true })),
+      // 2026-11-24: shown in the Bulk Orders portal ('Yes' / 'No' on the form)
+      bulkOrderable: col('bulk_orderable', (c, k) => c.oneOf(k, YES_NO), { read: (v) => (v === true || Number(v) === 1 ? YES_NO[0] : YES_NO[1]), write: (v) => (v === YES_NO[0] ? 1 : 0) }),
     },
   },
   [MASTER_LOG_TYPE.CHANNEL_SKU]: {
@@ -160,6 +163,8 @@ const SPECS: Record<MasterLogType, MasterSpec> = {
     fields: {
       uniwareChannelCode: col('uniware_channel_code', text(D2C_UNIWARE_CODE_MAX)), customerCode: col('customer_code', text(D2C_UNIWARE_CODE_MAX)),
       vendorCode: col('vendor_code', text(D2C_UNIWARE_CODE_MAX)),
+      // the routes upload changes it too (2026-11-25)
+      customerName: col('customer_name', text(255)),
     },
   },
 };

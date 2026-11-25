@@ -64,7 +64,7 @@ export const listTransferRoutes = async (): Promise<TransferRouteItem[]> => {
   }));
 };
 
-const CODE_KEYS = ['uniwareChannelCode', 'customerCode', 'vendorCode'] as const;
+const CODE_KEYS = ['uniwareChannelCode', 'customerCode', 'customerName', 'vendorCode'] as const;
 
 /**
  * PATCH /masters/transfer-routes/:id { changes: { uniwareChannelCode?, customerCode?, vendorCode?, isActive? },

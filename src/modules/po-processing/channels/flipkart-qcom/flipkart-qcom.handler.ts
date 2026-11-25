@@ -7,6 +7,8 @@ import { Num, ProcessedPo } from '../../common/processed-po';
 import { basePo, ChannelHandler, finishSources, PoContext } from '../channel-handler';
 import {
   FLIPKART_QCOM_HEADER_NAMES,
+  FLIPKART_QCOM_LINE_GROUP_PREFIX,
+  FLIPKART_QCOM_LINE_NAMES,
   FLIPKART_QCOM_MAPPING,
   FLIPKART_QCOM_RATES,
   FLIPKART_QCOM_TOTAL_TOLERANCE,
@@ -46,7 +48,8 @@ export const flipkartQcomHandler: ChannelHandler = {
 
     // 3. Line items: mapped as printed; gst from the rate columns; the Required by Date is the PO's expected date.
     const required = new Set<string>();
-    po.line_items = ctx.raw.lines.map((raw, i) => {
+    po.line_items = ctx.raw.lines.map((printed, i) => {
+      const raw = oldLineNames(printed);
       const where = `line ${i + 1}`;
       const line = emptyLine();
       const used = applyMapping(line, raw, FLIPKART_QCOM_MAPPING.line, po.warnings, where);
@@ -87,6 +90,17 @@ export const flipkartQcomHandler: ChannelHandler = {
     finishSources(po);
     return po;
   },
+};
+
+/** A line of either sheet with the old sheet's names ("Product Details Title" -> "Title", "Product ID" -> "FSN/ISBN13"). */
+const oldLineNames = (printed: Record<string, string>): Record<string, string> => {
+  const prefix = FLIPKART_QCOM_LINE_GROUP_PREFIX.toLowerCase();
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(printed)) {
+    const name = key.toLowerCase().startsWith(prefix) ? key.slice(prefix.length).trim() : key;
+    if (!(name in out) || !text(out[name])) out[name] = value;
+  }
+  return ourNames(out, FLIPKART_QCOM_LINE_NAMES);
 };
 
 /** "17-09-26" (day-month-two-digit year, as Flipkart prints it) or any date toDate reads -> YYYY-MM-DD. */

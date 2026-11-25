@@ -1,7 +1,7 @@
 import { AppDataSource } from '../../config/data-source';
 import { env } from '../../config/env';
 import {
-  BRAND_NAMES, D2C_LIMITS, D2C_PRICE, D2C_PRIORITIES, D2C_UNDISPATCHED_STAGES, NO_BRAND, round2, TABLES,
+  BRAND_NAMES, D2C_DEFAULT_PRIORITY, D2C_LIMITS, D2C_PRICE, D2C_PRIORITIES, D2C_UNDISPATCHED_STAGES, NO_BRAND, round2, TABLES,
 } from '../../constants';
 import { addDays, parseDay } from './reference';
 import { D2cSettings } from './settings';
@@ -17,7 +17,7 @@ import { isTestFacility } from './test-mode';
  *     a route with 2+ active Uniware channels and no / a wrong Uniware Channel chosen (pickRoute);
  *     dispatch = receiving (allowed for a test facility only); in local test mode (masters.testOnly) a sender or
  *     receiving facility that is not a test facility; SKU unknown / inactive / a combo (transfer its components) / without MRP; qty not a whole
- *     number above 0; bad dates (YYYY-MM-DD or DD-MM-YYYY); priority not P1-P3; type not in the settings; expiry
+ *     number above 0; bad dates (YYYY-MM-DD or DD-MM-YYYY); priority longer than D2C_LIMITS.PRIORITY_MAX; type not in the settings; expiry
  *     before the PO date; rows of one Group that disagree on the header.
  *   Warnings: route without vendor code (inward PO blocked until filled) / customer / Uniware channel code (SO
  *     blocked until filled); SKU name differs (master name used); same SKU twice in a transfer (merged, qty summed);
@@ -43,6 +43,8 @@ export interface RawRow {
   routeId?: number;
   priority: string;
   group: string;
+  /** Upload: the "PO Number" column (user, 2026-11-17: "read from sheet for now"); filled = the transfer's PO number, else generated. */
+  poNumber?: string;
   type: string;
   expiry: string;
   skuCode: string;
@@ -75,6 +77,8 @@ export interface D2cMasters {
   open: Map<string, string[]>;
   /** Local TEST ONLY mode (env.d2c.testOnly): sender and receiving facility must both be test facilities. */
   testOnly?: boolean;
+  /** PO numbers of the file already in master_purchase_orders: lower case -> the rows holding them. */
+  usedPoNumbers?: Map<string, { channel: string | null; transferCode: string | null }[]>;
 }
 
 export interface ProposedLine {
@@ -83,6 +87,8 @@ export interface ProposedLine {
 export interface ProposedTransfer {
   key: string;
   group: string | null;
+  /** The sheet's PO Number; null = generated at save (the reference ID). */
+  poNumber: string | null;
   rows: number[];
   valid: boolean;
   senderId: number | null;
@@ -158,6 +164,7 @@ type Resolved = {
   mrp: number | null;
   qty: number | null;
   group: string | null;
+  poNumber: string | null;
 };
 
 /**
@@ -227,9 +234,10 @@ const resolveRow = (r: RawRow, m: D2cMasters, out: RowResult): Resolved => {
   const s = m.settings;
   const res: Resolved = {
     channel: null, sender: null, location: null, receiving: null, route: null, routeChannels: [], poDate: null, priority: null, type: null, expiry: null,
-    sku: null, mrp: null, qty: null, group: r.group.trim() || null,
+    sku: null, mrp: null, qty: null, group: r.group.trim() || null, poNumber: (r.poNumber ?? '').trim() || null,
   };
   if (res.group && res.group.length > D2C_LIMITS.GROUP_MAX) err('group', `Group must be at most ${D2C_LIMITS.GROUP_MAX} characters`);
+  if (res.poNumber && res.poNumber.length > D2C_LIMITS.PO_NUMBER_MAX) err('poNumber', `PO Number must be at most ${D2C_LIMITS.PO_NUMBER_MAX} characters`);
   if ((r.remarks ?? '').length > D2C_LIMITS.REMARKS_MAX) err('remarks', `Remarks must be at most ${D2C_LIMITS.REMARKS_MAX} characters`);
 
   // channel
@@ -295,11 +303,11 @@ const resolveRow = (r: RawRow, m: D2cMasters, out: RowResult): Resolved => {
     res.poDate = parseDay(r.poDate);
     if (!res.poDate) err('poDate', `PO Date ${r.poDate.trim()} is not a date (YYYY-MM-DD or DD-MM-YYYY)`);
   }
-  if (!r.priority.trim()) res.priority = 'P2';
-  else {
-    res.priority = D2C_PRIORITIES.find((p) => p === r.priority.trim().toUpperCase()) ?? null;
-    if (!res.priority) err('priority', `Priority ${r.priority.trim()} must be P1, P2 or P3`);
-  }
+  // P0-P3 (any case) as written in D2C_PRIORITIES; any other text is kept as typed (user, 2026-11-17)
+  const priority = r.priority.trim();
+  if (!priority) res.priority = D2C_DEFAULT_PRIORITY;
+  else if (priority.length > D2C_LIMITS.PRIORITY_MAX) err('priority', `Priority must be at most ${D2C_LIMITS.PRIORITY_MAX} characters`);
+  else res.priority = D2C_PRIORITIES.find((p) => p === priority.toUpperCase()) ?? priority;
   if (!r.type.trim()) res.type = s.types[0];
   else {
     res.type = s.types.find((t) => lower(t) === lower(r.type)) ?? null;
@@ -345,11 +353,15 @@ const HEADER: { field: string; label: string; of: (r: Resolved, raw: RawRow) => 
   { field: 'priority', label: 'Priority', of: (r, raw) => r.priority ?? lower(raw.priority) },
   { field: 'type', label: 'Type', of: (r, raw) => r.type ?? lower(raw.type) },
   { field: 'expiry', label: 'PO Expiry Date', of: (r, raw) => r.expiry ?? lower(raw.expiry) },
+  { field: 'poNumber', label: 'PO Number', of: (r) => lower(r.poNumber) },
 ];
 
-/** Grouping key (PRD + decision 12): the Group, else same dispatch + location + channel + date + priority + type + expiry. */
+/**
+ * Grouping key (PRD + decision 12): the Group, else the sheet's PO Number (2026-11-17), else same dispatch + location +
+ * channel + date + priority + type + expiry (+ an empty PO Number).
+ */
 const groupKey = (r: Resolved, raw: RawRow): string =>
-  r.group ? `g:${r.group.toLowerCase()}` : `k:${HEADER.map((h) => h.of(r, raw)).join('|')}`;
+  r.group ? `g:${r.group.toLowerCase()}` : r.poNumber ? `n:${r.poNumber.toLowerCase()}` : `k:${HEADER.map((h) => h.of(r, raw)).join('|')}`;
 
 export const openKey = (senderId: number, receivingId: number, sku: string) => `${senderId}:${receivingId}:${sku.toLowerCase()}`;
 
@@ -370,19 +382,34 @@ export const validateRows = (rows: RawRow[], m: D2cMasters): ValidationOutcome =
   }
 
   const transfers: ProposedTransfer[] = [];
+  /** Lower-case PO number -> the first row of the transfer that has it (one PO number = one transfer). */
+  const poNumberRow = new Map<string, number>();
   for (const [key, g] of groups) {
     const head = g.res[0];
     const headRaw = g.raws[0];
-    // rows of one Group must agree on the header
+    const what = head.group ? `Group ${head.group}` : `PO Number ${head.poNumber}`;
+    // rows of one Group (or one PO Number) must agree on the header
     for (let i = 1; i < g.res.length; i++) {
       for (const h of HEADER) {
         if (h.of(g.res[i], g.raws[i]) !== h.of(head, headRaw)) {
-          g.outs[i].errors.push({ field: h.field, message: `Group ${head.group}: ${h.label} differs from row ${headRaw.row}` });
+          g.outs[i].errors.push({ field: h.field, message: `${what}: ${h.label} differs from row ${headRaw.row}` });
         }
       }
       if ((g.raws[i].remarks ?? '') !== (headRaw.remarks ?? '')) {
-        g.outs[i].errors.push({ field: 'remarks', message: `Group ${head.group}: remarks differ from row ${headRaw.row}` });
+        g.outs[i].errors.push({ field: 'remarks', message: `${what}: remarks differ from row ${headRaw.row}` });
       }
+    }
+    // the sheet's PO Number: not on another transfer of the file, not already a transfer / a PO of the same channel
+    if (head.poNumber) {
+      const k = head.poNumber.toLowerCase();
+      const first = poNumberRow.get(k);
+      if (first !== undefined) g.outs[0].errors.push({ field: 'poNumber', message: `PO Number ${head.poNumber} is also on another transfer (row ${first}): one PO number per transfer` });
+      else poNumberRow.set(k, headRaw.row);
+      const used = m.usedPoNumbers?.get(k) ?? [];
+      const transfer = used.find((u) => u.transferCode);
+      const samePo = used.find((u) => !u.transferCode && head.channel && lower(u.channel) === lower(head.channel));
+      if (transfer) g.outs[0].errors.push({ field: 'poNumber', message: `PO Number ${head.poNumber} is already used by transfer ${transfer.transferCode}` });
+      else if (samePo) g.outs[0].errors.push({ field: 'poNumber', message: `PO Number ${head.poNumber} is already a ${head.channel} PO` });
     }
     // lines: one per SKU, duplicates merged
     const lines = new Map<string, ProposedLine>();
@@ -412,6 +439,7 @@ export const validateRows = (rows: RawRow[], m: D2cMasters): ValidationOutcome =
     transfers.push({
       key,
       group: head.group,
+      poNumber: head.poNumber,
       rows: g.raws.map((x) => x.row),
       valid: g.outs.every((o) => !o.errors.length) && lineList.length > 0,
       senderId: head.sender?.id ?? null,
@@ -453,10 +481,13 @@ const num = (v: unknown): number | null => (v === null || v === undefined || v =
  * The masters the checks need: every facility, transfer location and route (small tables), the SKUs named in the rows
  * and the open (not dispatched) transfer lines of those SKUs. `excludeUid` = the transfer being edited.
  */
-export const loadMasters = async (skuCodes: string[], settings: D2cSettings, today: string, excludeUid?: string): Promise<D2cMasters> => {
+export const loadMasters = async (
+  skuCodes: string[], settings: D2cSettings, today: string, excludeUid?: string, poNumbers: string[] = [],
+): Promise<D2cMasters> => {
   const q = AppDataSource.manager;
   const codes = [...new Set(skuCodes.map((c) => c.trim()).filter(Boolean))];
-  const [facilities, locations, routes, skus, open] = await Promise.all([
+  const pos = [...new Set(poNumbers.map((p) => p.trim()).filter(Boolean))];
+  const [facilities, locations, routes, skus, open, used] = await Promise.all([
     q.query<{ id: number; code: string; name: string | null; is_active: unknown; allow_internal_transfer: unknown; aliases: unknown }[]>(
       `SELECT id, code, name, is_active, allow_internal_transfer, aliases FROM ${TABLES.MASTER_FACILITIES}`,
     ),
@@ -484,7 +515,18 @@ export const loadMasters = async (skuCodes: string[], settings: D2cSettings, tod
         [D2C_UNDISPATCHED_STAGES, codes, excludeUid ?? 0],
       )
       : Promise.resolve([]),
+    pos.length
+      ? q.query<{ poNumber: string; channel: string | null; transferCode: string | null }[]>(
+        `SELECT poNumber, channel, transferCode FROM ${TABLES.MASTER_PURCHASE_ORDERS} WHERE poNumber IN (?) AND uid <> ?`,
+        [pos, excludeUid ?? 0],
+      )
+      : Promise.resolve([]),
   ]);
+  const usedPoNumbers = new Map<string, { channel: string | null; transferCode: string | null }[]>();
+  for (const u of used) {
+    const k = String(u.poNumber).trim().toLowerCase();
+    usedPoNumbers.set(k, [...(usedPoNumbers.get(k) ?? []), { channel: u.channel, transferCode: u.transferCode }]);
+  }
   const skuMap = new Map<string, SkuM>();
   for (const s of skus) {
     skuMap.set(s.pep_code.toLowerCase(), {
@@ -518,5 +560,6 @@ export const loadMasters = async (skuCodes: string[], settings: D2cSettings, tod
     skus: skuMap,
     open: openMap,
     testOnly: env.d2c.testOnly,
+    usedPoNumbers,
   };
 };

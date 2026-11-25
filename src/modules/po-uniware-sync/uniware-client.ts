@@ -91,7 +91,8 @@ let shared: UniwarePoster | null = null;
 /** The process-wide client of the sync. Throws when the UNIWARE_* keys are missing. */
 export const poUniwareClient = (): UniwarePoster => {
   if (shared) return shared;
-  const { tenant, username, password } = env.intransit.uniware;
+  const { username, password } = env.intransit.uniware;
+  const tenant = env.intransit.uniware.tenant || env.poUniwareSync.tenantFallback;
   if (!tenant || !username || !password) throw new Error('Uniware is not set up here (UNIWARE_TENANT / UNIWARE_USERNAME / UNIWARE_PASSWORD)');
   shared = new Client({ tenant, username, password });
   return shared;

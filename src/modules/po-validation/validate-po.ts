@@ -3,6 +3,7 @@ import {
   CHANNEL_TOLERANCES, poTotalAllowed,
   EXPECTED_UNIWARE_CHANNEL,
   OUR_PRICE_ONLY_CHANNELS,
+  PO_LOCATION_PEP_NAME,
   PRICE_CHOICE,
   PriceChoice,
   PUNCH_S,
@@ -45,8 +46,11 @@ import { addressMismatch } from './address-check';
 export interface ValidatedLocation {
   /** details_channels.id -> master_purchase_orders.locationId */
   locationId: string;
-  /** details_channels.channel_location_code -> master_purchase_orders.location */
+  /** details_channels.channel_location_code (the channel's own code; finds the location) */
   locationCode: string;
+  /** -> master_purchase_orders.location: our PEP name for PO_LOCATION_PEP_NAME channels (Flipkart), else locationCode.
+   *  Missing on results validated before 2026-11-24 (= locationCode). */
+  poLocation?: string;
   /** -> Uniware Customer Code, master_purchase_orders.customerCode */
   customerCode: string;
   /** -> Uniware Facility Code, master_purchase_orders.facility: details_channels.facility_code EXACTLY as stored
@@ -203,6 +207,7 @@ const findLocation =(po: ProcessedPo, master: ChannelMasterData, issues: Validat
   return {
     locationId: String(row.id),
     locationCode: row.channelLocationCode?.trim() ?? '',
+    poLocation: (PO_LOCATION_PEP_NAME.includes(po.channel_name as ChannelName) && row.tallyLedgerName?.trim()) || (row.channelLocationCode?.trim() ?? ''),
     customerCode: row.uniwareCustomerCode?.trim() ?? '',
     facilityCode,
     facilityId: facility?.id ?? null,

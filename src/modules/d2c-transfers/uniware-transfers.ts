@@ -111,11 +111,14 @@ export interface SoInput {
   lines: SoLineInput[];
 }
 
+/** The item code SOs created before 2026-11-18 gave a line (L<line id>); still matched on their items. */
 export const itemCodeOf = (lineId: string): string => `${D2C_UNIWARE.ITEM_CODE_PREFIX}${lineId}`;
 
 /**
- * The create-SO body: one item per transfer line with its quantity (user, 2026-11-03), price = 15% of MRP (tax
- * included), totalPrice = price x qty. No address: Uniware takes it from the customer.
+ * The create-SO body: one item per transfer line with its quantity (user, 2026-11-03), item code = our SKU code (user,
+ * 2026-11-18: "make it our internal SKU code only"; a transfer has one line per SKU), price = 15% of MRP (tax
+ * included), totalPrice = price x qty, channelMrp = the MRP of one unit (user, 2026-11-17: SOs showed Channel MRP 0;
+ * not in Uniware's create docs, but saleorder/get returns the field). No address: Uniware takes it from the customer.
  */
 export const buildSaleOrderPayload = (o: SoInput) => ({
   saleOrder: {
@@ -127,12 +130,13 @@ export const buildSaleOrderPayload = (o: SoInput) => ({
     saleOrderItems: o.lines.filter((l) => l.qty > 0).map((l) => {
       const sellingPrice = d2cSoUnitPrice(l.mrp);
       return {
-        code: itemCodeOf(l.lineId),
+        code: l.skuCode,
         itemSku: l.skuCode,
         quantity: l.qty,
         shippingMethodCode: D2C_UNIWARE.SHIPPING_METHOD,
         sellingPrice,
         totalPrice: round2(sellingPrice * l.qty),
+        channelMrp: l.mrp,
         facilityCode: o.facility,
       };
     }),

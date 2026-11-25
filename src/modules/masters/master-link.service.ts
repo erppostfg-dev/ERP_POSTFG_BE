@@ -58,7 +58,7 @@ export const planLinks = async (db: DataSource): Promise<LinkPlan> => {
   const partners = codeIndex(await db.getRepository(MasterCourierPartner).find());
   const channelId = new Map((await db.getRepository(MasterChannel).find()).map((c) => [matchKey(c.displayName), c.id]));
   const locations = await db.getRepository(DetailsChannel).find({
-    select: ['id', 'channelId', 'channelLocationCode', 'uniwareCustomerCode', 'facilityCode', 'facilityId', 'isActive'],
+    select: ['id', 'channelId', 'channelLocationCode', 'tallyLedgerName', 'uniwareCustomerCode', 'facilityCode', 'facilityId', 'isActive'],
   });
   const pos = await db.getRepository(MasterPurchaseOrder).find({
     select: ['uid', 'channel', 'location', 'customerCode', 'facility', 'facilityId', 'locationId',
@@ -81,7 +81,8 @@ export const planLinks = async (db: DataSource): Promise<LinkPlan> => {
 
     const cid = channelId.get(matchKey(po.channel));
     const ofChannel = locations.filter((l) => l.channelId === cid);
-    let found = ofChannel.filter((l) => matchKey(l.channelLocationCode) === matchKey(po.location));
+    // by the channel's code, or our PEP name (Flipkart POs keep 'Mumbai BTS', 2026-11-24)
+    let found = ofChannel.filter((l) => [l.channelLocationCode, l.tallyLedgerName].some((c) => matchKey(c) === matchKey(po.location)));
     if (found.length > 1) found = found.filter((l) => matchKey(l.uniwareCustomerCode) === matchKey(po.customerCode));
     if (found.length > 1) found = found.filter((l) => l.isActive);
     if (!found.length && matchKey(po.customerCode)) found = ofChannel.filter((l) => matchKey(l.uniwareCustomerCode) === matchKey(po.customerCode));

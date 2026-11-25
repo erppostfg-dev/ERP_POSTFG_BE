@@ -105,13 +105,33 @@ export const ERRORS = {
   BULK_DOCUMENT_NOT_FOUND: define(404, (id: string) => `Document ${id} not found on this order`),
   BULK_CUSTOMER_NOT_FOUND: define(404, (id: string) => `Saved customer ${id} not found`),
   BULK_NOT_SETTINGS_ADMIN: define(403, () => 'Only an admin can change the Bulk Orders settings'),
-  BULK_ORDER_NOT_APPROVED: define(409, (po: string, status: string) => `${po} is ${status.replace(/_/g, ' ')}: only an approved order can be processed (reload it)`),
+  BULK_ORDER_NOT_APPROVED: define(409, (po: string, status: string) => `${po} is ${status.replace(/_/g, ' ')}: only an approved or submitted order can be processed (reload it)`),
+  /** v2 1c (2026-11-23): edit / cancel only while pending approval or submitted (before the sale order). */
+  /** v2 piece 3: Remind not possible now (not waiting / too early / just reminded). */
+  BULK_REMIND_NOT_NOW: define(409, (po: string, why: string) => `${po}: no reminder now (${why})`),
+  BULK_ORDER_NOT_EDITABLE: define(409, (po: string, status: string) => `${po} can no longer be changed (now ${status.replace(/_/g, ' ')}): reload it`),
   BULK_PROCESS_TYPE_LATER: define(409, (type: string) => `${type} orders cannot be processed in POST_FG yet`),
+  /** v2 piece 5a: Institutional customers. */
+  BULK_INST_CUSTOMER_NOT_FOUND: define(404, (id: string) => `No Institutional customer ${id}`),
+  /** v2 piece 5b: GSTIN verify on a customer without one. */
+  /** 2026-11-24: payment details (link / QR / bank details) need the special permission. */
+  BULK_NOT_PAYMENT_DETAILS: define(403, () => 'Adding payment details needs the permission "Bulk Orders: add payment details" (ask an admin)'),
+  /** 2026-11-24: buyer organisations. */
+  BULK_ORG_NOT_FOUND: define(404, (id: string) => `No buyer organisation ${id}`),
+  BULK_ORG_EXISTS: define(409, (name: string) => `A buyer organisation named ${name} already exists`),
+  BULK_ORG_USER_TAKEN: define(409, (email: string, org: string) => `${email} already belongs to the buyer organisation ${org}: remove them there first`),
+  BULK_INST_CUSTOMER_NO_GSTIN: define(409, (name: string) => `${name} has no GSTIN to verify`),
+  BULK_INST_CUSTOMER_EXISTS: define(409, (what: string) => `A customer with this ${what} already exists: open it instead`),
   BULK_UPLOAD_NOT_REOPENABLE: define(409, (po: string) => `${po} came from a bulk order: process it again in PO Processing & Review > Bulk Orders`),
   BULK_LOCATION_LABEL_TAKEN: define(409, (label: string) => `A saved location is already called "${label}": pick it, or use another name`),
   DATA_SYNC_RUNNING: define(409, (job: string) => `${job} is running now: wait for it to finish (Admin > Data sync shows it)`),
   DATA_SYNC_NOT_HERE: define(409, (db: string, target: string) => `Data sync writes only into ${target}; this server's database is ${db}, so nothing was run (open it on prod)`),
   UNIWARE_SYNC_TOO_SOON: define(409, (ago: number, by: string, left: number) => `Sync from Uniware was run ${ago} min ago by ${by}: available again in ${left} min (the server also syncs every 30 min by itself)`),
+  // --- POs punched in Uniware outside POST_FG (2026-11-25) ---
+  UNIWARE_OUTSIDE_TOO_SOON: define(409, (ago: number, by: string, left: number) => `Uniware was checked ${ago} min ago by ${by}: available again in ${left} min (the server also checks every 2 hours by itself)`),
+  UNIWARE_OUTSIDE_NOT_FOUND: define(404, (id: string) => `Uniware finding ${id} not found`),
+  UNIWARE_OUTSIDE_DONE: define(409, (id: string) => `Uniware finding ${id} was already resolved, or its PO moved on: refresh the list`),
+  UNIWARE_OUTSIDE_BAD_ACTION: define(400, (action: string, kind: string) => `"${action}" does not fit a PO that is ${kind}`),
   // --- Notices (2026-11-10) ---
   NOTICES_OFF: define(409, () => 'Notices are switched off (Users & Roles -> Settings)'),
   NOTICE_EVERYONE_NOT_ALLOWED: define(403, () => 'Only an admin or a developer can send a notice to everyone'),
@@ -162,7 +182,9 @@ export const ERRORS = {
   // --- Users & Roles admin (2026-10-15) ---
   DEVELOPER_ONLY: define(403, () => 'Only developers see the server page'),
   NOT_A_USER_ADMIN: define(403, (roles: string) => `Only ${roles} can add or change users and roles`),
-  MASTER_ADD_NOT_ALLOWED: define(403, (roles: string) => `Only ${roles} can add to the masters`),
+  ROUTE_UPLOAD_FILE: define(400, (reason: string) => `Upload rejected: ${reason}`),
+  ROUTE_UPLOAD_INVALID: define(422, (rows: number) => `Nothing was saved: ${rows} row(s) have problems, see details`),
+  MASTER_ADD_NOT_ALLOWED: define(403, (who: string) => `Only ${who} can change this master`),
   MASTER_HISTORY_BAD_REQUEST: define(400, (what: string) => `Masters history: ${what}`),
   MASTER_ROW_NOT_FOUND: define(404, (type: string, id: string) => `No ${type} row ${id}`),
   MASTER_EDIT_CONFLICT: define(409, () => 'Someone else changed this row while you were editing: reload it and save again'),
@@ -227,6 +249,7 @@ export const ERRORS = {
   REVIEW_RETURNED: define(409, (count: number) => `The PO no longer passes the checks (${count} issue(s)); it went back to In Review with the reason`),
   MASTER_UPDATE_NOT_CONFIRMED: define(409, (count: number) => `${count} of the selected approval(s) update the master on approval: confirm to go on`),
   ISSUE_REMARK_REQUIRED: define(422, (issueId: string, type: string) => `Issue ${issueId} (${type}) is accepted only with a remark: say why`),
+  TOTAL_REMARK_REQUIRED: define(422, () => 'The PO total difference is accepted only with a remark: say why'),
   PRICE_DIFF_IDS_REQUIRED: define(400, () => 'Send the ids of the price difference lines to mark as sent'),
   PRICE_DIFF_SCOPE_REQUIRED: define(400, () => 'Name a PO (uploadId) or a channel'),
   ISSUE_NOT_ACCEPTABLE: define(422, (issueId: string, type: string) => `Issue ${issueId} (${type}) cannot be accepted: correct it or reject the PO`),

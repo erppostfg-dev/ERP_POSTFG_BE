@@ -3,6 +3,7 @@ import { flipkartConnector } from '../../src/modules/channel-api/flipkart/flipka
 import { consignmentToProcessed, parseBulkConsignments, parseConsignmentCsv } from '../../src/modules/channel-api/flipkart/consignments.parse';
 import { storeRobotResult } from '../../src/modules/channel-api/flipkart/consignments.service';
 import { runConnector } from '../../src/modules/channel-api/runner';
+import { resetCacheForTests } from '../../src/modules/cache/cache.service';
 import { loginAs, type TestLogin } from '../helpers/auth';
 import { closeDb, count, resetDb, rows } from '../helpers/db';
 import { clearS3, s3Objects } from '../helpers/fake-s3';
@@ -91,6 +92,26 @@ describe('the connector: the same chain as every channel', () => {
     const next = await runConnector(flipkartConnector, { apply: true });
     expect(next.items.filter((i) => i.result)).toEqual([]);
     expect(await count('po_uploads', 'external_id = ?', ['205149516'])).toBe(1);
+  });
+
+  it('the saved PO keeps our PEP location name (Mumbai BTS style), found by the Flipkart code; no name = the code', async () => {
+    await fkSwitchOn(admin.userId);
+    const saved = async (id: string) => (await rows<{ location: string | null; locationId: string | null; customerCode: string | null }>(
+      'SELECT location, locationId, customerCode FROM master_purchase_orders WHERE poNumber = ?', [id]))[0];
+    // no PEP name in the master yet: Flipkart's code, as before
+    await storeRobotResult(fkRobot([{ id: '205149601', row: 'ID: 205149601', csv: fkCsv([{ qty: 2, cost: 74.85 }]) }], fkBulk([{ id: '205149601', qty: 2 }])));
+    await runConnector(flipkartConnector, { apply: true });
+    expect((await saved('205149601')).location).toBe(WAREHOUSE);
+    // the PEP name filled in Masters (tally_ledger_name) -> new POs carry it; the location link + customer code unchanged
+    await rows("UPDATE details_channels SET tally_ledger_name = ' Ahmedabad ' WHERE channel_location_code = ?", [WAREHOUSE]);
+    resetCacheForTests(); // masters are cached for 60 s; a Masters edit drops them
+    await storeRobotResult(fkRobot([{ id: '205149602', row: 'ID: 205149602', csv: fkCsv([{ qty: 2, cost: 74.85 }]) }], fkBulk([{ id: '205149602', qty: 2 }])));
+    await runConnector(flipkartConnector, { apply: true });
+    const two = await saved('205149602');
+    expect(two).toMatchObject({ location: 'Ahmedabad', customerCode: 'FLIPKART_AHMEDABAD_387570' });
+    expect(two.locationId).toBe((await saved('205149601')).locationId);
+    // the PO saved before keeps what it had
+    expect((await saved('205149601')).location).toBe(WAREHOUSE);
   });
 
   it('checks like any channel: a price above our rate (+-Rs 1) goes to review', async () => {

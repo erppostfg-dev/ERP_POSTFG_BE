@@ -13,7 +13,18 @@ export const D2C_REFERENCE_TAG: Record<string, string> = {
   [D2C_TRANSFER_TYPE.FREEBEE]: 'Freebee',
 };
 
-export const D2C_PRIORITIES = ['P1', 'P2', 'P3'] as const;
+/**
+ * The usual priorities, most urgent first (user, 2026-11-17: P0 added, and any other text is allowed too, up to
+ * D2C_LIMITS.PRIORITY_MAX). Lists sort these first in this order, then any other priority A-Z (d2cPriorityOrderSql).
+ */
+export const D2C_PRIORITIES = ['P0', 'P1', 'P2', 'P3'] as const;
+export const D2C_DEFAULT_PRIORITY = 'P2';
+
+/** ORDER BY terms for a transfer priority column: none last, the usual ones in their order, then others A-Z. */
+export const d2cPriorityOrderSql = (col: string): string => {
+  const known = D2C_PRIORITIES.map((p) => `'${p}'`).join(', ');
+  return `${col} IS NULL, FIELD(${col}, ${known}) = 0, FIELD(${col}, ${known}), ${col}`;
+};
 
 /** The 5 transfer channels as PEPIMS names them (d2c:settings.channels starts with these). */
 export const D2C_CHANNELS = ['McaffeineB2C', 'HYP_Website', 'GGN_WAREHOUSE', 'MUM_WAREHOUSE2', 'KOL_WAREHOUSE'] as const;
@@ -243,7 +254,10 @@ export const D2C_UPLOAD_COLUMN = {
   UNIWARE_CHANNEL: 'Uniware Channel',
 } as const;
 export const D2C_UPLOAD_COLUMNS: readonly string[] = Object.values(D2C_UPLOAD_COLUMN);
-/** Columns a file must have (Priority, Type, expiry have defaults; PO Number, Sr No, GMV, PO Value, Channel SKU Code are ignored). */
+/**
+ * Columns a file must have (Priority, Type, expiry have defaults; PO Number is optional: filled = the transfer's PO number,
+ * empty = generated; Sr No, GMV, PO Value, Channel SKU Code are ignored).
+ */
 export const D2C_UPLOAD_REQUIRED: readonly string[] = [
   D2C_UPLOAD_COLUMN.CHANNEL, D2C_UPLOAD_COLUMN.LOCATION, D2C_UPLOAD_COLUMN.PO_DATE, D2C_UPLOAD_COLUMN.SKU_CODE, D2C_UPLOAD_COLUMN.QTY,
   D2C_UPLOAD_COLUMN.DISPATCH_LOCATION,
@@ -258,6 +272,10 @@ export const D2C_LIMITS = {
   REMARKS_MAX: 1000,
   REASON_MAX: 500,
   GROUP_MAX: 100,
+  /** Upload: a PO Number from the sheet (master_purchase_orders.poNumber varchar(255)). */
+  PO_NUMBER_MAX: 255,
+  /** Priority: any text up to this length (master_purchase_orders.transferPriority varchar(20)). */
+  PRIORITY_MAX: 20,
   /** List paging, as PO Overview. */
   DEFAULT_PAGE_SIZE: 100,
   MAX_PAGE_SIZE: 500,
@@ -349,7 +367,10 @@ export const D2C_UNIWARE = {
   INVALID_SALE_ORDER_CODE: 'INVALID_SALE_ORDER_CODE',
   /** stock of SKUs none of which has inventory at that facility (code 60004) = 0 available. */
   INVENTORY_NOT_AVAILABLE: 'INVENTORY_NOT_AVAILABLE',
-  /** Item line code of a transfer line on the SO: L<details_purchase_orders.id> (stable, one item per line with its qty). */
+  /**
+   * Item line code of a transfer line on SOs created before 2026-11-18: L<details_purchase_orders.id>. Newer SOs use our
+   * SKU code (one line per SKU in a transfer); both are matched (lineOfItem, sync-plan).
+   */
   ITEM_CODE_PREFIX: 'L',
   /** Remark / log text cut at this many characters (trimmed request / response, never credentials). */
   LOG_MAX: 4000,

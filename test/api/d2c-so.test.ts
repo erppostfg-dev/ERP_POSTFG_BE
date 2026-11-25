@@ -99,7 +99,7 @@ describe('create SO', () => {
     expect(h.orderNo1).toMatch(/^erp_it_\d{8}001$/);
     const sent = calls.find((c) => c.path.endsWith('/saleOrder/create'))!;
     expect(sent.facility).toBe('TEST_FACILITY');
-    expect(sent.body).toMatchObject({ saleOrder: { channel: 'mCaff_Test', customerCode: 'Test_Channel', displayOrderCode: t.reference, saleOrderItems: [{ itemSku: m.pepCode, quantity: 10, sellingPrice: 74.85, totalPrice: 748.5 }] } });
+    expect(sent.body).toMatchObject({ saleOrder: { channel: 'mCaff_Test', customerCode: 'Test_Channel', displayOrderCode: t.reference, saleOrderItems: [{ itemSku: m.pepCode, quantity: 10, sellingPrice: 74.85, totalPrice: 748.5, channelMrp: 499 }] } });
     const logs = await rows<{ action: string; source: string }>('SELECT action, source FROM shipment_logs WHERE shipment_uid = ? ORDER BY id', [t.uid]);
     expect(logs.map((l) => l.action)).toEqual(['created', 'so_requested', 'so_created', 'stage_changed']);
   });
@@ -150,7 +150,8 @@ describe('cancel and close short with an SO', () => {
     const t = await newDraft();
     await waitJob((await api().post(`${P}/create-so`).set('Cookie', admin.cookie).send({ ids: [t.uid] }).expect(202)).body.data.id);
     const [line] = await rows<{ id: number }>('SELECT id FROM details_purchase_orders WHERE shipmentOrderId = ?', [t.uid]);
-    return { t, item: `L${line.id}` };
+    // SOs made from 2026-11-18 use the SKU code as item code (old ones L<line id> are matched too: unit tests)
+    return { t, item: m.pepCode, lineId: line.id };
   };
 
   it('cancel: open items cancelled in Uniware, then cancelled; a refusal changes nothing', async () => {

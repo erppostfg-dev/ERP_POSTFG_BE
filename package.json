@@ -44,6 +44,7 @@
     "masters:load": "ts-node --transpile-only src/scripts/masters-load.ts",
     "pepims:sync": "ts-node --transpile-only src/scripts/pepims-sync.ts",
     "dev:copy": "ts-node --transpile-only src/scripts/dev-copy.ts",
+    "bulk:skus": "ts-node --transpile-only src/scripts/bulk-skus-load.ts",
     "masters:replace": "ts-node --transpile-only src/scripts/masters-replace.ts",
     "po:brand-fill": "ts-node --transpile-only src/scripts/brand-fill.ts",
     "po:po-date-fill": "ts-node --transpile-only src/scripts/po-date-fill.ts",

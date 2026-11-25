@@ -17,17 +17,29 @@
  * payment, timeline, M1 (Uniware customer code).
  */
 
-/** The two kinds of bulk order (stored value). */
+/** The kinds of bulk order (stored value). */
 export const BULK_ORDER_TYPE = {
   MARKETING: 'marketing',
+  /** Head office (office use; Bulk Orders Portal v2, 2026-11-23): works exactly like Marketing (MARKETING_LIKE_TYPES). */
+  HEAD_OFFICE: 'head_office',
   INSTITUTIONAL: 'institutional',
 } as const;
 export type BulkOrderType = (typeof BULK_ORDER_TYPE)[keyof typeof BULK_ORDER_TYPE];
 export const BULK_ORDER_TYPES = Object.values(BULK_ORDER_TYPE) as BulkOrderType[];
 
-/** PO number prefix per type: MKT-2026-0001. */
+/**
+ * Types that behave like Marketing (user 2026-11-23: "if it works like marketing then build like marketing"): same
+ * people (the Marketing page / role raises both), same approvers, fixed unit price (no amounts on the portal), delivery
+ * mode, no institution details, no payment check, the saved PO in channel "Bulk Marketing" (group Marketing). A rule
+ * written for Marketing uses isMarketingLike() so it covers Head office too.
+ */
+export const MARKETING_LIKE_TYPES: readonly BulkOrderType[] = [BULK_ORDER_TYPE.MARKETING, BULK_ORDER_TYPE.HEAD_OFFICE];
+export const isMarketingLike = (type: string | null | undefined): boolean => MARKETING_LIKE_TYPES.includes(type as BulkOrderType);
+
+/** PO number prefix per type: MKT-2026-0001, HO-2026-0001, INST-2026-0001. */
 export const BULK_PO_PREFIX: Record<BulkOrderType, string> = {
   [BULK_ORDER_TYPE.MARKETING]: 'MKT',
+  [BULK_ORDER_TYPE.HEAD_OFFICE]: 'HO',
   [BULK_ORDER_TYPE.INSTITUTIONAL]: 'INST',
 };
 
@@ -39,9 +51,10 @@ export const BULK_PAGE = {
   APPROVE: '/bulk-orders/approve',
 } as const;
 
-/** The page that gives access to a type's orders. */
+/** The page that gives access to a type's orders (Head office = the Marketing page: the same people, user 2026-11-23). */
 export const BULK_TYPE_PAGE: Record<BulkOrderType, string> = {
   [BULK_ORDER_TYPE.MARKETING]: BULK_PAGE.MARKETING,
+  [BULK_ORDER_TYPE.HEAD_OFFICE]: BULK_PAGE.MARKETING,
   [BULK_ORDER_TYPE.INSTITUTIONAL]: BULK_PAGE.INSTITUTIONAL,
 };
 
@@ -56,9 +69,142 @@ export const BULK_ORDER_STATUS = {
   CANCELLED: 'cancelled',
   /** Step 3b (2026-11-12): our team created its sale order in POST_FG (PO rows + erp_ code + Uniware CSV). */
   PROCESSING: 'processing',
+  /**
+   * v2 1c (2026-11-23): with our team, no approval needed (BULK_APPROVAL). Editable / cancellable by its type until the
+   * sale order is made, like a pending one; processed like an approved one.
+   */
+  SUBMITTED: 'submitted',
+  /**
+   * v2 1g (2026-11-24, user "1G A"): saved before submitting, in the app (only its creator sees it), number DRAFT-<id>,
+   * fields may be empty; Submit checks everything, applies the approval rules and gives it its real number.
+   */
+  DRAFT: 'draft',
+  /** v2 piece 4 (2026-11-24): set from Uniware's shipping packages by the sync (never by hand; bulk-tracking.service). */
+  DISPATCHED: 'dispatched',
+  DELIVERED: 'delivered',
 } as const;
 export type BulkOrderStatus = (typeof BULK_ORDER_STATUS)[keyof typeof BULK_ORDER_STATUS];
 export const BULK_ORDER_STATUSES = Object.values(BULK_ORDER_STATUS) as BulkOrderStatus[];
+
+/** Statuses whose order our team may turn into a sale order (approved, or submitted = no approval needed). */
+export const BULK_PROCESSABLE_STATUSES: readonly string[] = [BULK_ORDER_STATUS.APPROVED, BULK_ORDER_STATUS.SUBMITTED];
+/** List filter `status=ready` (v2 1c): every order our team may process (BULK_PROCESSABLE_STATUSES), the team tab's default. */
+export const BULK_LIST_READY = 'ready';
+/** Statuses the requester may still edit / cancel (before approval, or before the sale order when none is needed). */
+export const BULK_EDITABLE_STATUSES: readonly string[] = [BULK_ORDER_STATUS.PENDING_APPROVAL, BULK_ORDER_STATUS.SUBMITTED, BULK_ORDER_STATUS.DRAFT];
+/**
+ * Courier tracking (v2 piece 4, 2026-11-24, READ-ONLY on Uniware): the channel PO sync's saleorder/get answer fills a bulk
+ * order's tracking. Package status words are Uniware's; cancelled packages are ignored.
+ */
+export const BULK_TRACKING = {
+  DISPATCHED: ['DISPATCHED', 'SHIPPED', 'MANIFESTED', 'IN_TRANSIT', 'OUT_FOR_DELIVERY'] as readonly string[],
+  DELIVERED: ['DELIVERED'] as readonly string[],
+  CANCELLED: ['CANCELLED'] as readonly string[],
+  /** Orders the sync updates (placed, dispatched; delivered = final). */
+  TRACKED_STATUSES: ['processing', 'dispatched'] as readonly string[],
+  /** Timeline rows written by the sync (no person). */
+  SYSTEM_USER: 0,
+  TEXT_MAX: 255,
+} as const;
+
+/**
+ * Notifications (v2 piece 3, 2026-11-24; modules/bulk-orders/bulk-notify.service.ts). Bell always (notices); email per
+ * event behind switches (POST_FG Users & Roles > Settings > Bulk Orders > Notifications; app_state SETTINGS_KEY).
+ * Remind: the requester nudges our team (COPT) REMIND_AFTER_H after the request (after the approval when one was
+ * needed) while not placed, then at most every REMIND_COOLDOWN_H.
+ */
+/** 2026-11-24: + payment events to the requester (payment details added, payment accepted / refused). */
+export type BulkNotifyEvent = 'approval_needed' | 'approved' | 'rejected' | 'for_team' | 'remind' | 'payment_details' | 'payment_paid' | 'payment_refused';
+export interface BulkNotifySettings { emails: boolean; approvalNeeded: boolean; decision: boolean; remind: boolean; payment: boolean }
+/** The settings' body fields (booleans). */
+export const BULK_ORDERS_BODY_NOTIFY = ['emails', 'approvalNeeded', 'decision', 'remind', 'payment'] as const;
+export const BULK_NOTIFY = {
+  SETTINGS_KEY: 'bulk-notify:settings',
+  DEFAULTS: { emails: true, approvalNeeded: true, decision: true, remind: true, payment: true } as BulkNotifySettings,
+  /** Which switch sends an event's email (none = bell only: our team works in POST_FG all day). */
+  EMAIL_SWITCH: {
+    approval_needed: 'approvalNeeded', approved: 'decision', rejected: 'decision', for_team: null, remind: 'remind',
+    payment_details: 'payment', payment_paid: 'payment', payment_refused: 'payment',
+  } as Record<BulkNotifyEvent, 'approvalNeeded' | 'decision' | 'remind' | 'payment' | null>,
+  APPROVER_ROLE: 'bulk-approver',
+  /** POST_FG page of our team's Bulk Orders tab (the bell link + email link for COPT). */
+  TEAM_LINK: '/operations/po-review?tab=bulk',
+  REMIND_AFTER_H: 6,
+  REMIND_COOLDOWN_H: 6,
+  REMIND_STATUSES: ['submitted', 'approved'] as readonly string[],
+  TEXT: {
+    approval_needed: (po: string, units: number) => `Bulk order ${po} (${units} units) needs your approval in the Bulk Orders portal.`,
+    approved: (po: string) => `Your bulk order ${po} was approved. Our team will place it.`,
+    rejected: (po: string, _u: number, why: string) => `Your bulk order ${po} was rejected${why ? `: ${why}` : '.'}`,
+    for_team: (po: string, units: number) => `New bulk order ${po} (${units} units) to place: Bulk Orders tab.`,
+    remind: (po: string, units: number) => `Reminder: bulk order ${po} (${units} units) is still waiting to be placed.`,
+    payment_details: (po: string) => `Payment details for your bulk order ${po} are ready: open the order to pay, then upload the proof of payment.`,
+    payment_paid: (po: string) => `Your payment for bulk order ${po} is verified. Thank you.`,
+    payment_refused: (po: string, _u: number, why: string) => `Your proof of payment for bulk order ${po} was not accepted${why ? `: ${why}` : '.'} Please upload it again.`,
+  } as Record<BulkNotifyEvent, (po: string, units: number, extra: string) => string>,
+  SUBJECT: {
+    approval_needed: (po: string) => `Bulk order ${po} needs your approval`,
+    approved: (po: string) => `Bulk order ${po} approved`,
+    rejected: (po: string) => `Bulk order ${po} rejected`,
+    for_team: (po: string) => `New bulk order ${po} to place`,
+    remind: (po: string) => `Reminder: bulk order ${po} waiting to be placed`,
+    payment_details: (po: string) => `Payment details for bulk order ${po}`,
+    payment_paid: (po: string) => `Payment verified: bulk order ${po}`,
+    payment_refused: (po: string) => `Proof of payment not accepted: bulk order ${po}`,
+  } as Record<BulkNotifyEvent, (po: string) => string>,
+} as const;
+
+/**
+ * Stock on the approval screen (2026-11-24, backlog M5.4; bulk-stock.service): units ON HAND at the mother warehouses
+ * from the newest in-transit report's Daily Snapshot (read only). Column names as the report writes them.
+ */
+export const BULK_STOCK = {
+  SHEET: 'Sheet35(2)',
+  COL_SKU: 'Split2 SKU',
+  COL_TYPE: 'Channel type',
+  COL_STOCK_TYPE: 'Stock Type',
+  COL_UNITS: 'Final Units',
+  ON_HAND: 'SOH',
+  /** report channel type -> the warehouse shown */
+  WAREHOUSES: { GGNMWH: 'GGN', MUMMWH: 'MUM', KOLMWH: 'KOL' } as Record<string, string>,
+  NO_REPORT: 'No stock report available (the in-transit report has not been built yet)',
+} as const;
+
+/** List filter `status=active` (v2 1g): open orders (submitted, pending approval, approved): the worklist's "Active" card. */
+export const BULK_LIST_ACTIVE = 'active';
+export const BULK_ACTIVE_STATUSES: readonly string[] = [BULK_ORDER_STATUS.SUBMITTED, BULK_ORDER_STATUS.PENDING_APPROVAL, BULK_ORDER_STATUS.APPROVED];
+/**
+ * Archive (v2 1g): closed orders (rejected, cancelled; delivered once tracking comes) not changed for DAYS leave the
+ * normal lists; `archived=1` lists only them (search + CSV export in the portal).
+ */
+export const BULK_ARCHIVE = {
+  DAYS: 30,
+  STATUSES: ['rejected', 'cancelled', 'delivered'] as readonly string[],
+  /** Draft numbers until Submit gives the real one (DRAFT-<id>). */
+  DRAFT_PREFIX: 'DRAFT-',
+} as const;
+
+/**
+ * Approval rules (Bulk Orders Portal v2 piece 1c, 2026-11-23; user: "go with the suggestions"). An order needs approval
+ * when EITHER: its total units are MORE than its type's bulk_type_settings.approval_over_units (admin setting in POST_FG
+ * Users & Roles > Settings > Bulk Orders; Marketing + Head office 100, Institutional NULL = never), OR its delivery mode is
+ * in MODES (Marketing-like types only: Institutional has no mode). Otherwise SUBMITTED: straight to our team. Fast-track
+ * alone never needs approval. Checked on create and again on every edit (an edit can move it either way).
+ */
+export const BULK_APPROVAL = {
+  /** Default of a type's threshold (the migration seeds it; the admin changes it). */
+  DEFAULT_OVER_UNITS: 100,
+  /** Threshold limits on the settings form. */
+  OVER_UNITS_MAX: 1_000_000,
+  MODES: ['Porter'] as readonly string[],
+  /** Why words on the timeline / API (approval.why). */
+  WHY_UNITS: (units: number, over: number) => `${units} units (over ${over})`,
+  WHY_MODE: (mode: string) => `${mode} delivery`,
+  /** 2026-11-25 (user): a Head office order to any address other than the head office (Boomerang, Mumbai) needs approval. */
+  WHY_NOT_HEAD_OFFICE: (city: string) => `delivery to an address other than the head office (${city})`,
+  /** app_state key of the head office address (admin: Users & Roles > Settings > Bulk Orders). */
+  HEAD_OFFICE_KEY: 'bulk-head-office:address',
+} as const;
 
 /** Timeline rows (bulk_order_events.action), one per change of an order, in the same transaction as the change. */
 export const BULK_EVENT = {
@@ -73,6 +219,12 @@ export const BULK_EVENT = {
   PAYMENT: 'payment',
   /** Our team created the sale order (changes: { saleOrderCode, facilityCode, uniwareChannel, customerCode, uploadId }). */
   PROCESSED: 'processed',
+  /** v2 piece 3: the requester reminded our team to place it. */
+  REMINDED: 'reminded',
+  /** v2 piece 4: Uniware moved the order (changes: { status: [old, new], awb, courier }). */
+  TRACKING: 'tracking',
+  /** v2 1g: a draft was submitted (changes: { approval: why[] , poNumber }). */
+  SUBMITTED: 'submitted',
   /** The Verify step sent the sale order back (cancelled, kept): the order is approved again, to be processed again. */
   SENT_BACK: 'sent_back',
 } as const;
@@ -84,11 +236,16 @@ export type BulkEventAction = (typeof BULK_EVENT)[keyof typeof BULK_EVENT];
  * line). Payment NEVER blocks approval or processing; the proof may come any time; the APPROVER validates it.
  * A setting change applies to orders created after it.
  */
+/*
+ * v2 piece 5b (2026-11-24, PRD 'Invoices and payments'; migration BulkFinance renamed the old values): unbilled (no
+ * invoice yet) -> invoiced (an invoice uploaded) -> payment_submitted (a proof uploaded) -> paid (finance verified it);
+ * a refused proof goes back to invoiced (unbilled when there is no invoice); not_needed any time (free order).
+ */
 export const BULK_PAYMENT_STATUS = {
-  AWAITING_PROOF: 'awaiting_proof',
-  PROOF_UPLOADED: 'proof_uploaded',
-  VERIFIED: 'verified',
-  REFUSED: 'refused',
+  UNBILLED: 'unbilled',
+  INVOICED: 'invoiced',
+  PAYMENT_SUBMITTED: 'payment_submitted',
+  PAID: 'paid',
   NOT_NEEDED: 'not_needed',
 } as const;
 export type BulkPaymentStatus = (typeof BULK_PAYMENT_STATUS)[keyof typeof BULK_PAYMENT_STATUS];
@@ -99,6 +256,12 @@ export const BULK_PAYMENT_ACTION = {
   VERIFY: 'verify',
   REFUSE: 'refuse',
   NOT_NEEDED: 'not_needed',
+  /**
+   * Payment details (2026-11-24, replaces v2 5b's set_link): { link?, bankDetails? } = the payment link (https, e.g. a
+   * Razorpay link made outside POST_FG; the buyer sees 'Pay now') and / or bank details text; '' clears one. A QR image is
+   * a document of kind payment_qr. Needs CAPABILITY.BULK_PAYMENT_DETAILS. No status change; the buyer is told.
+   */
+  SET_DETAILS: 'set_details',
 } as const;
 export type BulkPaymentAction = (typeof BULK_PAYMENT_ACTION)[keyof typeof BULK_PAYMENT_ACTION];
 export const BULK_PAYMENT_ACTIONS = Object.values(BULK_PAYMENT_ACTION) as BulkPaymentAction[];
@@ -108,6 +271,8 @@ export const BULK_DOC_KIND = {
   PROFORMA_INVOICE: 'proforma_invoice',
   INVOICE: 'invoice',
   PAYMENT_PROOF: 'payment_proof',
+  /** 2026-11-24: a QR code to pay with (payment details; CAPABILITY.BULK_PAYMENT_DETAILS); a new one replaces the old. */
+  PAYMENT_QR: 'payment_qr',
 } as const;
 export type BulkDocKind = (typeof BULK_DOC_KIND)[keyof typeof BULK_DOC_KIND];
 export const BULK_DOC_KINDS = Object.values(BULK_DOC_KIND) as BulkDocKind[];
@@ -121,8 +286,22 @@ export const BULK_DOCS = {
 } as const;
 
 /** The design's markers (figma-make-bulk-orders types.ts): delivery mode (Marketing only) and priority. */
-export const BULK_DELIVERY_MODES = ['Porter', 'Courier', 'Self pickup'] as const;
-export const BULK_PRIORITIES = ['Standard', 'Fast-track'] as const;
+/**
+ * v2 1d (2026-11-23, user: "go with the suggestions"): modes Porter / Regular (Courier + Self pickup -> Regular, the
+ * migration renames old orders), priority Normal / Fast-track (Standard -> Normal). Fast-track: remarks required (why it
+ * is urgent) and a Needed by date; Normal: Needed by optional. Purpose: Marketing orders only (optional).
+ */
+export const BULK_DELIVERY_MODES = ['Porter', 'Regular'] as const;
+export const BULK_PRIORITIES = ['Normal', 'Fast-track'] as const;
+export const BULK_PRIORITY = { NORMAL: 'Normal', FAST_TRACK: 'Fast-track' } as const;
+
+/**
+ * Price of every unit of a Marketing / Head office order in Uniware (Bulk Orders Portal v2, user 2026-11-23: "keep this
+ * 0.01 as a constant ... so we can change in future by taking the confirmation"; v1 was ₹1 from 2026-11-13). Not yet
+ * confirmed that Uniware takes 0.01: if it refuses, change ONLY this value. The portal shows no amount on these orders
+ * ("Free order"); our team sees this price in POST_FG and the Uniware CSV Selling Price = it.
+ */
+export const MARKETING_UNIT_PRICE = 0.01;
 
 export const BULK_ORDERS = {
   BASE: '/bulk-orders',
@@ -141,20 +320,60 @@ export const BULK_ORDERS = {
     PAYMENT: '/:id/payment',
     /** Per-type settings (admin: editor on BULK_PAGE.ROOT). Before '/:id' in the router. */
     SETTINGS: '/settings',
+    /** v2 piece 3: email switches (before SETTING, which would take "notifications" as a type). */
+    NOTIFY_SETTINGS: '/settings/notifications',
     SETTING: '/settings/:type',
+    /** v2 piece 3: the requester nudges our team. */
+    REMIND: '/:id/remind',
+    /** 2026-11-24: buyer organisations (admin = editor on BULK_PAGE.ROOT). Before SETTING / '/:id'. */
+    ORGS: '/settings/orgs',
+    /** 2026-11-25: the head office address (admin). Before SETTING. */
+    HEAD_OFFICE: '/settings/head-office',
+    ORG: '/settings/orgs/:orgId',
+    /** v2 piece 2: checks the rows of an uploaded receivers file (nothing saved). Before '/:id' in the router. */
+    RECEIVERS_CHECK: '/receivers/check',
+    /** v2 piece 5a: Institutional customers (before '/:id' in the router). */
+    CUSTOMERS: '/customers',
+    CUSTOMER: '/customers/:customerId',
+    CUSTOMER_ADDRESSES: '/customers/:customerId/addresses',
+    CUSTOMER_ADDRESS: '/customers/:customerId/addresses/:addressId',
+    /** v2 piece 5b: finance verifies (or un-verifies) a customer's GSTIN. */
+    CUSTOMER_GSTIN: '/customers/:customerId/gstin',
+    /** 2026-11-24: 'have I ordered this already?' before Submit (nothing saved). Before '/:id'. */
+    DUPLICATE_CHECK: '/duplicate-check',
+    /** 2026-11-24: stock of the order's SKUs at the mother warehouses (approvers). */
+    STOCK: '/:id/stock',
   },
-  /** Lines per order. */
+  /** Lines per order (per receiver on a several-receivers order). */
   LINES_MAX: 200,
+  /** v2 piece 2 (2026-11-24, user 'go'): receivers per Marketing / Head office order, and SKU lines over all of them (= rows of an upload). */
+  RECEIVERS_MAX: 50,
+  RECEIVER_LINES_MAX: 500,
+  /** v2 piece 5a: Institutional customers (list size, shipping addresses per customer). */
+  CUSTOMERS_LIST_MAX: 2000,
+  /** v2 piece 5b: a payment link: https only, at most this long. */
+  PAYMENT_LINK_MAX: 1000,
+  BANK_DETAILS_MAX: 1000,
+  /** 2026-11-24 (user: 'put 3'): proof files (screenshots) kept for one payment; a refusal clears them for a new set. */
+  PAYMENT_PROOFS_MAX: 3,
+  /** 2026-11-24 (backlog M5.7): a new order like one the same person placed in the last DUPLICATE_DAYS = a warning (never blocks). */
+  DUPLICATE_DAYS: 7,
+  DUPLICATE_MAX: 5,
+  /** 2026-11-24 (M5.6): our team's list filter waitingDays = ready orders waiting more than N days (1..WAITING_DAYS_MAX). */
+  WAITING_DAYS_MAX: 365,
+  CUSTOMER_ADDRESSES_MAX: 50,
   /** Units per line. */
   QTY_MAX: 1_000_000,
-  /** Discount % (0-100, 2 decimals). No business limit (user): only what makes sense. */
+  /** Discount %: 0 up to BELOW this (2 decimals). v2 (2026-11-23): 100% is not allowed (a free line is not an order). */
   DISCOUNT_MAX: 100,
+  /** v2 (2026-11-23): every line of a priced order (Institutional) must come to at least this many rupees. */
+  LINE_TOTAL_MIN: 1,
   /**
    * Fixed price per unit by type (user 2026-11-13, Marketing: "don't show the amount, just put 1 rupee per SKU, one item,
    * same for everything, no discounts"): every unit at this price (with GST), no discount (a discount sent = 400), the
    * Uniware CSV Selling Price = this; the portal shows no money on these orders. A type not listed = MRP less discount %.
    */
-  FIXED_UNIT_PRICE: { [BULK_ORDER_TYPE.MARKETING]: 1 } as Partial<Record<BulkOrderType, number>>,
+  FIXED_UNIT_PRICE: { [BULK_ORDER_TYPE.MARKETING]: MARKETING_UNIT_PRICE, [BULK_ORDER_TYPE.HEAD_OFFICE]: MARKETING_UNIT_PRICE } as Partial<Record<BulkOrderType, number>>,
   /** SKU search: at least this many characters, at most this many answers. */
   SKU_QUERY_MIN: 2,
   SKU_RESULTS_MAX: 20,
@@ -169,6 +388,18 @@ export const BULK_ORDERS = {
   ADDRESS_MAX: 500,
   CITY_MAX: 100,
   NOTE_MAX: 1000,
+  /**
+   * v2 1f (2026-11-24, user: "check the brand name from that column and show only one brand"): the brand = the PEP SKU
+   * master's brand_name, as it is (no guessing from the code), compared without case; empty / "0" = no brand (such a SKU
+   * is offered under no brand until the masters team fills it). One brand per order.
+   */
+  NO_BRAND: ['', '0'] as readonly string[],
+  BRAND_MAX: 100,
+  /** v2 1e: an edit's remark. */
+  EDIT_REMARK_MAX: 500,
+  /** v2 1d: Fast-track remarks + Marketing purpose (= their columns). */
+  FAST_TRACK_REMARKS_MAX: 500,
+  PURPOSE_MAX: 200,
   /** 10 digits after spaces / dashes and a +91 or leading 0 are removed. */
   PHONE_RE: /^\d{10}$/,
   PINCODE_RE: /^[1-9]\d{5}$/,
@@ -186,12 +417,14 @@ export const BULK_ORDERS_TEAM = {
     PAYMENT: '/:id/payment',
     /** "Don't suggest again" on a saved address of the customer book (2026-11-13). */
     CUSTOMER_HIDE: '/customers/:customerId/hide',
+    /** 2026-11-24: stock of the order's SKUs at the mother warehouses. */
+    STOCK: '/:id/stock',
   },
 } as const;
 
 /**
  * Step 3b, processing an approved order into a sale order (user 2026-11-12). Institutional first; Marketing 2026-11-13 the
- * same way (user: Uniware channel (e.g. Jiva) + customer code typed for now, auto-filled later), every unit at ₹1
+ * same way (user: Uniware channel (e.g. Jiva) + customer code typed for now, auto-filled later), every unit at MARKETING_UNIT_PRICE (₹1 then; ₹0.01 since v2 2026-11-23)
  * (BULK_ORDERS.FIXED_UNIT_PRICE).
  *   - Our team member types the warehouse (facility), the Uniware channel and the Uniware customer code (both change
  *     often: he creates the customer in Uniware himself and types the code; POST_FG never creates customers).
@@ -211,9 +444,9 @@ export const BULK_ORDERS_TEAM = {
  */
 export const BULK_SALE = {
   /** Order types our team can process now (Institutional 2026-11-12, Marketing 2026-11-13). */
-  TYPES: [BULK_ORDER_TYPE.INSTITUTIONAL, BULK_ORDER_TYPE.MARKETING] as BulkOrderType[],
+  TYPES: [BULK_ORDER_TYPE.INSTITUTIONAL, BULK_ORDER_TYPE.MARKETING, BULK_ORDER_TYPE.HEAD_OFFICE] as BulkOrderType[],
   /** Types whose processed address + code goes into the customer book (bulk_customers): both since 2026-11-13 (user). */
-  CUSTOMER_BOOK_TYPES: [BULK_ORDER_TYPE.INSTITUTIONAL, BULK_ORDER_TYPE.MARKETING] as BulkOrderType[],
+  CUSTOMER_BOOK_TYPES: [BULK_ORDER_TYPE.INSTITUTIONAL, BULK_ORDER_TYPE.MARKETING, BULK_ORDER_TYPE.HEAD_OFFICE] as BulkOrderType[],
   /** po_uploads.source_system; external_id = the saved PO's number (SALE_PO). */
   SOURCE_SYSTEM: 'bulk_orders',
   /**
@@ -222,20 +455,35 @@ export const BULK_SALE = {
    */
   SALE_PO: (poNumber: string, n: number) => (n <= 1 ? poNumber : `${poNumber}-${n}`),
   /** master_purchase_orders.channel / po_uploads.channel (our name; the Uniware channel is typed per order). */
-  CHANNEL: { [BULK_ORDER_TYPE.MARKETING]: 'Bulk Marketing', [BULK_ORDER_TYPE.INSTITUTIONAL]: 'Bulk Institutional' } as Record<BulkOrderType, string>,
+  /** Head office shares Marketing's channel (and so group Marketing in PO Overview; user 2026-11-23). */
+  CHANNEL: {
+    [BULK_ORDER_TYPE.MARKETING]: 'Bulk Marketing', [BULK_ORDER_TYPE.HEAD_OFFICE]: 'Bulk Marketing', [BULK_ORDER_TYPE.INSTITUTIONAL]: 'Bulk Institutional',
+  } as Record<BulkOrderType, string>,
   /**
    * master_channels ids of those two names (migration BulkOrderProcessing, switched OFF): there only for the saved PO's
    * channel FK; the Masters pages / forms leave them out (not a channel the masters team keeps).
    */
   CHANNEL_IDS: [9101, 9102] as number[],
   /** processed.json channel_name. */
-  CHANNEL_NAME: { [BULK_ORDER_TYPE.MARKETING]: 'bulk_marketing', [BULK_ORDER_TYPE.INSTITUTIONAL]: 'bulk_institutional' } as Record<BulkOrderType, string>,
+  CHANNEL_NAME: {
+    [BULK_ORDER_TYPE.MARKETING]: 'bulk_marketing', [BULK_ORDER_TYPE.HEAD_OFFICE]: 'bulk_marketing', [BULK_ORDER_TYPE.INSTITUTIONAL]: 'bulk_institutional',
+  } as Record<BulkOrderType, string>,
   /** S3: bulk-orders/<PO number>/sale-order-<n>/ (order.json = the "PO file", processed.json, the Uniware CSV). */
   S3_SUB: (n: number) => `sale-order-${n}`,
   ORDER_FILE: 'order.json',
   CODE_MAX: 100,
   CUSTOMERS_MAX: 5,
   FACILITIES_MAX: 500,
+  /**
+   * Warehouses a bulk order ships from (user 2026-11-25: "show the mother or the child warehouses, from the D2C and the
+   * MWH ones, segregated"): active facilities whose in-transit type is MWH or D2C. Mother = MWH without a parent
+   * (GGN / KOL / MUM groups on dev); child = D2C, or MWH under a mother (parent_facility_id set). Dark stores, Return and
+   * the rest are never offered, and a process request with one is refused.
+   */
+  MOTHER_TYPE: 'MWH',
+  WAREHOUSE_TYPES: ['MWH', 'D2C'] as readonly string[],
+  /** process-options `group` of a warehouse. */
+  GROUP: { MOTHER: 'mother', CHILD: 'child' },
 } as const;
 
 /** Institutional requester details (portal; user 2026-11-12: "name and all details are from the requester only"). */
@@ -251,6 +499,33 @@ export const BULK_INSTITUTION = {
 export const BULK_BODY = {
   TYPE: 'type',
   ORDERED_BY: 'orderedBy',
+  /** v2 piece 2: several receivers (Marketing / Head office), each { receiverName, receiverPhone, locationId | address, saveLocationAs, lines }. */
+  RECEIVERS: 'receivers',
+  /** v2 piece 5a: Institutional customer fields; customerId on an Institutional order = placed for that customer. */
+  CUSTOMER_ID: 'customerId',
+  COMPANY_NAME: 'companyName',
+  CONTACT_NAME: 'contactName',
+  CONTACT_PHONE: 'contactPhone',
+  DEFAULT_DISCOUNT: 'defaultDiscountPct',
+  /** v2 piece 5b: payment link (set_link) / GSTIN verified true | false. */
+  LINK: 'link',
+  /** 2026-11-24: payment details text (bank account, IFSC, UPI ...). */
+  BANK_DETAILS: 'bankDetails',
+  /** 2026-11-24: duplicate check { type, pepCodes, pincodes, excludeId? } / team list ?waitingDays=N. */
+  PEP_CODES: 'pepCodes',
+  PINCODES: 'pincodes',
+  EXCLUDE_ID: 'excludeId',
+  WAITING_DAYS: 'waitingDays',
+  /** 2026-11-24: buyer organisation { name, active?, emails? }. */
+  NAME: 'name',
+  EMAILS: 'emails',
+  VERIFIED: 'verified',
+  ADDRESSES: 'addresses',
+  ACTIVE: 'active',
+  RECEIVER_NO: 'receiverNo',
+  /** v2 piece 2: rows of an uploaded receivers file (receivers/check). */
+  ROWS: 'rows',
+  ROW: 'row',
   RECEIVER_NAME: 'receiverName',
   RECEIVER_PHONE: 'receiverPhone',
   LOCATION_ID: 'locationId',
@@ -259,7 +534,11 @@ export const BULK_BODY = {
   NEEDED_BY: 'neededBy',
   MODE: 'mode',
   PRIORITY: 'priority',
+  /** Shown as "Special instructions" (v2 1d; the field keeps its name). */
   NOTE: 'note',
+  /** v2 1d. */
+  FAST_TRACK_REMARKS: 'fastTrackRemarks',
+  PURPOSE: 'purpose',
   LINES: 'lines',
   LABEL: 'label',
   PEP_CODE: 'pepCode',
@@ -270,11 +549,21 @@ export const BULK_BODY = {
   STATE: 'state',
   PINCODE: 'pincode',
   REASON: 'reason',
+  /** v2 1e (2026-11-23): why the requester changes the order (required on every edit). */
+  EDIT_REMARK: 'remark',
+  /** v2 1g: true = save as a draft (empty fields allowed); left out on Submit. */
+  DRAFT: 'draft',
+  /** v2 1g list filter: 1 = only the archive. */
+  ARCHIVED: 'archived',
+  /** v2 1f: the order's brand (one per order; every line's SKU must be of it). */
+  BRAND: 'brand',
   LINE_NO: 'lineNo',
   REMOVE_LINES: 'removeLines',
   KIND: 'kind',
   ACTION: 'action',
   PAYMENT_CHECK: 'paymentCheck',
+  /** v2 1c: settings, the units threshold (null = never by units). */
+  APPROVAL_OVER_UNITS: 'approvalOverUnits',
   INSTITUTION: 'institutionName',
   GSTIN: 'gstin',
   EMAIL: 'contactEmail',

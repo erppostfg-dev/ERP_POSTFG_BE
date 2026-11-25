@@ -90,6 +90,8 @@ export const TABLES = {
   MARGIN_CHANGE_REQUESTS: 'margin_change_requests',
   // Create in Uniware (2026-11-09, constants/uniware-create.ts): one row per request to create a PO's sale order.
   UNIWARE_CREATES: 'uniware_creates',
+  // POs punched in Uniware outside POST_FG (2026-11-25, constants/uniware-outside.ts): one row per match found.
+  UNIWARE_OUTSIDE_ORDERS: 'uniware_outside_orders',
   // Notices (2026-11-10, constants/notices.ts): one-way notes in the bell, kept 2 days; seen = newest notice id per person.
   NOTICES: 'notices',
   NOTICE_SEEN: 'notice_seen',
@@ -97,6 +99,11 @@ export const TABLES = {
   // delivery locations and the PO number counter (MKT-2026-0001 / INST-2026-0001).
   BULK_ORDERS: 'bulk_orders',
   BULK_ORDER_LINES: 'bulk_order_lines',
+  BULK_ORDER_RECEIVERS: 'bulk_order_receivers',
+  BULK_INSTITUTION_CUSTOMERS: 'bulk_institution_customers',
+  BULK_INSTITUTION_CUSTOMER_ADDRESSES: 'bulk_institution_customer_addresses',
+  BULK_BUYER_ORGS: 'bulk_buyer_orgs',
+  BULK_BUYER_ORG_USERS: 'bulk_buyer_org_users',
   BULK_LOCATIONS: 'bulk_locations',
   BULK_ORDER_COUNTERS: 'bulk_order_counters',
   // Bulk Orders step 2 (2026-11-11): the timeline of an order (created, edited, cancelled, approved with changes, rejected).

@@ -23,6 +23,7 @@ import { Num, ProcessedPo } from '../po-processing/common/processed-po';
 import { matchKey, panelMasterFor } from '../po-validation/master-data';
 import { validatePo } from '../po-validation/validate-po';
 import { verifyStatesOf, type VerifyStateItem } from '../po-verify/po-verify.service';
+import { outsideForUploads, type OutsideOnRow } from '../uniware-outside/read';
 
 /*
  * GET /po-review (API contract "PO review"): po_uploads of one status, newest first, with what the review screens
@@ -85,6 +86,11 @@ export interface PoReviewListItem {
   verify: Omit<VerifyStateItem, 'uploadId'> | null;
   /** Reopened after a rejection (2026-11-03): the latest reopen (when, why) and the rejection it undid; null = never. */
   reopened: { at: string; remark: string; rejectedReason: string | null; rejectedFrom: string | null; times: number } | null;
+  /**
+   * 2026-11-25: a Uniware sale order under another code than ours for this PO (punched outside POST_FG), while the PO is In
+   * Review, Rejected, or Processed and not uploaded: the newest open finding, what may be done, and how many more; null = none.
+   */
+  uniwareOutside: OutsideOnRow | null;
 }
 
 /** po_uploads.error_details as the pipeline writes it ({ step, code?, reason? | message? }). */
@@ -204,6 +210,8 @@ export const listPoReview = async (query: PoReviewListQuery): Promise<{ items: P
     query.status === UPLOAD_STATUS.COMPLETED ? (await verifyStatesOf(uploads)).items.map(({ uploadId, ...v }) => [uploadId, v] as const) : [],
   );
   const people = userIds.length ? await AppDataSource.getRepository(User).findBy({ id: In(userIds) }) : [];
+  // 2026-11-25: Uniware orders punched outside POST_FG (one indexed read for the page)
+  const outsideOf = await outsideForUploads(uploads.map((u) => ({ id: String(u.id), status: u.status, uniwareUploadedAt: u.uniwareUploadedAt })));
   const names = new Map(people.map((x) => [x.id, x.name] as const));
   const emails = new Map(people.map((x) => [x.id, x.email] as const));
   const who = (id: number | null) => (id === null ? null : names.get(id) ?? null);
@@ -241,6 +249,7 @@ export const listPoReview = async (query: PoReviewListQuery): Promise<{ items: P
       rejection: rejectionFor(u, rejectionOf.get(String(u.id)), who, (id) => (id === null ? null : emails.get(id) ?? null)),
       reopened: reopenedFor(reopenOf.get(String(u.id))),
       verify: verifyOf.get(String(u.id)) ?? null,
+      uniwareOutside: outsideOf.get(String(u.id)) ?? null,
     };
   });
   return { items, total };

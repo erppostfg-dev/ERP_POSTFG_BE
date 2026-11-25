@@ -16,7 +16,8 @@ export const text = (value: string | undefined): string => (value ?? '').replace
 export const toNumber = (value: string | undefined, label: string, warnings: PoWarning[]): Num => {
   const raw = text(value);
   if (!raw) return '';
-  const n = Number(raw.replace(/[,\s₹]/g, '').replace(/^INR/i, ''));
+  // "₹1,234", "INR 249.5", "224.50 (INR)" (Flipkart Qcom's 2026-11 sheet)
+  const n = Number(raw.replace(/[,\s₹]/g, '').replace(/^INR/i, '').replace(/\(?INR\)?$/i, ''));
   if (Number.isFinite(n)) return n;
   warnings.push(poWarning(WARNING_CODES.NOT_A_NUMBER, label, raw));
   return '';

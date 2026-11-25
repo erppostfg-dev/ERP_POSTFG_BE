@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { Brackets, IsNull } from 'typeorm';
+import { Brackets, In, IsNull } from 'typeorm';
 import { AppDataSource } from '../../config/data-source';
 import {
   BULK_BODY as F,
@@ -22,11 +22,12 @@ import {
   UPLOAD_SOURCE,
   UPLOAD_STATUS,
   VALIDATION_STATUS,
+  BULK_PROCESSABLE_STATUSES,
 } from '../../constants';
 import { CACHE_NS } from '../../constants/cache';
 import { LOG_SOURCE } from '../../constants/logging';
 import {
-  BulkCustomer, BulkOrder, BulkOrderLine, DetailsPurchaseOrder, MasterFacility, MasterPurchaseOrder, MasterSku, PoUpload, PoVerification, ShipmentLog,
+  BulkCustomer, BulkOrder, BulkOrderLine, BulkOrderReceiver, DetailsPurchaseOrder, MasterFacility, MasterPurchaseOrder, MasterSku, PoUpload, PoVerification, ShipmentLog,
 } from '../../entities';
 import { appError } from '../../utils/AppError';
 import { log } from '../../utils/logger';
@@ -54,7 +55,7 @@ import { addEvent, Checker, isId, teamBulkOrder } from './bulk-orders.service';
  *   Optional "Send back" (Verify panel; po-verify sendBack -> bulkSendBack), to undo a wrong one: that sale order cancelled (Inactive, kept), the upload
  *        rejected (kept), the order approved again with the sale order cleared (kept on the timeline) to be processed again.
  * Payment is shown but NEVER blocks (user). Selling Price = the approved unit price (MRP less discount %, with GST); a
- * fixed-price type (Marketing: ₹1 a unit, 2026-11-13) always at that price, also an order approved before the rule (its
+ * fixed-price type (Marketing / Head office: MARKETING_UNIT_PRICE, ₹0.01 since v2 2026-11-23; ₹1 from 2026-11-13) always at that price, also an order approved before the rule (its
  * lines are set to it here, in the same transaction). Marketing has no institution: no customer book row (auto-fill later).
  */
 
@@ -121,19 +122,24 @@ export const hideBulkCustomer = async (actorId: number, customerId: string) => {
   return { id: String(c.id), hidden: true };
 };
 
+/** The warehouses a bulk order ships from (BULK_SALE.WAREHOUSE_TYPES, 2026-11-25): active MWH (mothers + their children) and D2C. */
+const SHIP_FROM_WHERE = { isActive: true, intransitType: In([...BULK_SALE.WAREHOUSE_TYPES]) };
+/** mother = MWH without a parent; anything else offered (D2C, MWH under a mother) = child. */
+const groupOf = (f: Pick<MasterFacility, 'intransitType' | 'parentFacilityId'>) =>
+  f.intransitType === BULK_SALE.MOTHER_TYPE && f.parentFacilityId === null ? BULK_SALE.GROUP.MOTHER : BULK_SALE.GROUP.CHILD;
+
 /**
- * What the Process panel needs: active warehouses + matching saved customers. Each warehouse carries parentCode = its
- * main (mother) warehouse's code, null for a main one (or a child whose main is not active): the panel lists the main
- * warehouses and folds their children under them.
+ * What the Process panel needs: the warehouses, each with its `group` (mother / child: the panel shows them in two
+ * groups, user 2026-11-25) and parentCode (its mother's code when it has one), + matching saved customers.
  */
 export const bulkProcessOptions = async (id: string) => {
   const o = await loadOrder(id);
   const facilities = await AppDataSource.getRepository(MasterFacility).find({
-    select: { id: true, code: true, name: true, parentFacilityId: true }, where: { isActive: true }, order: { code: 'ASC' }, take: BULK_SALE.FACILITIES_MAX,
+    select: { id: true, code: true, name: true, intransitType: true, parentFacilityId: true }, where: SHIP_FROM_WHERE, order: { code: 'ASC' }, take: BULK_SALE.FACILITIES_MAX,
   });
   const codeOf = new Map(facilities.map((f) => [f.id, f.code]));
   return {
-    facilities: facilities.map((f) => ({ code: f.code, name: f.name, parentCode: (f.parentFacilityId !== null && codeOf.get(f.parentFacilityId)) || null })),
+    facilities: facilities.map((f) => ({ code: f.code, name: f.name, group: groupOf(f), parentCode: (f.parentFacilityId !== null && codeOf.get(f.parentFacilityId)) || null })),
     customers: await matchesFor(o),
   };
 };
@@ -142,21 +148,31 @@ export const bulkProcessOptions = async (id: string) => {
 const addressText = (line: string | null, city: string | null, state: string | null, pin: string | null): string =>
   [line, city, state, pin].filter(Boolean).join(', ');
 
-/** Lines at a type's fixed unit price (Marketing ₹1), else as approved. */
+/** Lines at a type's fixed unit price (Marketing / Head office: MARKETING_UNIT_PRICE), else as approved. */
 const atFixedPrice = (type: BulkOrderType, lines: BulkOrderLine[]): BulkOrderLine[] => {
   const p = BULK_ORDERS.FIXED_UNIT_PRICE[type];
   return p === undefined ? lines : lines.map((l) => ({ ...l, discountPct: 0, unitPrice: p, lineTotal: Math.round(p * l.qty * 100) / 100 }));
 };
 
-/** The order as the "PO file" of the sale order (order.json): what was approved, by whom, for whom. */
-const orderJson = (o: BulkOrder, lines: BulkOrderLine[], code: string, f: { facilityCode: string; uniwareChannel: string; customerCode: string }) => ({
+type ReceiverRow = Pick<BulkOrderReceiver, 'receiverNo' | 'receiverName' | 'receiverPhone' | 'addressLine' | 'city' | 'state' | 'pincode' | 'totalUnits'>;
+
+/**
+ * The order as the "PO file" of the sale order (order.json): what was approved, by whom, for whom. Several receivers
+ * (user 2026-11-24: "one sale order, it can have several shipments; do it as we do"): ONE sale order for the whole order,
+ * every receiver listed with its address + SKUs so COPT makes the shipments.
+ */
+const orderJson = (o: BulkOrder, lines: BulkOrderLine[], code: string, f: { facilityCode: string; uniwareChannel: string; customerCode: string }, receivers: ReceiverRow[] = []) => ({
   poNumber: o.poNumber, orderId: String(o.id), type: o.orderType, saleOrderCode: code,
   institution: { name: o.institutionName, gstin: o.gstin, email: o.contactEmail, billingAddress: addressText(o.billingAddressLine, o.billingCity, o.billingState, o.billingPincode) },
   orderedBy: o.orderedBy, receiver: { name: o.receiverName, phone: o.receiverPhone },
-  deliveryAddress: addressText(o.addressLine, o.city, o.state, o.pincode), neededBy: o.neededBy, priority: o.priority, note: o.note,
+  deliveryAddress: addressText(o.addressLine, o.city, o.state, o.pincode), neededBy: o.neededBy, priority: o.priority, note: o.note, fastTrackRemarks: o.fastTrackRemarks, purpose: o.purpose,
   approved: { at: o.decidedAt, note: o.decisionNote }, payment: o.paymentStatus,
   uniware: f,
-  lines: lines.map((l) => ({ lineNo: l.lineNo, pepCode: l.pepCode, name: l.productName, mrp: l.mrp, discountPct: l.discountPct, unitPrice: l.unitPrice, qty: l.qty, lineTotal: l.lineTotal })),
+  lines: lines.map((l) => ({ lineNo: l.lineNo, receiverNo: l.receiverNo, pepCode: l.pepCode, name: l.productName, mrp: l.mrp, discountPct: l.discountPct, unitPrice: l.unitPrice, qty: l.qty, lineTotal: l.lineTotal })),
+  receivers: receivers.map((r) => ({
+    receiverNo: r.receiverNo, name: r.receiverName, phone: r.receiverPhone, address: addressText(r.addressLine, r.city, r.state, r.pincode), units: r.totalUnits,
+    lines: lines.filter((l) => l.receiverNo === r.receiverNo).map((l) => ({ pepCode: l.pepCode, qty: l.qty })),
+  })),
   totals: { lines: o.lineCount, units: o.totalUnits, mrp: o.totalMrp, value: o.totalValue },
 });
 
@@ -175,7 +191,7 @@ const processedJson = (o: BulkOrder, lines: BulkOrderLine[], orderUrl: string, p
   total_line_items: lines.length,
   total_qty: lines.reduce((s, l) => s + l.qty, 0),
   po_value: o.totalValue,
-  expected_date: o.neededBy,
+  expected_date: o.neededBy ?? '',
   appointment_date: '',
   expiry_date: '',
   delivery_gstin: o.gstin ?? '',
@@ -190,7 +206,7 @@ const processedJson = (o: BulkOrder, lines: BulkOrderLine[], orderUrl: string, p
     qty: l.qty, free_qty: '', pep_mrp: l.mrp, channel_mrp: l.mrp, landing_rate: l.unitPrice, unit_cost: '', line_total: l.lineTotal,
     margin: '', hsn: '', gst: '', unmapped: { discount_pct: String(l.discountPct) },
   })),
-  unmapped: { bulk_order_id: String(o.id), receiver: `${o.receiverName} ${o.receiverPhone}`, billing_address: addressText(o.billingAddressLine, o.billingCity, o.billingState, o.billingPincode) },
+  unmapped: { bulk_order_id: String(o.id), receiver: `${o.receiverName} ${o.receiverPhone}`, receivers: String(o.receiverCount), billing_address: addressText(o.billingAddressLine, o.billingCity, o.billingState, o.billingPincode) },
   field_sources: {},
   cross_checks: [],
   warnings: [],
@@ -231,11 +247,12 @@ export const processBulkOrder = async (actor: ProcessActor, id: string, body: Re
   c.fail();
   const first = await loadOrder(id);
   if (!BULK_SALE.TYPES.includes(first.orderType as BulkOrderType)) throw appError(ERROR_CODES.BULK_PROCESS_TYPE_LATER, first.orderType);
-  if (first.status !== BULK_ORDER_STATUS.APPROVED) throw appError(ERROR_CODES.BULK_ORDER_NOT_APPROVED, first.poNumber, first.status);
+  if (!BULK_PROCESSABLE_STATUSES.includes(first.status)) throw appError(ERROR_CODES.BULK_ORDER_NOT_APPROVED, first.poNumber, first.status);
   // the warehouse exactly as the facility master spells it (case matters: main vs child warehouse)
-  const facility = await AppDataSource.getRepository(MasterFacility).findOne({ select: { id: true, code: true, isActive: true }, where: { code: facilityCode } });
-  if (!facility || !facility.isActive) {
-    c.add(F.FACILITY, `${facilityCode} is not an active warehouse in the facility master`);
+  // a mother or child warehouse (MWH / D2C, 2026-11-25), exactly as the facility master spells it
+  const facility = await AppDataSource.getRepository(MasterFacility).findOne({ select: { id: true, code: true }, where: { code: facilityCode, ...SHIP_FROM_WHERE } });
+  if (!facility) {
+    c.add(F.FACILITY, `${facilityCode} is not an active mother or child warehouse in the facility master (bulk orders ship from MWH / D2C warehouses)`);
     c.fail();
   }
   const type = first.orderType as BulkOrderType;
@@ -244,13 +261,14 @@ export const processBulkOrder = async (actor: ProcessActor, id: string, body: Re
   const repriced = lines.filter((l, k) => l.unitPrice !== approvedLines[k].unitPrice || l.discountPct !== approvedLines[k].discountPct);
   const totalValue = Math.round(lines.reduce((s, l) => s + l.lineTotal, 0) * 100) / 100;
   const skus = new Map((await cachedPepSkus()).map((s) => [s.pepCode.toUpperCase(), s]));
+  const receivers = await AppDataSource.getRepository(BulkOrderReceiver).find({ where: { orderId: String(first.id) }, order: { receiverNo: 'ASC' } });
 
   const now = new Date();
   const today = todayIst(now);
   let code = '';
   await AppDataSource.transaction(async (m) => {
     const o = await m.getRepository(BulkOrder).findOne({ where: { id: String(first.id) }, lock: { mode: 'pessimistic_write' } });
-    if (!o || o.status !== BULK_ORDER_STATUS.APPROVED) throw appError(ERROR_CODES.BULK_ORDER_NOT_APPROVED, first.poNumber, o?.status ?? 'gone');
+    if (!o || !BULK_PROCESSABLE_STATUSES.includes(o.status)) throw appError(ERROR_CODES.BULK_ORDER_NOT_APPROVED, first.poNumber, o?.status ?? 'gone');
     const n = o.saleOrderCount + 1;
     // The saved PO's number: the order's own, then INST-2026-0001-2 ... after a send back (the cancelled one is kept,
     // and channel + PO number is unique on master_purchase_orders).
@@ -310,6 +328,8 @@ export const processBulkOrder = async (actor: ProcessActor, id: string, body: Re
     });
     const uploadId = String(up.identifiers[0].id);
 
+    // every receiver of the order: the same (one) sale order
+    await m.getRepository(BulkOrderReceiver).update({ orderId: String(o.id) }, { receiverStatus: BULK_ORDER_STATUS.PROCESSING, saleOrderCode: code, uploadId, poUid, customerCode, processedBy: actor.id, processedAt: now, saleOrderCount: n });
     await m.getRepository(BulkOrder).update({ id: String(o.id) }, {
       status: BULK_ORDER_STATUS.PROCESSING, facilityCode: f.facilityCode, uniwareChannel, customerCode, customerId,
       processedBy: actor.id, processedAt: now, uploadId, poUid, saleOrderCode: code, saleOrderCount: n, updatedAt: now, totalValue,
@@ -320,7 +340,7 @@ export const processBulkOrder = async (actor: ProcessActor, id: string, body: Re
     });
 
     // S3 last: a failure here rolls the rows back (an unused file may stay, never a half-made sale order)
-    await writeS3Text(orderUrl, `${JSON.stringify(orderJson(sale, lines, code, f), null, 2)}\n`);
+    await writeS3Text(orderUrl, `${JSON.stringify(orderJson(sale, lines, code, f, receivers), null, 2)}\n`);
     await writeS3Text(processedUrl, `${JSON.stringify(processedJson(sale, lines, orderUrl, poDate, now), null, 2)}\n`);
     await writeS3Text(csvUrl, csvOf(v, poDate, code));
   });
@@ -361,9 +381,11 @@ export const bulkSendBack = async (uploadId: string, remark: string, by: Process
     const o = await m.getRepository(BulkOrder).findOne({ where: { uploadId: String(u.id) }, lock: { mode: 'pessimistic_write' } });
     if (o) {
       await m.getRepository(BulkOrder).update({ id: String(o.id) }, {
-        status: BULK_ORDER_STATUS.APPROVED, facilityCode: null, uniwareChannel: null, customerCode: null, customerId: null,
+        // back to where it was: approved by someone, or submitted (v2 1c: no approval was needed)
+        status: o.decidedBy ? BULK_ORDER_STATUS.APPROVED : BULK_ORDER_STATUS.SUBMITTED, facilityCode: null, uniwareChannel: null, customerCode: null, customerId: null,
         processedBy: null, processedAt: null, uploadId: null, poUid: null, saleOrderCode: null, updatedAt: new Date(),
       });
+      await m.getRepository(BulkOrderReceiver).update({ orderId: String(o.id) }, { receiverStatus: null, saleOrderCode: null, uploadId: null, poUid: null, customerCode: null, processedBy: null, processedAt: null });
       await addEvent(m, String(o.id), BULK_EVENT.SENT_BACK, by.id, remark, { saleOrderCode: so, uploadId: String(u.id) });
     }
   });

@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { api, loginAs, type TestLogin } from '../helpers/auth';
+import { forgetAccess } from '../../src/modules/auth/access.service';
 import { closeDb, count, resetDb, rows } from '../helpers/db';
 import { seedMasters, type Masters } from '../helpers/fixtures';
 import { approveMargin } from '../helpers/margins';
@@ -7,7 +8,8 @@ import { covers } from '../helpers/routes';
 
 /*
  * Masters API (2026-10-28): lists, Add forms, Edit, switch on / off, History, Recent changes.
- * Who: lists need viewer on the master's page; add / edit / switch / form-options need the admin or developer role.
+ * Who: lists need viewer on the master's page; add / edit / switch need the admin or developer role OR editor on that
+ * master's page (2026-11-25); form-options = editor of any Masters page.
  * Every write must leave a master_change_logs row (History), and nothing is ever deleted.
  */
 covers([
@@ -57,6 +59,33 @@ describe('who may use the Masters API', () => {
       expect(res.body.error.code).toBe('MASTER_ADD_NOT_ALLOWED');
     }
     expect(await count('master_change_logs')).toBe(0);
+  });
+
+  it("an Editor on ONE Masters page (role's page access) adds / edits / switches that master only; margin still waits for approval", async () => {
+    // user 2026-11-25: Saurabh (operations-executive) set to Editor on Channel SKUs got no Edit / Add
+    await rows("UPDATE page_permissions SET access_level = 'editor' WHERE role = 'operations-executive' AND page_slug = '/masters/channel-skus'");
+    forgetAccess();
+    const exec = await loginAs('operations-executive');
+    const me = <T extends { set: (k: string, v: string) => unknown }>(r: T): T => (r.set('Cookie', exec.cookie), r);
+    expect((await me(api().get(`${P}/form-options`))).status).toBe(200);
+    await me(api().patch(`${P}/edit/channel_sku/${m.channelSkuId}`)).send({ changes: { productName: 'Renamed' } }).expect(200);
+    expect((await rows('SELECT product_name FROM master_channel_skus WHERE id = ?', [m.channelSkuId]))[0]).toMatchObject({ product_name: 'Renamed' });
+    const margin = await me(api().patch(`${P}/edit/channel_sku/${m.channelSkuId}`)).send({ changes: { marginPercent: 25 } }).expect(200);
+    expect(margin.body.data).toMatchObject({ changed: [], marginRequestId: expect.any(String) });
+    expect(Number((await rows('SELECT margin FROM master_channel_skus WHERE id = ?', [m.channelSkuId]))[0].margin)).toBe(0.3);
+    await me(api().post(`${P}/active/channel_sku/${m.channelSkuId}`)).send({ active: false }).expect(200);
+    // other masters stay closed (Viewer there)
+    const refused = [
+      me(api().patch(`${P}/edit/pep_sku/${m.pepSkuId}`)).send({ changes: { mrp: 1 } }),
+      me(api().post(`${P}/active/location/${m.locationId}`)).send({ active: false }),
+      me(api().post(`${P}/pep-skus`)).send({}),
+      me(api().post(`${P}/channels`)).send({}),
+    ];
+    for (const res of await Promise.all(refused)) expect(res.body.error?.code).toBe('MASTER_ADD_NOT_ALLOWED');
+    // a person's own page access counts too (Viewer override beats the role's Editor)
+    await rows("INSERT INTO user_page_permissions (user_id, page_slug, access_level) VALUES (?, '/masters/channel-skus', 'viewer')", [exec.userId]);
+    forgetAccess();
+    expect((await me(api().post(`${P}/active/channel_sku/${m.channelSkuId}`)).send({ active: true })).status).toBe(403);
   });
 
   it('a logged-out session is refused', async () => {

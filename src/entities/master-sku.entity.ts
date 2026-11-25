@@ -72,6 +72,10 @@ export class MasterSku {
   @Column({ name: 'final_pep_code', type: 'varchar', length: 100, nullable: true })
   finalPepCode: string | null;
 
+  /** Shown in the Bulk Orders portal (2026-11-24, migration BulkOrderableSkus; npm run bulk:skus / Masters Edit). */
+  @Column({ name: 'bulk_orderable', type: 'boolean', default: false })
+  bulkOrderable: boolean;
+
   /** false = in SKU-Not To Consider (left out of the report's totals). */
   @Column({ name: 'intransit_consider', type: 'boolean', default: true })
   intransitConsider: boolean;

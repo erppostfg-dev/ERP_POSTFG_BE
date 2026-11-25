@@ -262,6 +262,14 @@ export const EXPECTED_UNIWARE_CHANNEL: Partial<Record<ChannelName, Record<string
   [CHANNELS.MYNTRA]: Object.fromEntries(MYNTRA_STR.DESTINATIONS.map((d) => [d.location, d.uniwareChannel])),
 };
 
+/**
+ * Channels whose saved PO keeps OUR (PEP) location name, not the channel's code (user 2026-11-24: the team was changing
+ * every Flipkart PO by hand, e.g. bhi_vas_wh_nl_01nl -> Mumbai BTS, as PEPIMS and the reports use it). The name is the
+ * location's details_channels.tally_ledger_name (Masters, editable); empty = the channel's code as before. The location
+ * itself (locationId, customer code, facility, Uniware CSV) is found exactly as before.
+ */
+export const PO_LOCATION_PEP_NAME: readonly ChannelName[] = [CHANNELS.FLIPKART];
+
 export const ACCEPTABLE_ISSUE_TYPES: readonly IssueType[] = [ISSUE_TYPE.OTHER, ISSUE_TYPE.PO_EXPIRED, ISSUE_TYPE.TOTAL_MISMATCH, ISSUE_TYPE.ADDRESS_MISMATCH];
 
 /**

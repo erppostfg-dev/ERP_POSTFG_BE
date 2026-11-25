@@ -34,6 +34,7 @@ export * from './pepims-sync';
 export * from './po-review';
 export * from './po-uniware-sync';
 export * from './uniware-create';
+export * from './uniware-outside';
 export * from './po-verify';
 export * from './price-differences';
 export * from './notices';

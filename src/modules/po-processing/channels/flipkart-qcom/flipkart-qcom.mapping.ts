@@ -31,6 +31,20 @@ export const FLIPKART_QCOM_HEADER_NAMES: Record<string, string[]> = {
   'Total Amount': ['Total Amount', 'Grand Total'],
 };
 
+/*
+ * NEW SHEET (Flipkart, first seen 2026-11-23, purchase_order_<PO>.xlsx, e.g. FLSZ5YI9E7FE): a two-row line header, so
+ * the product columns come as "Product Details <name>", the FSN is "Product ID", the price "Supplier Unit Price",
+ * HSN "HSN/SAC Code"; amounts "224.50 (INR)", rates "18.00 %"; footer has only Total Quantity. Same values (Product ID
+ * = the FSN in our master, Supplier Unit Price = with tax). Both sheets are read: the prefix is dropped, then these
+ * aliases turn the new names into the old ones the mapping uses.
+ */
+export const FLIPKART_QCOM_LINE_GROUP_PREFIX = 'Product Details ';
+export const FLIPKART_QCOM_LINE_NAMES: Record<string, string[]> = {
+  'FSN/ISBN13': ['Product ID', 'FSN'],
+  'HSN/SA Code': ['HSN/SAC Code'],
+  'Supplier Price': ['Supplier Unit Price'],
+};
+
 export const FLIPKART_QCOM_MAPPING: ChannelMapping = {
   header: [
     { common: 'po_number', raw: 'PO#', kind: 'text' },

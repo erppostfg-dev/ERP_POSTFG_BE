@@ -7,18 +7,30 @@ import {
   approveBulkOrder,
   BulkActor,
   cancelBulkOrder,
+  checkBulkReceiverRows,
+  bulkDuplicateCheck,
   createBulkOrder,
   getBulkOrder,
   listBulkLocations,
   listBulkOrders,
   needAnyBulk,
+  needApprover,
+  typeOfOrder,
   rejectBulkOrder,
+  remindBulkOrder,
   searchBulkSkus,
   updateBulkOrder,
 } from '../modules/bulk-orders/bulk-orders.service';
 import {
-  DocFile, listBulkSettings, openBulkDocument, setBulkPayment, updateBulkSetting, uploadBulkDocument,
+  DocFile, getHeadOfficeSetting, listBulkSettings, needSettingsAdmin, openBulkDocument, saveHeadOfficeSetting, setBulkPayment, updateBulkSetting, uploadBulkDocument,
 } from '../modules/bulk-orders/bulk-documents.service';
+import { readNotifySettings, saveNotifySettings } from '../modules/bulk-orders/bulk-notify.service';
+import { bulkOrderStock } from '../modules/bulk-orders/bulk-stock.service';
+import { addBuyerOrg, listBuyerOrgs, updateBuyerOrg } from '../modules/bulk-orders/bulk-buyer-orgs.service';
+import {
+  addInstitutionCustomer, addInstitutionCustomerAddress, listInstitutionCustomers, updateInstitutionCustomer, updateInstitutionCustomerAddress,
+  verifyInstitutionCustomerGstin,
+} from '../modules/bulk-orders/bulk-institution-customers.service';
 import { sendDocument } from './bulk-documents.send';
 
 /*
@@ -44,8 +56,8 @@ import { sendDocument } from './bulk-documents.send';
  *   POST /bulk-orders/:id/payment                         { action: verify | refuse | not_needed, note? } (special permission
  *                                                         "Bulk Orders: verify payments", 2026-11-13; was the approver)
  * Settings (admin = editor on /bulk-orders):
- *   GET  /bulk-orders/settings                            per type: paymentCheck
- *   PUT  /bulk-orders/settings/:type                      { paymentCheck: boolean } (orders created after it)
+ *   GET  /bulk-orders/settings                            per type: paymentCheck, approvalOverUnits
+ *   PUT  /bulk-orders/settings/:type                      { paymentCheck?, approvalOverUnits? } (orders created after it)
  */
 
 const router = Router();
@@ -72,13 +84,37 @@ router.get(BULK_ORDERS.ROUTES.LIST, requireAuth, async (req, res, next) => {
 router.post(BULK_ORDERS.ROUTES.CREATE, requireAuth, send((req) => createBulkOrder(actor(req), body(req)), 201));
 router.get(BULK_ORDERS.ROUTES.SKUS, requireAuth, send(async (req) => {
   await needAnyBulk(actor(req));
-  return searchBulkSkus(req.query.q);
+  return searchBulkSkus(req.query.q, req.query.brand);
 }));
+// v2 piece 2: an uploaded receivers file checked (nothing saved); before the /:id routes
+// 2026-11-24: the order's SKUs' stock at the mother warehouses: approvers (and admin / developer)
+router.get(BULK_ORDERS.ROUTES.STOCK, requireAuth, send(async (req) => { const r = await needAnyBulk(actor(req)); needApprover(r); await typeOfOrder(r, String(req.params.id)); return bulkOrderStock(String(req.params.id)); }));
+router.post(BULK_ORDERS.ROUTES.DUPLICATE_CHECK, requireAuth, send((req) => bulkDuplicateCheck(actor(req), body(req))));
+router.post(BULK_ORDERS.ROUTES.RECEIVERS_CHECK, requireAuth, send((req) => checkBulkReceiverRows(actor(req), body(req))));
+// v2 piece 5a: Institutional customers (before the /:id routes)
+router.get(BULK_ORDERS.ROUTES.CUSTOMERS, requireAuth, send((req) => listInstitutionCustomers(actor(req))));
+router.post(BULK_ORDERS.ROUTES.CUSTOMERS, requireAuth, send((req) => addInstitutionCustomer(actor(req), body(req)), 201));
+router.put(BULK_ORDERS.ROUTES.CUSTOMER, requireAuth, send((req) => updateInstitutionCustomer(actor(req), String(req.params.customerId), body(req))));
+router.post(BULK_ORDERS.ROUTES.CUSTOMER_ADDRESSES, requireAuth, send((req) => addInstitutionCustomerAddress(actor(req), String(req.params.customerId), body(req)), 201));
+router.post(BULK_ORDERS.ROUTES.CUSTOMER_GSTIN, requireAuth, send((req) => verifyInstitutionCustomerGstin(actor(req), String(req.params.customerId), body(req))));
+router.put(BULK_ORDERS.ROUTES.CUSTOMER_ADDRESS, requireAuth, send((req) => updateInstitutionCustomerAddress(actor(req), String(req.params.customerId), String(req.params.addressId), body(req))));
 router.get(BULK_ORDERS.ROUTES.LOCATIONS, requireAuth, send((req) => listBulkLocations(actor(req), req.query.type)));
 router.post(BULK_ORDERS.ROUTES.LOCATIONS, requireAuth, send((req) => addBulkLocation(actor(req), body(req)), 201));
 // before '/:id', which would take "settings" as an id
+// v2 piece 3: email switches (admin; before SETTING)
+// 2026-11-24: buyer organisations (admin; before SETTING and the /:id routes)
+// 2026-11-25: the head office address (admin; before SETTING)
+router.get(BULK_ORDERS.ROUTES.HEAD_OFFICE, requireAuth, send((req) => getHeadOfficeSetting(actor(req))));
+router.put(BULK_ORDERS.ROUTES.HEAD_OFFICE, requireAuth, send((req) => saveHeadOfficeSetting(actor(req), body(req))));
+router.get(BULK_ORDERS.ROUTES.ORGS, requireAuth, send((req) => listBuyerOrgs(actor(req))));
+router.post(BULK_ORDERS.ROUTES.ORGS, requireAuth, send((req) => addBuyerOrg(actor(req), body(req)), 201));
+router.put(BULK_ORDERS.ROUTES.ORG, requireAuth, send((req) => updateBuyerOrg(actor(req), String(req.params.orgId), body(req))));
+router.get(BULK_ORDERS.ROUTES.NOTIFY_SETTINGS, requireAuth, send(async (req) => { await needSettingsAdmin(actor(req)); return readNotifySettings(); }));
+router.put(BULK_ORDERS.ROUTES.NOTIFY_SETTINGS, requireAuth, send(async (req) => { await needSettingsAdmin(actor(req)); return saveNotifySettings(body(req), actor(req).id); }));
 router.get(BULK_ORDERS.ROUTES.SETTINGS, requireAuth, send((req) => listBulkSettings(actor(req))));
 router.put(BULK_ORDERS.ROUTES.SETTING, requireAuth, send((req) => updateBulkSetting(actor(req), String(req.params.type), body(req))));
+// v2 piece 3: the requester reminds our team to place it
+router.post(BULK_ORDERS.ROUTES.REMIND, requireAuth, send((req) => remindBulkOrder(actor(req), String(req.params.id))));
 router.get(BULK_ORDERS.ROUTES.ONE, requireAuth, send((req) => getBulkOrder(actor(req), String(req.params.id))));
 router.put(BULK_ORDERS.ROUTES.EDIT, requireAuth, send((req) => updateBulkOrder(actor(req), String(req.params.id), body(req))));
 router.post(BULK_ORDERS.ROUTES.CANCEL, requireAuth, send((req) => cancelBulkOrder(actor(req), String(req.params.id), body(req))));

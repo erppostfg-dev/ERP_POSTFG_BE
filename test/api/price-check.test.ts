@@ -126,6 +126,31 @@ describe('deciding a price mismatch', () => {
     await submit(u, { lines, accept: [{ issueId: total.id, remark: 'channel line total has freight' }] }).expect(200);
   });
 
+  it('a total difference that appears only after the choices (no total issue to accept) is accepted with acceptTotal + a remark (bug ND226208)', async () => {
+    // line 1 -10.70 x 10 = -107 (price issue); line 2 +0.90 x 110 = +99 (within Rs 1 per unit): together -8, inside the
+    // Rs 10 the PO total allows, so the PO arrives with NO total issue. Deciding line 1 (either way) leaves +99 = over.
+    const u = await pricedPo([{ landing_rate: 338.6, line_total: 3386 }, { qty: 110, landing_rate: 350.2, line_total: 38522 }]);
+    expect(await rows("SELECT issue_type FROM po_issues WHERE upload_id = ? AND status = 'open'", [u.id])).toEqual([{ issue_type: 'PRICE_MISMATCH' }]);
+    for (const priceFrom of ['ours', 'channel']) {
+      const refused = await submit(u, { lines: [{ lineNo: '1', priceFrom }] });
+      expect(refused.status).toBe(422);
+      expect(refused.body.error.details.openIssues).toEqual([expect.objectContaining({ type: 'TOTAL_MISMATCH', lineNo: null })]);
+    }
+    const lines = [{ lineNo: '1', priceFrom: 'ours' }];
+    expect((await submit(u, { lines, acceptTotal: true })).body.error.code).toBe('TOTAL_REMARK_REQUIRED');
+    expect((await submit(u, { lines, acceptTotal: 'yes', remark: 'x' })).status).toBe(400);
+    await submit(u, { lines, acceptTotal: true, remark: 'small paise differences on line 2' }).expect(200);
+    const [s] = await rows<{ fixes: string | { issues: unknown[] } }>('SELECT fixes FROM po_review_submissions WHERE upload_id = ?', [u.id]);
+    const fixes = typeof s.fixes === 'string' ? (JSON.parse(s.fixes) as { issues: unknown[] }) : s.fixes;
+    expect(fixes.issues).toContainEqual(expect.objectContaining({ type: 'TOTAL_MISMATCH', how: 'accepted', remark: 'small paise differences on line 2' }));
+    // the approver replays the same body: saved, and the total is kept as an accepted issue with the remark (History)
+    expect((await approve(u)).status).toBe(200);
+    expect(await rows('SELECT status FROM po_uploads WHERE id = ?', [u.id])).toEqual([{ status: 'completed' }]);
+    expect(await rows("SELECT status, remark FROM po_issues WHERE upload_id = ? AND issue_type = 'TOTAL_MISMATCH'", [u.id]))
+      .toEqual([{ status: 'approved', remark: 'small paise differences on line 2' }]);
+    expect(await count('po_issue_actions')).toBeGreaterThanOrEqual(2);
+  });
+
   it('bad values are refused together', async () => {
     const u = await pricedPo();
     const res = await submit(u, { lines: [{ lineNo: '1', priceFrom: 'cheapest', updateMaster: 'yes' }] }).expect(400);

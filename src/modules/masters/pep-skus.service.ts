@@ -38,6 +38,8 @@ export interface PepSkuItem {
   intransitMrp: number | null;
   intransitCogs: number | null;
   intransitConsider: boolean;
+  /** Shown in the Bulk Orders portal (2026-11-24). */
+  bulkOrderable: boolean;
 }
 
 export async function listPepSkus(): Promise<PepSkuItem[]> {
@@ -66,5 +68,6 @@ export async function listPepSkus(): Promise<PepSkuItem[]> {
     intransitMrp: r.intransitMrp,
     intransitCogs: r.intransitCogs,
     intransitConsider: r.intransitConsider !== false,
+    bulkOrderable: r.bulkOrderable === true,
   }));
 }

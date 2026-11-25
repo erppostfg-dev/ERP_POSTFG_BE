@@ -72,7 +72,8 @@ const withSo = async (qty = 10) => {
   const t = (await api().post(P).set('Cookie', admin.cookie).send({ senderId, channel: 'McaffeineB2C', locationId: String(locationId), priority: 'P2', lines: [{ skuCode: m.pepCode, qty }] }).expect(201)).body.data;
   await waitJob((await api().post(`${P}/create-so`).set('Cookie', admin.cookie).send({ ids: [t.uid] }).expect(202)).body.data.id);
   const [line] = await rows<{ id: number }>('SELECT id FROM details_purchase_orders WHERE shipmentOrderId = ?', [t.uid]);
-  return { uid: String(t.uid), item: `L${line.id}` };
+  // SOs made from 2026-11-18 use the SKU code as item code (old ones L<line id> are matched too: unit tests)
+  return { uid: String(t.uid), item: m.pepCode, lineId: line.id };
 };
 const head = async (uid: string) => (await rows<Record<string, unknown>>('SELECT * FROM master_purchase_orders WHERE uid = ?', [uid]))[0];
 const logCount = async (uid: string) => (await rows<{ n: number }>('SELECT COUNT(*) n FROM shipment_logs WHERE shipment_uid = ?', [uid]))[0].n;

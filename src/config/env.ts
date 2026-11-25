@@ -5,7 +5,7 @@ import path from 'path';
 import { CACHE } from '../constants/cache';
 import { PEPIMS_DATABASE } from '../constants/db';
 import { ERROR_CODES } from '../constants/errors';
-import { GMAIL_PACE } from '../constants/gmail-intake';
+import { GMAIL_PACE, GMAIL_SAFETY } from '../constants/gmail-intake';
 import { LOG_DEFAULTS, LOG_FORMAT, LOG_LEVEL_RANK, type LogFormat, type LogLevel } from '../constants/logging';
 import { PO_JOBS, QUEUE_MODE, type QueueMode } from '../constants/po-jobs';
 import { REVIEW_RECHECK } from '../constants/po-review';
@@ -22,7 +22,7 @@ dotenv.config();
 const laptopMode = process.env.LAPTOP_MODE === 'true';
 export const LAPTOP_MODE_OFF = {
   PUBSUB_ENABLED: 'false', OCR_ENABLED: 'false', OCR_BACKLOG: 'false', PIPELINE_RESUME: 'false', CHANNEL_API_ENABLED: 'false',
-  LOCAL_CLEANUP_ENABLED: 'false', WORKER_IN_SERVER: 'false', QUEUE_MODE: 'local', RECHECK_MINUTES: '0', D2C_SYNC_ENABLED: 'false', PO_UNIWARE_SYNC_ENABLED: 'false', UNIWARE_CREATE_ENABLED: 'false',
+  LOCAL_CLEANUP_ENABLED: 'false', WORKER_IN_SERVER: 'false', QUEUE_MODE: 'local', RECHECK_MINUTES: '0', D2C_SYNC_ENABLED: 'false', PO_UNIWARE_SYNC_ENABLED: 'false', UNIWARE_CREATE_ENABLED: 'false', UNIWARE_OUTSIDE_ENABLED: 'false',
   // not an off switch: laptop mode is D2C local test mode (env.d2c.testOnly), whatever .env says, unless
   // D2C_ALL_FACILITIES=true (d2cAllFacilities)
   D2C_TEST_ONLY: 'true',
@@ -122,6 +122,9 @@ export const env = {
     unitsPerMinute: Number(process.env.GMAIL_UNITS_PER_MINUTE ?? GMAIL_PACE.UNITS_PER_MINUTE),
     // first wait after a rate-limited Gmail call (then doubled); tests set it tiny
     retryFirstWaitMs: Number(process.env.GMAIL_RETRY_FIRST_WAIT_MS ?? GMAIL_PACE.FIRST_WAIT_MS),
+    // safety net for missed Pub/Sub notifications (2026-11-23); 0 = off
+    quietCheckMinutes: Number(process.env.GMAIL_QUIET_CHECK_MINUTES ?? GMAIL_SAFETY.QUIET_CHECK_MINUTES),
+    labelCheckHours: Number(process.env.GMAIL_LABEL_CHECK_HOURS ?? GMAIL_SAFETY.LABEL_CHECK_HOURS),
   },
   // Gmail watch -> Pub/Sub topic -> pull subscription read by this server.
   pubsub: {
@@ -299,7 +302,12 @@ export const env = {
   // Laptop mode (npm run dev) always forces it on (LAPTOP_MODE_OFF).
   // Uniware sale order status of channel POs (2026-11-06, modules/po-uniware-sync): the timer (read-only on Uniware);
   // off on a laptop; Sync now on PO Overview works either way.
-  poUniwareSync: { enabled: flag('PO_UNIWARE_SYNC_ENABLED', 'true') },
+  // tenantFallback (2026-11-25): our read-only Uniware client (PO sync + outside check) also takes UNIWARE_BASE_URL when
+  // UNIWARE_TENANT is empty (the laptop .env names it so); in-transit / D2C clients are unchanged.
+  poUniwareSync: { enabled: flag('PO_UNIWARE_SYNC_ENABLED', 'true'), tenantFallback: (process.env.UNIWARE_BASE_URL ?? '').trim() },
+  // POs punched in Uniware outside POST_FG (2026-11-25, constants/uniware-outside.ts): the timed read-only search; off on
+  // a laptop or with UNIWARE_OUTSIDE_ENABLED=false (Check now works either way).
+  uniwareOutside: { enabled: flag('UNIWARE_OUTSIDE_ENABLED', 'true') },
   // Create in Uniware (2026-11-09, constants/uniware-create.ts): the ONE write to Uniware (sale order create). OFF unless
   // UNIWARE_CREATE_ENABLED=true; always off on a laptop. orderPhone = the phone on the sale order address (required by the API).
   uniwareCreate: { enabled: flag('UNIWARE_CREATE_ENABLED'), orderPhone: (process.env.UNIWARE_ORDER_PHONE ?? '').trim() },

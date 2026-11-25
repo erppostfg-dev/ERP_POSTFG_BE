@@ -14,6 +14,8 @@ export interface SoDetailItem {
 }
 export interface SoDetailPackage {
   code: string; status: string; dispatchedAt: Date | null;
+  /** Courier details (bulk order tracking, 2026-11-24): AWB, courier, its status, link, delivered date. */
+  awb: string | null; courier: string | null; courierStatus: string | null; trackingLink: string | null; deliveredAt: Date | null;
   invoiceCode: string | null; invoiceDisplayCode: string | null; invoiceDate: Date | null;
   /** Invoice value: collectableAmount, else qty x the item's selling price. */
   value: number | null;
@@ -47,6 +49,8 @@ export const soDetailOf = (dto: Record<string, unknown>): SoDetail => {
     const priced = lines.length && lines.every((x) => priceOf(x.sku) !== null) ? round2(lines.reduce((s, x) => s + x.qty * (priceOf(x.sku) as number), 0)) : null;
     return {
       code: str(p.code), status: str(p.status).toUpperCase(), dispatchedAt: timeOf(p.dispatched),
+      awb: strOrNull(p.trackingNumber), courier: strOrNull(p.shippingCourier) ?? strOrNull(p.shippingProvider),
+      courierStatus: strOrNull(p.courierStatus) ?? strOrNull(p.trackingStatus), trackingLink: strOrNull(p.trackingLink), deliveredAt: timeOf(p.delivered),
       invoiceCode: strOrNull(p.invoiceCode), invoiceDisplayCode: strOrNull(p.invoiceDisplayCode), invoiceDate: timeOf(p.invoiceDate),
       value: collectable !== null && collectable > 0 ? round2(collectable) : priced,
     };
