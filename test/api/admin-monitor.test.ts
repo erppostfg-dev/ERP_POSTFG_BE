@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { env } from '../../src/config/env';
 import { clearErrorCountCache, clearMonitorCache } from '../../src/modules/monitor/monitor.service';
 import { clearClientErrorLimits } from '../../src/routes/client-errors.routes';
 import { api, loginAs, type TestLogin } from '../helpers/auth';
@@ -208,12 +209,19 @@ describe('POST /client-errors (a browser reports what the server never saw)', ()
   });
 
   it('writes one CLIENT_ERROR log line (warn), with the person and the page', async () => {
+    // tests log errors only (LOG_LEVEL=error): warn lines are written while this runs, as on the server (info)
     const out: string[] = [];
-    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((c: unknown) => { out.push(String(c)); return true; });
+    const level = env.log.level;
+    env.log.level = 'info';
+    const grab = (c: unknown) => { out.push(String(c)); return true; };
+    const o = vi.spyOn(process.stdout, 'write').mockImplementation(grab);
+    const e = vi.spyOn(process.stderr, 'write').mockImplementation(grab);
     try {
       await api().post(C).set('Cookie', dev.cookie).send({ ...ok, status: 0, requestId: 'req-x1' });
     } finally {
-      spy.mockRestore();
+      o.mockRestore();
+      e.mockRestore();
+      env.log.level = level;
     }
     const line = out.find((l) => l.includes('CLIENT_ERROR'));
     expect(line).toBeDefined();
