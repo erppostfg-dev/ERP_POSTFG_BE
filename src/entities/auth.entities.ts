@@ -60,6 +60,10 @@ export class User {
   @Column({ name: 'welcome_error', type: 'varchar', length: 500, nullable: true })
   welcomeError: string | null;
 
+  /** Light / dark mode the person picked (2026-11-26; NULL = light). Saved by PUT /auth/me/preferences. */
+  @Column({ name: 'theme', type: 'varchar', length: 10, nullable: true })
+  theme: string | null;
+
   /** fk_users_added_by */
   @ManyToOne(() => User, { nullable: true, onDelete: 'RESTRICT', onUpdate: 'CASCADE' })
   @JoinColumn({ name: 'added_by', referencedColumnName: 'id', foreignKeyConstraintName: 'fk_users_added_by' })

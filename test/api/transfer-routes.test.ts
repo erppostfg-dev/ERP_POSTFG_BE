@@ -1,11 +1,13 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { api, loginAs, type TestLogin } from '../helpers/auth';
-import { closeDb, count, insert, resetDb, rows } from '../helpers/db';
+import { closeDb, count, db, insert, resetDb, rows } from '../helpers/db';
+import { TransferRoutesPage1796800000000 } from '../../src/migrations/1796800000000-TransferRoutesPage';
 import { seedMasters, type Masters } from '../helpers/fixtures';
 import { covers } from '../helpers/routes';
 
 /*
- * D2C internal transfer routes in Masters (2026-11-03): the grid (viewer on /masters/warehouses) and the route edit
+ * D2C internal transfer routes in Masters (2026-11-03): the grid (viewer on /masters/transfer-routes since 2026-11-26; was
+ * /masters/warehouses) and the route edit
  * (admin / developer; codes + switch on / off in one call; every change in master_change_logs, type transfer_route).
  */
 covers([
@@ -137,5 +139,60 @@ describe('Transfer routes upload (template, preview, import)', () => {
     const viewer = await loginAs('operations-executive');
     expect((await send('preview', csv, viewer)).status).toBe(403);
     expect((await api().post(`${P}/transfer-routes/upload/preview`).set('Cookie', admin.cookie).attach('file', Buffer.from('x'), 'r.xlsx')).body.error.code).toBe('ROUTE_UPLOAD_FILE');
+  });
+});
+
+/*
+ * Transfer Routes = its own page in Users & Roles > Roles (2026-11-26, user: "who has access to Masters, show it to them
+ * only"). Was: Warehouses' access. Migration TransferRoutesPage copies each role's / person's /masters level.
+ */
+describe('Transfer Routes page access (own page key, starts as Masters)', () => {
+  const setRole = async (level: string) => {
+    await (await db()).query("DELETE FROM page_permissions WHERE role = 'operations-executive' AND page_slug = '/masters/transfer-routes'");
+    await insert('page_permissions', { role: 'operations-executive', page_slug: '/masters/transfer-routes', access_level: level });
+  };
+
+  it('is a page of its own in the Roles list, under Masters', async () => {
+    const pages = (await api().get('/api/v1/admin/roles/pages').set('Cookie', admin.cookie).expect(200)).body.data as { slug: string; label: string; section: string }[];
+    expect(pages).toContainEqual(expect.objectContaining({ slug: '/masters/transfer-routes', label: 'Transfer Routes', section: 'Masters' }));
+  });
+
+  it('the migration gave every role its Masters level (operations-executive: viewer like /masters)', async () => {
+    const r = await rows<{ role: string; page_slug: string; access_level: string }>(
+      "SELECT role, page_slug, access_level FROM page_permissions WHERE role = 'operations-executive' AND page_slug IN ('/masters', '/masters/transfer-routes') ORDER BY page_slug",
+    );
+    expect(r.map((x) => x.access_level)).toEqual(['viewer', 'viewer']);
+  });
+
+  it('its own level decides, not Warehouses: hidden = 403 while Warehouses still opens; editor may edit', async () => {
+    await setRole('none');
+    const hidden = await loginAs('operations-executive');
+    expect((await api().get(`${P}/transfer-routes`).set('Cookie', hidden.cookie)).status).toBe(403);
+    expect((await api().get(`${P}/warehouses/pep`).set('Cookie', hidden.cookie)).status).toBe(200);
+
+    await setRole('viewer');
+    const viewer = await loginAs('operations-executive');
+    expect((await api().get(`${P}/transfer-routes`).set('Cookie', viewer.cookie)).status).toBe(200);
+    expect((await api().patch(`${P}/transfer-routes/${routeId}`).set('Cookie', viewer.cookie).send({ changes: { isActive: false }, original: {} })).status).toBe(403);
+
+    await setRole('editor');
+    const editor = await loginAs('operations-executive');
+    expect((await api().patch(`${P}/transfer-routes/${routeId}`).set('Cookie', editor.cookie).send({ changes: { isActive: false }, original: {}, remark: 'off' })).status).toBe(200);
+  });
+
+  it('migration: a person with their own Masters level gets the same on Transfer Routes; running it twice changes nothing', async () => {
+    const u = await loginAs(null);
+    await insert('user_page_permissions', { user_id: u.userId, page_slug: '/masters', access_level: 'editor' });
+    const runner = (await db()).createQueryRunner();
+    try {
+      const m2 = new TransferRoutesPage1796800000000();
+      await m2.up(runner);
+      await m2.up(runner);
+    } finally {
+      await runner.release();
+    }
+    const own = await rows<{ access_level: string }>('SELECT access_level FROM user_page_permissions WHERE user_id = ? AND page_slug = ?', [u.userId, '/masters/transfer-routes']);
+    expect(own).toEqual([{ access_level: 'editor' }]);
+    expect(await count('page_permissions', "role = 'operations-executive' AND page_slug = '/masters/transfer-routes'")).toBe(1);
   });
 });

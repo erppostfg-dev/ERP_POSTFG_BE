@@ -9,6 +9,8 @@ import {
   PAGES,
   PO_TEAM_LABEL,
   TABLES,
+  UI_THEMES,
+  UiTheme,
   USER_ADMIN_ROLES,
   USER_STATUS,
   USER_TEAM,
@@ -63,6 +65,8 @@ export interface UserItem {
   lastLoginAt: string | null;
   welcomeSentAt: string | null;
   welcomeError: string | null;
+  /** light / dark mode the person picked (2026-11-26); null = never picked (light). */
+  theme: UiTheme | null;
 }
 
 const iso = (d: Date | string | null) => (d ? new Date(d).toISOString() : null);
@@ -74,7 +78,7 @@ export const nameFromEmail = (email: string): string =>
 
 export const listUsers = async (): Promise<UserItem[]> => {
   const rows = (await AppDataSource.query(
-    `SELECT u.id, u.name, u.email, u.status, u.po_team, u.created_at, u.welcome_sent_at, u.welcome_error, a.name added_by,
+    `SELECT u.id, u.name, u.email, u.status, u.po_team, u.created_at, u.welcome_sent_at, u.welcome_error, u.theme, a.name added_by,
             (SELECT GROUP_CONCAT(r.role ORDER BY r.role) FROM ${TABLES.USER_ROLES} r WHERE r.user_id = u.id) roles,
             (SELECT GROUP_CONCAT(f.code ORDER BY f.code SEPARATOR ',') FROM ${TABLES.USER_FACILITIES} uf
                JOIN ${TABLES.MASTER_FACILITIES} f ON f.id = uf.facility_id WHERE uf.user_id = u.id) facilities,
@@ -83,7 +87,7 @@ export const listUsers = async (): Promise<UserItem[]> => {
       ORDER BY u.name`,
   )) as {
     id: number; name: string; email: string; status: UserStatus | null; po_team: UserTeam | null; created_at: Date | null; welcome_sent_at: Date | null;
-    welcome_error: string | null; added_by: string | null; roles: string | null; facilities: string | null; last_login: Date | null;
+    welcome_error: string | null; theme: string | null; added_by: string | null; roles: string | null; facilities: string | null; last_login: Date | null;
   }[];
   return rows.map((r) => ({
     id: Number(r.id),
@@ -98,6 +102,7 @@ export const listUsers = async (): Promise<UserItem[]> => {
     lastLoginAt: iso(r.last_login),
     welcomeSentAt: iso(r.welcome_sent_at),
     welcomeError: r.welcome_error,
+    theme: (UI_THEMES as readonly string[]).includes(r.theme ?? '') ? (r.theme as UiTheme) : null,
   }));
 };
 

@@ -88,7 +88,7 @@ const MASTER_PAGE: Record<MasterLogType, string> = {
   [MASTER_LOG_TYPE.CHANNEL]: PAGE.CHANNEL_CUSTOMERS,
   [MASTER_LOG_TYPE.LOCATION]: PAGE.CHANNEL_LOCATIONS,
   [MASTER_LOG_TYPE.FACILITY]: PAGE.WAREHOUSES,
-  [MASTER_LOG_TYPE.TRANSFER_ROUTE]: PAGE.WAREHOUSES,
+  [MASTER_LOG_TYPE.TRANSFER_ROUTE]: PAGE.TRANSFER_ROUTES,
 };
 const EDITABLE_PAGES = [...new Set(Object.values(MASTER_PAGE))];
 const isMasterAdmin = (req: Request) => !!req.auth?.roles.some((r) => (USER_ADMIN_ROLES as readonly string[]).includes(r));
@@ -201,7 +201,7 @@ router.get(MASTER_ROUTES.CHANNEL_LOCATIONS, requireAuth, requirePage(PAGE.CHANNE
 });
 
 // ---- D2C internal transfer routes (2026-11-03) ---------------------------------
-router.get(MASTER_ROUTES.TRANSFER_ROUTES, requireAuth, requirePage(PAGE.WAREHOUSES, ACCESS_LEVEL.VIEWER), async (_req, res, next) => {
+router.get(MASTER_ROUTES.TRANSFER_ROUTES, requireAuth, requirePage(PAGE.TRANSFER_ROUTES, ACCESS_LEVEL.VIEWER), async (_req, res, next) => {
   try {
     const items = await listTransferRoutes();
     // testOnly: local D2C test mode (env.d2c.testOnly), the tab shows a "TEST_FACILITY only" banner
@@ -210,22 +210,22 @@ router.get(MASTER_ROUTES.TRANSFER_ROUTES, requireAuth, requirePage(PAGE.WAREHOUS
     next(err);
   }
 });
-router.patch(MASTER_ROUTES.TRANSFER_ROUTE, requireAuth, editorOf(PAGE.WAREHOUSES), ok((req) => editTransferRoute(req.params.id, req.body, actor(req))));
+router.patch(MASTER_ROUTES.TRANSFER_ROUTE, requireAuth, editorOf(PAGE.TRANSFER_ROUTES), ok((req) => editTransferRoute(req.params.id, req.body, actor(req))));
 
 // Transfer routes bulk upload (2026-11-25): the template (a real route as the example), preview, import (all or nothing)
 const routesFile = multer({ storage: multer.memoryStorage(), limits: { files: 1, fileSize: ROUTE_UPLOAD.MAX_BYTES } }).single(ROUTE_UPLOAD.FIELD);
 const fileOf = (req: Request): UploadFile | undefined => (req.file ? { originalname: req.file.originalname, buffer: req.file.buffer } : undefined);
-router.get(MASTER_ROUTES.TRANSFER_ROUTES_TEMPLATE, requireAuth, requirePage(PAGE.WAREHOUSES, ACCESS_LEVEL.VIEWER), (_req, res, next) => {
+router.get(MASTER_ROUTES.TRANSFER_ROUTES_TEMPLATE, requireAuth, requirePage(PAGE.TRANSFER_ROUTES, ACCESS_LEVEL.VIEWER), (_req, res, next) => {
   routesTemplateCsv().then((csv) => {
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="transfer-routes-template.csv"');
     res.send(csv);
   }).catch(next);
 });
-router.post(MASTER_ROUTES.TRANSFER_ROUTES_PREVIEW, requireAuth, editorOf(PAGE.WAREHOUSES), routesFile, (req, res, next) => {
+router.post(MASTER_ROUTES.TRANSFER_ROUTES_PREVIEW, requireAuth, editorOf(PAGE.TRANSFER_ROUTES), routesFile, (req, res, next) => {
   previewRoutesUpload(fileOf(req)).then((data) => res.json({ data })).catch(next);
 });
-router.post(MASTER_ROUTES.TRANSFER_ROUTES_IMPORT, requireAuth, editorOf(PAGE.WAREHOUSES), routesFile,
+router.post(MASTER_ROUTES.TRANSFER_ROUTES_IMPORT, requireAuth, editorOf(PAGE.TRANSFER_ROUTES), routesFile,
   created((req) => importRoutesUpload(fileOf(req), req.body, actor(req))));
 
 export default router;

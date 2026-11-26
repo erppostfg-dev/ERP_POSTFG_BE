@@ -21,9 +21,13 @@ export const ROLE_EXCLUDED_PAGES: readonly string[] = ['/admin'];
 
 export const USER_NAME_MAX = 100;
 
+/** Light / dark mode per person (2026-11-26, users.theme; NULL = light, what everyone had). */
+export const UI_THEMES = ['light', 'dark'] as const;
+export type UiTheme = (typeof UI_THEMES)[number];
+
 const V = ACCESS_LEVEL.VIEWER;
 const E = ACCESS_LEVEL.EDITOR;
-const MASTERS = ['/masters', '/masters/pep-skus', '/masters/channel-skus', '/masters/channel-customers', '/masters/channel-locations', '/masters/warehouses'];
+const MASTERS = ['/masters', '/masters/pep-skus', '/masters/channel-skus', '/masters/channel-customers', '/masters/channel-locations', '/masters/warehouses', '/masters/transfer-routes'];
 const OPERATIONS = ['/operations', '/operations/po-overview', '/operations/po-review', '/operations/po-working', '/operations/skus-short', '/operations/analytics', '/operations/d2c-transfers'];
 const PLANNING = ['/planning', '/planning/inventory', '/planning/drr-aging', '/planning/analytics'];
 const all = (pages: string[], level: AccessLevel) => Object.fromEntries(pages.map((p) => [p, level]));

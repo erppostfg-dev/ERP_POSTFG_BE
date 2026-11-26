@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { BULK_ORDERS, BULK_ORDERS_TEAM, CHANNEL_PULLS, FEEDBACK, INBOUND_ROUTES, MAIL_LISTS_ROUTES, MANUAL_UPLOAD, NOTICES, PO_INTAKE, PO_ISSUES, PO_VERIFY, PRICE_DIFFS } from '../constants';
+import { BULK_ORDERS, BULK_ORDERS_TEAM, CHANNEL_PULLS, CLIENT_ERRORS, FEEDBACK, INBOUND_ROUTES, MAIL_LISTS_ROUTES, MANUAL_UPLOAD, NOTICES, PO_INTAKE, PO_ISSUES, PO_VERIFY, PRICE_DIFFS } from '../constants';
 import poVerifyGate from '../modules/po-verify/po-verify.gate';
 import adminRoutes from './admin.routes';
 import amazonInboundRoutes from './amazon-inbound.routes';
@@ -24,6 +24,7 @@ import priceDifferencesRoutes from './price-differences.routes';
 import poOverviewRoutes from './po-overview.routes';
 import poReviewRoutes from './po-review.routes';
 import poVerifyRoutes from './po-verify.routes';
+import clientErrorsRoutes from './client-errors.routes';
 
 const router = Router();
 
@@ -52,6 +53,7 @@ router.use('/po-review', poReviewRoutes);
 router.use(PO_VERIFY.BASE, poVerifyRoutes);
 router.use(MANUAL_UPLOAD.BASE, manualUploadRoutes);
 router.use(FEEDBACK.BASE, feedbackRoutes);
+router.use(CLIENT_ERRORS.BASE, clientErrorsRoutes);
 router.use(NOTICES.BASE, noticesRoutes);
 // Bulk Orders portal (2026-11-11): its own frontend; access = the /bulk-orders pages.
 router.use(BULK_ORDERS.BASE, bulkOrdersRoutes);
