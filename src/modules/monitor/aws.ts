@@ -75,7 +75,7 @@ export const alarms = async (): Promise<{ name: string; state: string; reason: s
 
 export interface AccessCheck { action: string; ok: boolean; error: string | null }
 
-/** Tries each read the Monitor needs once, with this server's role: what is allowed (the page's "AWS access" panel). */
+/** Tries each read the Monitor needs once (logs only since 2026-11-26: no machine / database metrics), with this server's role: what is allowed (the page's "AWS access" panel). */
 export const checkAccess = async (): Promise<AccessCheck[]> => {
   const now = new Date();
   const hourAgo = new Date(now.getTime() - 3_600_000);
@@ -92,7 +92,5 @@ export const checkAccess = async (): Promise<AccessCheck[]> => {
     tryIt(MONITOR_ACCESS.DESCRIBE_LOG_GROUPS, () => logsClient().send(new DescribeLogGroupsCommand({ logGroupNamePrefix: env.monitor.logGroup, limit: 1 }))),
     tryIt(MONITOR_ACCESS.START_QUERY, () => insights('fields @timestamp | limit 1', hourAgo, now, 1)),
     tryIt(MONITOR_ACCESS.FILTER_LOG_EVENTS, () => logsClient().send(new FilterLogEventsCommand({ logGroupName: env.monitor.logGroup, limit: 1, startTime: hourAgo.getTime() }))),
-    tryIt(MONITOR_ACCESS.GET_METRIC_DATA, () => metricData([{ Id: 'cpu', Expression: 'SEARCH(\'{AWS/EC2,InstanceId} MetricName="CPUUtilization"\', \'Average\', 300)', ReturnData: true }], hourAgo, now)),
-    tryIt(MONITOR_ACCESS.DESCRIBE_ALARMS, () => alarms()),
   ]);
 };

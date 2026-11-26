@@ -6,6 +6,7 @@ import {
   ERROR_CODES,
   errorMessage,
   MONITOR,
+  MONITOR_ERRORS,
   PAGE,
   USER_ADMIN_ROLES,
   ROLES,
@@ -23,7 +24,7 @@ import { createUser, listUsers, sendWelcome, updateUser, UserInput, userOptions 
 import { appError } from '../utils/AppError';
 import { Problem } from './po-review.routes';
 import { runCleanupNow, serverView } from '../modules/admin/server-health.service';
-import { monitorAccess, monitorOverview, monitorPeak } from '../modules/monitor/monitor.service';
+import { monitorAccess, monitorErrorCount, monitorErrors, monitorOverview, monitorPeak, monitorRequestLines } from '../modules/monitor/monitor.service';
 import { dataSyncStatus, setNightlySync, startDataSync } from '../modules/pepims-sync/sync-runner';
 
 /*
@@ -127,6 +128,31 @@ router.get(MONITOR.ROUTES.PEAK, ...devGuard, wrap(async (req) => {
     throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails([{ field: 'at', code: ERROR_CODES.VALIDATION_FAILED, message: 'at: an ISO date-time' }]);
   }
   return monitorPeak(at);
+}));
+
+const windowParam = (req: Request): string | undefined => {
+  const w = req.query.window;
+  if (w !== undefined && (typeof w !== 'string' || !MONITOR.WINDOWS[w])) {
+    throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails([{ field: 'window', code: ERROR_CODES.VALIDATION_FAILED, message: `window: ${Object.keys(MONITOR.WINDOWS).join(' / ')}` }]);
+  }
+  return w;
+};
+
+// ---- Monitor > Errors (2026-11-26; developers only): read from CloudWatch, nothing stored ----
+
+/** GET /admin/monitor/errors?window=1h|24h|7d: errors people saw / background failures / browser errors, grouped. */
+router.get(MONITOR.ROUTES.ERRORS, ...devGuard, wrap((req) => monitorErrors(windowParam(req))));
+
+/** GET /admin/monitor/errors/count: serious errors of the last hour (the tab's red count; asked at most every 5 min). */
+router.get(MONITOR.ROUTES.ERRORS_COUNT, ...devGuard, wrap(() => monitorErrorCount()));
+
+/** GET /admin/monitor/errors/request/:requestId: every log line of one request / job, oldest first. */
+router.get(MONITOR.ROUTES.ERROR_REQUEST, ...devGuard, wrap(async (req) => {
+  const id = String(req.params.requestId ?? '');
+  if (!MONITOR_ERRORS.REQUEST_ID_PATTERN.test(id)) {
+    throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails([{ field: 'requestId', code: ERROR_CODES.VALIDATION_FAILED, message: 'requestId: 4-100 letters, digits, . _ : -' }]);
+  }
+  return monitorRequestLines(id);
 }));
 
 // ---- Data sync: PEPIMS -> prod + dev -> prod, ONE WAY (2026-11-17; developers only) ----

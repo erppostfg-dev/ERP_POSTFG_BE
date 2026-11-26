@@ -166,6 +166,7 @@ export const LOG_EVENTS = {
   API_SLOW: { level: 'warn', reason: 'An API request took longer than API_SLOW_MS: see dbQueries / extMs for where the time went.' },
   API_SERVER_ERROR: { level: 'error', reason: 'An API request failed on our side (HTTP 5xx); errorCode / error say why.' },
   API_CLIENT_ERROR: { level: 'info', reason: 'An API request was refused (HTTP 4xx: not signed in, no access, bad input); errorCode says why.' },
+  CLIENT_ERROR: { level: 'warn', reason: "A person's browser hit an error the server never saw (page crash, server unreachable, page file missing after a deploy); kind / page / error say where." },
   API_STREAM_CLOSED: { level: 'debug', reason: 'A live-updates stream (SSE) was closed by the browser.' },
   // --- resource waste in one request / job ---
   API_TOO_MANY_QUERIES: { level: 'warn', reason: 'One request / job ran more DB queries than DB_QUERIES_WARN: usually a query inside a loop (N+1); load the rows in one query.' },
