@@ -8,7 +8,7 @@ import { covers } from '../helpers/routes';
  * Login, session and health (2026-10-28). Google itself is never called: the sign-in redirect is checked by its URL,
  * the callback's refusal paths need no Google answer; sessions are made with the real session code (helpers/auth).
  */
-covers(['GET /health', 'GET /auth/google', 'GET /auth/google/callback', 'GET /auth/me', 'POST /auth/logout']);
+covers(['GET /health', 'GET /auth/google', 'GET /auth/google/callback', 'GET /auth/me', 'POST /auth/logout', 'PUT /auth/me/preferences']);
 
 // The one Google step (code -> profile) is a stand-in for the successful sign-in tests; everything after it is real.
 const google = vi.hoisted(() => ({ email: '' }));
@@ -118,5 +118,40 @@ describe('after a successful sign-in (2026-11-24, portal-only people)', () => {
     const ops = await loginAs('operations-executive');
     expect((await signIn(ops.email)).headers.location).toBe('http://localhost:5173');
     expect((await signIn(ops.email, AUTH.APP_BULK)).headers.location).toBe('http://localhost:5174'); // started on the portal
+  });
+});
+
+describe('PUT /auth/me/preferences (light / dark mode per person, 2026-11-26)', () => {
+  const A = '/api/v1/auth';
+
+  it('not signed in = 401; a wrong value = 400 on theme', async () => {
+    expect((await api().put(`${A}/me/preferences`).send({ theme: 'dark' })).status).toBe(401);
+    const me = await loginAs('viewer');
+    const res = await api().put(`${A}/me/preferences`).set('Cookie', me.cookie).send({ theme: 'purple' });
+    expect(res.status).toBe(400);
+    expect(res.body.error.details[0].field).toBe('theme');
+  });
+
+  it('a person saves their own mode: /auth/me sends it at once (null before = light), admins see it in the user list', async () => {
+    const me = await loginAs('operations-executive');
+    expect((await api().get(`${A}/me`).set('Cookie', me.cookie)).body.data.user.theme).toBeNull();
+    expect((await api().put(`${A}/me/preferences`).set('Cookie', me.cookie).send({ theme: 'dark' }).expect(200)).body.data).toEqual({ theme: 'dark' });
+    expect((await api().get(`${A}/me`).set('Cookie', me.cookie)).body.data.user.theme).toBe('dark');
+    expect(await rows('SELECT theme FROM users WHERE id = ?', [me.userId])).toEqual([{ theme: 'dark' }]);
+
+    const admin = await loginAs('admin');
+    const list = (await api().get('/api/v1/admin/users').set('Cookie', admin.cookie).expect(200)).body.data as { id: number; theme: string | null }[];
+    expect(list.find((u) => u.id === me.userId)?.theme).toBe('dark');
+    expect(list.find((u) => u.id === admin.userId)?.theme).toBeNull();
+
+    await api().put(`${A}/me/preferences`).set('Cookie', me.cookie).send({ theme: 'light' }).expect(200);
+    expect((await api().get(`${A}/me`).set('Cookie', me.cookie)).body.data.user.theme).toBe('light');
+  });
+
+  it('only one\'s own: another person stays as they were', async () => {
+    const a = await loginAs('viewer');
+    const b = await loginAs('viewer');
+    await api().put(`${A}/me/preferences`).set('Cookie', a.cookie).send({ theme: 'dark' }).expect(200);
+    expect((await api().get(`${A}/me`).set('Cookie', b.cookie)).body.data.user.theme).toBeNull();
   });
 });

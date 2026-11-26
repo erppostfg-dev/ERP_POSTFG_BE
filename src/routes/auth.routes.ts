@@ -1,12 +1,12 @@
 import { CookieOptions, Router } from 'express';
 import { env } from '../config/env';
-import { AUTH, ERROR_CODES, isBulkOnly } from '../constants';
+import { AUTH, ERROR_CODES, errorMessage, isBulkOnly, UI_THEMES } from '../constants';
 import { loadAccess, resolveAllAccess, resolveCapabilities } from '../modules/auth/access.service';
 import { clientInfo, requireAuth } from '../modules/auth/auth.middleware';
-import { allowedUser, endSession, googleSignInUrl, newState, profileFromCode, startSession } from '../modules/auth/session.service';
+import { allowedUser, endSession, forgetSessions, googleSignInUrl, newState, profileFromCode, startSession } from '../modules/auth/session.service';
 import { AppError, appError } from '../utils/AppError';
 import { AppDataSource } from '../config/data-source';
-import { Role, UserRole } from '../entities';
+import { Role, User, UserRole } from '../entities';
 import { In } from 'typeorm';
 import { LOG_SOURCE } from '../constants/logging';
 import { log } from '../utils/logger';
@@ -89,6 +89,8 @@ router.get('/me', requireAuth, async (req, res, next) => {
         // roleLabels (2026-10-15): custom roles' names from the roles table, for the header badge.
         user: {
           id: String(user.id), name: user.name, email: user.email, roles, team: user.poTeam ?? null,
+          // light / dark mode the person picked (2026-11-26); null = never picked (light)
+          theme: user.theme ?? null,
           // Never blocks sign-in: before the UsersAndRoles migration (no roles table) the labels are just empty.
           roleLabels: roles.length ? await AppDataSource.getRepository(Role).findBy({ key: In(roles) }).then((rs) => Object.fromEntries(rs.map((r) => [r.key, r.label]))).catch(() => ({})) : {},
         },
@@ -97,6 +99,27 @@ router.get('/me', requireAuth, async (req, res, next) => {
         capabilities: await resolveCapabilities(user.id, roles, rows),
       },
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * PUT /auth/me/preferences { theme: 'light' | 'dark' } (2026-11-26): the signed-in person saves their OWN light / dark
+ * mode (users.theme); any signed-in person, nobody else's. -> 200 { theme }.
+ */
+router.put('/me/preferences', requireAuth, async (req, res, next) => {
+  try {
+    const theme = (req.body as Record<string, unknown> | undefined)?.theme;
+    if (typeof theme !== 'string' || !(UI_THEMES as readonly string[]).includes(theme)) {
+      throw appError(ERROR_CODES.VALIDATION_FAILED).withDetails([
+        { field: 'theme', code: ERROR_CODES.FIELD_NOT_ONE_OF, message: errorMessage(ERROR_CODES.FIELD_NOT_ONE_OF, 'theme', UI_THEMES.join(', ')) },
+      ]);
+    }
+    const userId = req.auth!.user.id;
+    await AppDataSource.getRepository(User).update(userId, { theme });
+    forgetSessions({ userId }); // the cached session holds the user row: the next /auth/me reads the new theme
+    res.json({ data: { theme } });
   } catch (err) {
     next(err);
   }

@@ -255,6 +255,7 @@
   "POST /price-differences/sent",
   "PUT /admin/data-sync/nightly",
   "PUT /admin/mail-lists/:key",
+  "PUT /auth/me/preferences",
   "PUT /bulk-orders/:id",
   "PUT /bulk-orders/customers/:customerId",
   "PUT /bulk-orders/customers/:customerId/addresses/:addressId",
