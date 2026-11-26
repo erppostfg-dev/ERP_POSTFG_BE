@@ -35,6 +35,8 @@ export const PAGES: readonly PageEntry[] = [
   { slug: '/masters/channel-customers', label: 'Channel Master', section: 'Masters' },
   { slug: '/masters/channel-locations', label: 'Channel Location Master', section: 'Masters' },
   { slug: '/masters/warehouses', label: 'Warehouses', section: 'Masters' },
+  // its own page since 2026-11-26 (user: "add transfer routes to Roles"); was Warehouses' access. Starts as Masters' level.
+  { slug: '/masters/transfer-routes', label: 'Transfer Routes', section: 'Masters' },
   { slug: '/operations', label: 'B2B/B2C Operations', section: 'B2B/B2C Operations' },
   { slug: '/operations/po-overview', label: 'PO Overview', section: 'B2B/B2C Operations' },
   { slug: '/operations/po-review', label: 'PO Processing & Review', section: 'B2B/B2C Operations' },
@@ -124,6 +126,7 @@ export const PAGE = {
   CHANNEL_CUSTOMERS: '/masters/channel-customers',
   CHANNEL_LOCATIONS: '/masters/channel-locations',
   WAREHOUSES: '/masters/warehouses',
+  TRANSFER_ROUTES: '/masters/transfer-routes',
   OPERATIONS: '/operations',
   PO_OVERVIEW: '/operations/po-overview',
   PO_REVIEW: '/operations/po-review',
