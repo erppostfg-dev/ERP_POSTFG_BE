@@ -6,7 +6,7 @@ import { approveMargin } from '../helpers/margins';
 import { covers } from '../helpers/routes';
 
 /*
- * Masters bulk upload (2026-11-27): Channel SKUs, Add new / Update existing, one mode per file. The check runs every
+ * Masters bulk upload (2026-11-27): Channel SKUs, PEP SKUs, Channels, Channel locations, Warehouses (Update only); Add new / Update existing, one mode per file. The check runs every
  * row through the Add / Edit code and saves nothing; apply saves all or nothing; approvals as today (a new channel SKU
  * or a margin / rate change = a margin request on the Approvals page; other fields saved at once).
  */
@@ -42,8 +42,8 @@ describe('who may use it', () => {
     await check({ mode: 'add', rows: [addRow()] }, editor).expect(200);
   });
 
-  it('refused: another master (not yet), a bad mode, no rows, too many rows', async () => {
-    expect((await api().get('/api/v1/masters/bulk/pep_sku/format').set('Cookie', admin.cookie).expect(400)).body.error.code).toBe('MASTER_BULK_NOT_SUPPORTED');
+  it('refused: Transfer Routes (own upload), a bad mode, no rows, too many rows', async () => {
+    expect((await api().get('/api/v1/masters/bulk/transfer_route/format').set('Cookie', admin.cookie).expect(400)).body.error.code).toBe('MASTER_BULK_NOT_SUPPORTED');
     expect((await check({ mode: 'replace', rows: [addRow()] }).expect(400)).body.error.code).toBe('VALIDATION_FAILED');
     expect((await check({ mode: 'add', rows: [] }).expect(400)).body.error.code).toBe('VALIDATION_FAILED');
     expect((await check({ mode: 'add', rows: Array.from({ length: 5001 }, () => addRow()) }).expect(400)).body.error.code).toBe('MASTER_BULK_TOO_MANY');
@@ -139,5 +139,85 @@ describe('Update existing', () => {
     const hist = await rows<{ action: string; remark: string | null }>("SELECT action, remark FROM master_change_logs WHERE master_type = 'channel_sku' ORDER BY id");
     expect(hist.map((h) => h.action)).toEqual(expect.arrayContaining(['field_changed', 'deactivated']));
     expect(hist.every((h) => h.remark === 'Bulk upload edit.xlsx')).toBe(true);
+  });
+});
+
+describe('the other masters (same engine)', () => {
+  const B = '/api/v1/masters/bulk';
+  const post = (type: string, what: 'check' | 'apply', body: Record<string, unknown>) => api().post(`${B}/${type}/${what}`).set('Cookie', admin.cookie).send(body);
+  const currentOf = async (type: string) => (await api().get(`${B}/${type}/current`).set('Cookie', admin.cookie).expect(200)).body.data.rows as Record<string, string>[];
+  const logs = (type: string) => rows<{ action: string; remark: string | null }>(`SELECT action, remark FROM master_change_logs WHERE master_type = '${type}' ORDER BY id`);
+
+  it('PEP SKUs: Add checks every field like the form (duplicate code, GST from the list); apply adds them with History', async () => {
+    const pep = (over: Record<string, string> = {}) => ({
+      pepCode: 'MCAFF_NEW_1', productName: 'New scrub', brand: 'mCaffeine', productType: 'SIMPLE', mrp: '299', gstTaxType: '18', eanCode: '8906000000024',
+      hsnCode: '33049990', lengthMm: '60', widthMm: '60', heightMm: '120', weightG: '110', shelfLife: '730', active: 'Yes', ...over,
+    });
+    const plan = (await post('pep_sku', 'check', { mode: 'add', rows: [pep(), pep({ pepCode: m.pepCode }), pep({ pepCode: 'MCAFF_NEW_2', gstTaxType: '7', shelfLife: '1.5' })] }).expect(200)).body.data;
+    expect(plan.rows.map((r: { action: string }) => r.action)).toEqual(['new', 'error', 'error']);
+    expect(plan.rows[1].errors.join(' ')).toMatch(/PEP code/);
+    expect(plan.rows[2].errors).toEqual(expect.arrayContaining(['GST %: "7" is not in the list', 'Shelf life (days): "1.5" is not a whole number']));
+    expect(await count('master_skus')).toBe(1);
+    await post('pep_sku', 'apply', { mode: 'add', fileName: 'skus.xlsx', rows: [pep()] }).expect(200);
+    expect(await count('master_skus', "pep_code = 'MCAFF_NEW_1' AND is_active = 1")).toBe(1);
+    expect((await logs('pep_sku')).map((h) => [h.action, h.remark])).toEqual([['created', 'Bulk upload skus.xlsx']]);
+  });
+
+  it('PEP SKUs: Update = current data in form units, a changed MRP saved at once, Bulk orders Yes / No', async () => {
+    const [cur] = await currentOf('pep_sku');
+    expect(cur).toMatchObject({ id: String(m.pepSkuId), pepCode: m.pepCode, mrp: '499', gstTaxType: '18', shelfLife: '730', bulkOrderable: 'No', active: 'Yes' });
+    const done = (await post('pep_sku', 'apply', { mode: 'update', fileName: 'skus.xlsx', rows: [{ ...cur, mrp: '549', bulkOrderable: 'Yes' }] }).expect(200)).body.data;
+    expect(done.counts).toMatchObject({ update: 1, needsApproval: 0 });
+    const [sku] = await rows<{ mrp: string; bulk_orderable: number }>('SELECT mrp, bulk_orderable FROM master_skus');
+    expect([Number(sku.mrp), Number(sku.bulk_orderable)]).toEqual([549, 1]);
+  });
+
+  it('Channels: Add (slug rule, alias of another channel refused); Update type / expiry days (min above max refused)', async () => {
+    const plan = (await post('channel', 'check', { mode: 'add', rows: [
+      { displayName: 'Tata Cliq', slug: 'tata-cliq', aliases: 'TATA CLIQ, TataCliq', active: 'Yes' },
+      { displayName: 'Other', slug: 'Bad Slug', aliases: 'big basket', active: 'Yes' },
+    ] }).expect(200)).body.data;
+    expect(plan.rows.map((r: { action: string }) => r.action)).toEqual(['new', 'error']);
+    expect(plan.rows[1].errors.join(' ')).toMatch(/Slug/);
+    expect(await count('master_channels', "display_name = 'Tata Cliq'")).toBe(0);
+    const [cur] = await currentOf('channel');
+    expect(cur).toMatchObject({ displayName: 'BigBasket', channelType: 'B2B', expiryDaysMin: '60', expiryDaysMax: '90' });
+    expect((await post('channel', 'check', { mode: 'update', rows: [{ ...cur, expiryDaysMin: '95' }] }).expect(200)).body.data.rows[0].action).toBe('error');
+    await post('channel', 'apply', { mode: 'update', rows: [{ ...cur, channelType: 'B2C', expiryDaysMin: '30' }] }).expect(200);
+    const [ch] = await rows<{ channel_type: string; expiry_days_min: number }>('SELECT channel_type, expiry_days_min FROM master_channels');
+    expect(ch).toMatchObject({ channel_type: 'B2C', expiry_days_min: 30 });
+  });
+
+  it('Channel locations: Add with the exact warehouse code; duplicate location refused; current data', async () => {
+    const loc = (over: Record<string, string> = {}) => ({
+      channel: 'BigBasket', locationCode: 'BB_NEW_DC', uniwareCustomerCode: 'CUST_NEW', uniwareChannelCode: 'BIGBASKET_TEST', facilityCode: m.facilityCode,
+      consigneeName: 'BB DC', consigneeGstNumber: '27AAACI1234A1Z5', consigneeState: 'Maharashtra', consigneePinCode: '421302',
+      shippingAddress: 'Bhiwandi', billingAddress: 'Bhiwandi', buyerType: 'B2B', buyerGstNumber: '27AAACI1234A1Z5', buyerState: 'Maharashtra',
+      buyerPinCode: '421302', tallyLedgerName: 'BB Bhiwandi', appointmentChannel: 'Yes', ...over,
+    });
+    const plan = (await post('location', 'check', { mode: 'add', rows: [
+      loc(), loc({ locationCode: 'BB_2', facilityCode: m.facilityCode.toLowerCase(), consigneePinCode: '12' }), loc({ locationCode: m.locationCode }),
+    ] }).expect(200)).body.data;
+    expect(plan.rows.map((r: { action: string }) => r.action)).toEqual(['new', 'error', 'error']);
+    expect(plan.rows[1].errors).toEqual(expect.arrayContaining([`Warehouse: "${m.facilityCode.toLowerCase()}" is not in the list (exact spelling)`, 'Consignee pincode: 6 digits']));
+    expect(plan.rows[2].errors.join(' ')).toMatch(/Location code/);
+    await post('location', 'apply', { mode: 'add', rows: [loc()] }).expect(200);
+    expect(await count('details_channels', "channel_location_code = 'BB_NEW_DC' AND is_active = 1")).toBe(1);
+    const [cur] = (await currentOf('location')).filter((r) => r.locationCode === m.locationCode);
+    expect(cur).toMatchObject({ channel: 'BigBasket', facilityCode: m.facilityCode, active: 'Yes' });
+  });
+
+  it('Warehouses: Update only (no Add form); a name change + switch off, the code locked', async () => {
+    const f = (await api().get(`${B}/facility/format`).set('Cookie', admin.cookie).expect(200)).body.data;
+    expect(f.modes).toEqual(['update']);
+    expect(f.columns.add).toBeUndefined();
+    expect((await post('facility', 'check', { mode: 'add', rows: [{ code: 'X' }] }).expect(400)).body.error.code).toBe('VALIDATION_FAILED');
+    const [cur] = await currentOf('facility');
+    expect(cur).toMatchObject({ id: String(m.facilityId), code: m.facilityCode, name: 'Test warehouse', active: 'Yes' });
+    expect((await post('facility', 'check', { mode: 'update', rows: [{ ...cur, code: 'OTHER' }] }).expect(200)).body.data.rows[0].errors[0]).toMatch(/Warehouse code: cannot be changed here/);
+    await post('facility', 'apply', { mode: 'update', fileName: 'wh.xlsx', rows: [{ ...cur, name: 'Bhiwandi WH', active: 'No' }] }).expect(200);
+    const [wh] = await rows<{ name: string; is_active: number }>('SELECT name, is_active FROM master_facilities');
+    expect(wh).toMatchObject({ name: 'Bhiwandi WH', is_active: 0 });
+    expect((await logs('facility')).map((h) => h.action)).toEqual(['field_changed', 'deactivated']);
   });
 });
