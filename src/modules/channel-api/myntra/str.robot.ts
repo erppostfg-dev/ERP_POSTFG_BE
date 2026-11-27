@@ -11,7 +11,8 @@ import { MyntraConfig, withMyntraPortal } from '../../intransit/sources/myntra-p
  * STRs, ~11 s each, one retry needed), run in the In-transit worker process with the in-transit robot's Myntra login
  * (one browser job at a time). Never touches the database or S3: it returns each STR's CSV text and the parent stores it
  * (str.service.ts). Each downloaded file is read and DELETED at once (user: nothing kept on disk).
- *   1. Dashboard (saved session, else email + password: withMyntraPortal) -> FBM/PPMP/MDirect + DONE when asked.
+ *   1. Dashboard with the saved session ONLY (withMyntraPortal, 2026-11-27: never logs in itself, so it never ends a
+ *      person's Myntra session; no session = MYNTRA_SESSION_NEEDED, the STRs wait for Connect & run) -> FBM/PPMP/MDirect.
  *   2. Inventory movement page (opened directly) -> STRs And Actions -> Filter to Search STRs.
  *   3. Per STR, in the email's order: STR -> Apply -> wait for its row -> open -> STR Details -> Download CSV.
  * An STR that fails (or is "not found": a slow list) is tried once more in the same run; still failing -> reported

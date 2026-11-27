@@ -1,10 +1,12 @@
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { isStrEmail, strsOf } from '../../src/modules/channel-api/myntra/str-email';
 import { strToProcessed } from '../../src/modules/channel-api/myntra/str.parse';
-import { runStrRobot, setAfterStored, takeStrEmail, type StrFetcher } from '../../src/modules/channel-api/myntra/str.service';
+import { runStrRobot, setAfterStored, strBlocked, takeStrEmail, type StrFetcher } from '../../src/modules/channel-api/myntra/str.service';
+import { MYNTRA_SESSION_NEEDED } from '../../src/modules/intransit/sources/myntra-partner-portal';
+import { clearNoticeCache } from '../../src/modules/notices/notices.service';
 import { loginAs } from '../helpers/auth';
 import { closeDb, insert, resetDb, rows } from '../helpers/db';
 import { clearS3, s3Objects } from '../helpers/fake-s3';
@@ -13,6 +15,13 @@ import { clearS3, s3Objects } from '../helpers/fake-s3';
  * Myntra STRs (2026-11-03): the STR list of a NEW "Request to Raise STRs" email (newest part only) -> waiting rows ->
  * the robot's CSVs -> S3 (CSV + processed.json), no PO yet. The robot is replaced by a fake fetcher here.
  */
+
+// the alerts' emails are recorded, never sent
+const mailbox = vi.hoisted(() => ({ sent: [] as { to: string[]; subject: string; text: string }[] }));
+vi.mock('../../src/modules/mail/mailer.service', async (orig) => ({
+  ...(await orig<object>()),
+  sendMail: vi.fn(async (m: { to: string[]; subject: string; text: string }) => { mailbox.sent.push(m); }),
+}));
 
 const LIST = `Hi Reshma
 
@@ -147,7 +156,7 @@ describe('the CSV', () => {
 });
 
 describe('the robot run', () => {
-  it('CSV + processed.json to S3 per STR; a failed STR waits, after 3 runs failed; nothing in po_uploads', async () => {
+  it('CSV + processed.json to S3 per STR; a failed STR is failed at once and never tried again by itself; nothing in po_uploads', async () => {
     await myntraOn();
     await takeStrEmail(await emailFolder(SUBJECT, LIST), () => undefined);
     const asked: string[][] = [];
@@ -167,25 +176,59 @@ describe('the robot run', () => {
     expect(files).toEqual(['STNCPWEBP271026-01-summary.csv', 'api-raw.json', 'metadata.json', 'processed.json']);
     const meta = JSON.parse(objects.get(folder.replace('processed.json', 'metadata.json'))!);
     expect(meta).toMatchObject({ provider: 'channel-api', channel: 'myntra', poNumber: 'STNCPWEBP271026-01', sourceSystem: 'myntra_str', sourceFile: 'STNCPWEBP271026-01-summary.csv', strEmail: { subject: SUBJECT } });
-    let r = await items();
-    expect(r.map((i) => i.status)).toEqual(['stored', 'stored', null, 'stored']);
+    const r = await items();
+    // 2026-11-27 (user: "don't keep on trying if it fails"): the one that did not download is failed at once (was 3 runs)
+    expect(r.map((i) => i.status)).toEqual(['stored', 'stored', 'failed', 'stored']);
     expect(dataOf(r[0].data)).toMatchObject({ summary: { units: 102 } });
-    // the failing one: tried again on the next runs, then failed
-    await runStrRobot('retry', fetcher);
-    await runStrRobot('retry', fetcher);
-    r = await items();
-    expect(r[2].status).toBe('failed');
-    expect(dataOf(r[2].data)).toMatchObject({ runs: 3, lastError: 'not found on the Myntra portal' });
-    expect(asked.slice(1)).toEqual([['STNCPWEMYNT271026-02'], ['STNCPWEMYNT271026-02']]);
-    expect((await runStrRobot('nothing left', fetcher)).listed).toBe(0);
+    expect(dataOf(r[2].data)).toMatchObject({ runs: 1, lastError: 'not found on the Myntra portal' });
+    // the next run has nothing to ask for: a failed STR is never asked again (Manual Upload by hand)
+    expect((await runStrRobot('again', fetcher)).listed).toBe(0);
+    expect(asked).toHaveLength(1);
     expect(await rows('SELECT id FROM po_uploads')).toHaveLength(0);
   });
 
-  it('the whole run failing (login) counts one try for every waiting STR', async () => {
+  it('login not working: STRs stay waiting (not counted), the Myntra STRs list hears it ONCE (bell from POST_FG + email); a good run clears it and tells what came in', async () => {
+    await myntraOn();
+    const reshma = await loginAs('operations-executive');
+    const other = await loginAs('operations-executive');
+    await insert('mail_recipients', { list_key: 'myntra-str', email: reshma.email, kind: 'to', paused: false, created_by: reshma.userId, created_at: new Date(), updated_by: reshma.userId, updated_at: new Date() });
+    await insert('mail_recipients', { list_key: 'myntra-str', email: 'ops.lead@example.com', kind: 'cc', paused: false, created_by: reshma.userId, created_at: new Date(), updated_by: reshma.userId, updated_at: new Date() });
+    mailbox.sent.length = 0;
+    clearNoticeCache();
+    await takeStrEmail(await emailFolder(SUBJECT, LIST), () => undefined);
+    const noLogin: StrFetcher = () => Promise.reject(new Error(MYNTRA_SESSION_NEEDED));
+    const run = await runStrRobot('email', noLogin);
+    expect(run).toMatchObject({ ok: false, listed: 4, stored: 0, error: MYNTRA_SESSION_NEEDED });
+    expect((await items()).map((i) => [i.status, dataOf(i.data).runs])).toEqual([[null, 0], [null, 0], [null, 0], [null, 0]]);
+    expect(await strBlocked()).toMatchObject({ kind: 'login', waiting: 4 });
+    const notices = () => rows<{ from_user_id: number; to_user_id: number; text: string; link: string }>('SELECT from_user_id, to_user_id, text, link FROM notices ORDER BY id');
+    let n = await notices();
+    // the bell: only the POST_FG person on the list, from the app itself (0 = POST_FG), with the Channel Pulls link
+    expect(n).toHaveLength(1);
+    expect(n[0]).toMatchObject({ from_user_id: 0, to_user_id: reshma.userId, link: '/operations/amazon-inbound?tab=channels' });
+    expect(n[0].text).toMatch(/Myntra login needed: 4 STR\(s\) are waiting.*Connect & run/);
+    expect(n.some((x) => x.to_user_id === other.userId)).toBe(false);
+    await vi.waitFor(() => expect(mailbox.sent).toHaveLength(1));
+    expect(mailbox.sent[0]).toMatchObject({ to: [reshma.email], cc: ['ops.lead@example.com'], subject: 'POST_FG: Myntra login needed (4 STR(s) waiting)' });
+    // the next STR email's run fails the same way: no second alert
+    await runStrRobot('email', noLogin);
+    expect(await notices()).toHaveLength(1);
+    expect(mailbox.sent).toHaveLength(1);
+    // the login works again: everything downloads, the block is gone, one 'done' notice
+    const run2 = await runStrRobot('connect & run', async (strs) => strs.map((str) => ({ str, csv: CSV })));
+    expect(run2).toMatchObject({ ok: true, stored: 4 });
+    expect(await strBlocked()).toBeNull();
+    n = await notices();
+    expect(n).toHaveLength(2);
+    expect(n[1].text).toMatch(/^Myntra STRs: 4 downloaded and being made into POs/);
+  });
+
+  it('the whole run failing otherwise (the browser): STRs stay waiting, alerted once as "could not run"', async () => {
     await myntraOn();
     await takeStrEmail(await emailFolder(SUBJECT, LIST), () => undefined);
-    const run = await runStrRobot('test', () => Promise.reject(new Error('the Myntra login form did not open')));
-    expect(run).toMatchObject({ ok: false, error: 'the Myntra login form did not open' });
-    expect((await items()).map((i) => [i.status, dataOf(i.data).runs])).toEqual([[null, 1], [null, 1], [null, 1], [null, 1]]);
+    const run = await runStrRobot('test', () => Promise.reject(new Error('browser closed')));
+    expect(run).toMatchObject({ ok: false, error: 'browser closed' });
+    expect((await items()).map((i) => [i.status, dataOf(i.data).runs])).toEqual([[null, 0], [null, 0], [null, 0], [null, 0]]);
+    expect(await strBlocked()).toMatchObject({ kind: 'failed', waiting: 4, error: 'browser closed' });
   });
 });

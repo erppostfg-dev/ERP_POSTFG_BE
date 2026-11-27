@@ -193,13 +193,17 @@ export const MYNTRA_STR = {
     DETAILS: /STR Details/i,
     DOWNLOAD: /^\s*Download CSV\s*$/i,
   },
-  /** Tries per STR in one run (one click timed out once in 45 on 2 Nov), and runs before an STR is marked failed. */
-  TRIES_PER_RUN: 3,
+  /**
+   * Tries per STR in one run, and runs before an STR is marked failed. 2026-11-27 (user: "don't keep on trying if it
+   * fails"): one each - an STR that does not download is failed at once (Run robot now or Manual Upload by hand), and
+   * nothing retries by itself (no timer); was 3 tries + 3 runs + a 30-min retry.
+   */
+  TRIES_PER_RUN: 1,
   /** How long the STR's row may take to show after Apply, and after a second Apply. */
   ROW_WAIT_MS: 90_000,
   ROW_WAIT_AGAIN_MS: 45_000,
   NOT_FOUND: 'not found on the Myntra portal',
-  MAX_RUNS: 3,
+  MAX_RUNS: 1,
   ROBOT_TIMEOUT_MS: 60 * 60_000,
   ROBOT_JOB: 'myntra-strs',
   /** Step 2 (2026-11-03): stored STRs become POs (the shared runner: PO intake, never twice, validation, sale order). */
@@ -221,6 +225,22 @@ export const MYNTRA_STR = {
   /** The STR CSV's prices, kept on the PO as information only (user: our margin makes the price; MRP is checked). */
   PRICE_COLUMNS: { LIST: 'List Price', LANDED: 'Landed Price' },
   POLL_MINUTES: 360,
+  /**
+   * What the people on the Myntra STRs mail list hear (bell + email, 2026-11-27, user: "send a notification to Reshma so
+   * she can open Myntra and Connect"). Login needed / robot failed: once until the next good run or Connect.
+   */
+  NOTIFY: {
+    LINK: '/operations/amazon-inbound?tab=channels',
+    LOGIN_NEEDED: (waiting: number) =>
+      `Myntra login needed: ${waiting} STR(s) are waiting. Log in at partners.myntrainfo.com in Chrome, then press Connect & run on Channel Pulls > Myntra.`,
+    LOGIN_SUBJECT: (waiting: number) => `POST_FG: Myntra login needed (${waiting} STR(s) waiting)`,
+    FAILED: (waiting: number, why: string) =>
+      `Myntra STR robot could not run (${why.slice(0, 160)}). ${waiting} STR(s) are waiting: press Run robot now on Channel Pulls > Myntra, or upload their CSVs in Manual Upload.`,
+    FAILED_SUBJECT: 'POST_FG: Myntra STR robot could not run',
+    DONE: (stored: number, failed: number) =>
+      `Myntra STRs: ${stored} downloaded and being made into POs (PO Processing & Review: Processed / In Review)${failed ? `; ${failed} could not be downloaded (Channel Pulls > Myntra: failed STRs, upload them by hand)` : ''}.`,
+    DONE_SUBJECT: (stored: number, failed: number) => `POST_FG: Myntra STRs: ${stored} downloaded${failed ? `, ${failed} failed` : ''}`,
+  },
   /** channel_pull_items.status. */
   STATUS: { WAITING: null, STORED: 'stored', FAILED: 'failed' },
   /** The STR CSV's columns (by name; IGST or SGST + CGST by the destination's state). */
@@ -251,6 +271,8 @@ export const CHANNEL_PULLS = {
     ROBOT: '/:key/robot',
     PROCESS: '/:key/process',
     SCHEDULE: '/:key/schedule',
+    /** Myntra STRs (2026-11-27): the person's Myntra login from Chrome, then the robot runs at once. */
+    CONNECT: '/:key/connect',
   },
   BODY: { EVERY_HOURS: 'robotEveryHours' },
   /** The schedule: every 1-24 hours, or null = only by Run now. */

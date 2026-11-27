@@ -100,8 +100,11 @@ export interface SavedLogin {
   checkError: string | null;
 }
 
-/** Store a robot's login sent from a person's browser, then start a quick fetch with it. */
-export const saveRobotLogin = async (source: string, body: { cookies?: unknown; localStorage?: unknown }, who: Requester): Promise<SavedLogin> => {
+/**
+ * Store a robot's login sent from a person's browser, then start a quick fetch with it. check false (Myntra STRs'
+ * Connect & run, 2026-11-27): stored only; the caller's own run proves it.
+ */
+export const saveRobotLogin = async (source: string, body: { cookies?: unknown; localStorage?: unknown }, who: Requester, check = true): Promise<SavedLogin> => {
   const portal = PORTALS[source];
   if (!portal) throw appError(ERROR_CODES.INTRANSIT_SOURCE_UNKNOWN, source, Object.keys(PORTALS).join(', '));
   const state = storageStateOf(portal, body);
@@ -115,6 +118,7 @@ export const saveRobotLogin = async (source: string, body: { cookies?: unknown; 
   }
   // counts only: a saved login is as good as the password
   appLog.info(LOG_SOURCE.APP, `[intransit] ${portal.label} login saved from ${who.name ?? `user ${who.id}`}'s browser (${state.cookies.length} cookies)`);
+  if (!check) return { portal: portal.label, cookies: state.cookies.length, check: null, checkError: null };
   try {
     return { portal: portal.label, cookies: state.cookies.length, check: await startConnector(source, who, { only: portal.checkOnly }), checkError: null };
   } catch (err) {

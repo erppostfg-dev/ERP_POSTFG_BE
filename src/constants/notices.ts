@@ -32,6 +32,12 @@ export const NOTICES = {
   SETTINGS_KEY: 'notices:settings',
   /** Reply text shows the start of the notice it answers. */
   REPLY_QUOTE_MAX: 60,
+  /**
+   * The app's own notices (2026-11-27, Myntra STR alerts): from_user_id 0 = no person; shown as SYSTEM_NAME, no reply.
+   * Not a user id (users start at 1; notices has no foreign key).
+   */
+  SYSTEM_FROM: 0,
+  SYSTEM_NAME: 'POST_FG',
 } as const;
 
 /** "to" value for a notice to every signed-in person. */

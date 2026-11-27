@@ -6,7 +6,7 @@ import { appError } from '../../utils/AppError';
 import { intakeStateOf } from '../po-intake-control/intake-settings.service';
 import { ChannelConnector } from './connector';
 import { lastRobotRun, nextRobotRunAt, robotRunning, robotSchedule, RobotRun, RobotSchedule, startRobotRun } from './flipkart/consignments.service';
-import { lastStrRun, startStrRun, strRunning } from './myntra/str.service';
+import { lastStrRun, startStrRun, strBlocked, StrBlocked, strRunning } from './myntra/str.service';
 import { CONNECTORS, connectorOf } from './registry';
 import { isProcessing } from './scheduler';
 import { pollMinutesOf, pollScheduleOf } from './poll-schedule';
@@ -31,6 +31,8 @@ interface Robot {
   startedBy: 'schedule' | 'email';
   /** Whether Process now / the timer make POs from what it fetched. */
   processes: boolean;
+  /** Myntra STRs (2026-11-27): the robot cannot run now (login not working / failed), else null. */
+  blocked?: () => Promise<StrBlocked | null>;
 }
 const ROBOTS: Record<string, Robot> = {
   [SOURCE_SYSTEM.FLIPKART_SELLER_HUB]: {
@@ -39,7 +41,7 @@ const ROBOTS: Record<string, Robot> = {
   },
   [SOURCE_SYSTEM.MYNTRA_STR]: {
     lastRun: lastStrRun, running: strRunning, start: (t) => void startStrRun(t)?.catch(() => undefined),
-    schedule: null, startedBy: 'email', processes: MYNTRA_STR.PROCESSING,
+    schedule: null, startedBy: 'email', processes: MYNTRA_STR.PROCESSING, blocked: strBlocked,
   },
 };
 export const hasRobot = (key: string): boolean => key in ROBOTS;
@@ -63,7 +65,11 @@ export interface ChannelPullView {
   /** The last process run (the connector's check point row). */
   sync: { lastRunAt: string | null; lastSuccessAt: string | null; failures: number; lastError: string | null; lastResult: Record<string, unknown> | null } | null;
   /** Robot channels: the robot's state, last run (without its log) and schedule (null = started by its email). */
-  robot: { running: boolean; lastRun: Omit<RobotRun, 'log'> | null; schedule: RobotSchedule | null; nextRunAt: string | null; startedBy: 'schedule' | 'email' } | null;
+  robot: {
+    running: boolean; lastRun: Omit<RobotRun, 'log'> | null; schedule: RobotSchedule | null; nextRunAt: string | null; startedBy: 'schedule' | 'email';
+    /** Myntra STRs (2026-11-27): why the robot cannot run now (kind login = Connect & run needed), else null. */
+    blocked: StrBlocked | null;
+  } | null;
   /** Process now / the timer make POs from what was fetched (Myntra STRs: not yet, step 2). */
   processes: boolean;
   /** API channels: how often the server pulls (the page's choice, else defaultHours) and when next (null = polling off). */
@@ -100,8 +106,8 @@ const viewOf = async (c: ChannelConnector, syncs: ChannelApiSync[], counts: Map<
   let robot: ChannelPullView['robot'] = null;
   const rb = robotOf(c.key);
   if (rb) {
-    const [last, schedule] = await Promise.all([rb.lastRun(), rb.schedule ? rb.schedule() : Promise.resolve(null)]);
-    robot = { running: rb.running(), lastRun: last ? withoutLog(last) : null, schedule, nextRunAt: schedule ? iso(nextRobotRunAt(schedule, last)) : null, startedBy: rb.startedBy };
+    const [last, schedule, blocked] = await Promise.all([rb.lastRun(), rb.schedule ? rb.schedule() : Promise.resolve(null), rb.blocked ? rb.blocked() : Promise.resolve(null)]);
+    robot = { running: rb.running(), lastRun: last ? withoutLog(last) : null, schedule, nextRunAt: schedule ? iso(nextRobotRunAt(schedule, last)) : null, startedBy: rb.startedBy, blocked };
   }
   let poll: ChannelPullView['poll'] = null;
   if (!hasRobot(c.key)) {

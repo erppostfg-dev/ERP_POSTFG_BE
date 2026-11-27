@@ -1,8 +1,9 @@
 import { Router } from 'express';
-import { ACCESS_LEVEL, CHANNEL_PULLS, ERROR_CODES, PAGE } from '../constants';
+import { ACCESS_LEVEL, CHANNEL_PULLS, ERROR_CODES, PAGE, SOURCE_SYSTEM } from '../constants';
 import { requireAuth, requirePage } from '../modules/auth/auth.middleware';
 import { channelPull, connectorOrThrow, hasRobot, listChannelPulls, listPullItems, processesPos, robotOf, robotRunOf } from '../modules/channel-api/channel-pulls.service';
 import { setRobotSchedule } from '../modules/channel-api/flipkart/consignments.service';
+import { connectAndRun } from '../modules/channel-api/myntra/str.service';
 import { processNow, rescheduleConnector } from '../modules/channel-api/scheduler';
 import { savePollSchedule } from '../modules/channel-api/poll-schedule';
 import { appError } from '../utils/AppError';
@@ -20,6 +21,9 @@ import { appError } from '../utils/AppError';
  *   POST  /channel-pulls/:key/process        Process now (in the background; 202): the fetched / changed POs through the chain
  *   PATCH /channel-pulls/:key/schedule       { robotEveryHours: 1-24 | null } robot: its runs (null = Run now only);
  *                                            API: how often the server pulls (null = its default, e.g. Amazon every 2 h)
+ *   POST  /channel-pulls/myntra_str/connect  Connect & run (2026-11-27): { cookies, localStorage? } from the person's Chrome
+ *                                            (ERP Robot Login extension) = the robot's saved Myntra login, then the
+ *                                            waiting STRs run (202). 400 another key; 422 not logged in to Myntra.
  */
 
 const router = Router();
@@ -60,6 +64,18 @@ router.post(CHANNEL_PULLS.ROUTES.ROBOT, ...editor, async (req, res, next) => {
     // started here (its checks throw now); the run itself goes on after the answer
     rb.start(`run now (${by(req)})`);
     res.status(202).json({ data: await channelPull(key) });
+  } catch (err) { next(err); }
+});
+
+router.post(CHANNEL_PULLS.ROUTES.CONNECT, ...editor, async (req, res, next) => {
+  try {
+    const key = String(req.params.key);
+    connectorOrThrow(key);
+    if (key !== SOURCE_SYSTEM.MYNTRA_STR) throw appError(ERROR_CODES.CHANNEL_PULL_NO_CONNECT, key);
+    const u = req.auth?.user;
+    const body = (req.body ?? {}) as { cookies?: unknown; localStorage?: unknown };
+    const done = await connectAndRun(body, { id: u?.id ?? null, name: u?.name || u?.email || null });
+    res.status(202).json({ data: { ...done, pull: await channelPull(key) } });
   } catch (err) { next(err); }
 });
 
