@@ -167,7 +167,7 @@ describe('Amazon shipment file (.tsv, no OCR)', () => {
     expect((await rows<{ status: string }>("SELECT status FROM po_uploads WHERE external_id = 'FBA15TEST0006'"))[0].status).toBe('completed');
   });
 
-  it('an Amazon SKU we cannot match at all waits in review without a price (Amazon sends none; backlog 4ad)', async () => {
+  it('an Amazon SKU we cannot match at all waits in review for the SKU only (Amazon sends no price; our master rate is the price once mapped, b3a1c1c)', async () => {
     await amazonMasters();
     const res = await upload('amazon', [['FBA15TEST0005.tsv', tsv('FBA15TEST0005', 'X00UNKNOWN', 24, 'SOME_OTHER_SKU')]]);
     await api().post(`${V}/process`).set('Cookie', reviewer.cookie).send({ ids: res.body.data.ids }).expect(200);
@@ -175,7 +175,8 @@ describe('Amazon shipment file (.tsv, no OCR)', () => {
     const [u] = await rows<{ id: string; status: string }>("SELECT id, status FROM po_uploads WHERE external_id = 'FBA15TEST0005'");
     expect(u.status).toBe('needs_review');
     const issues = (await rows<{ issue_type: string }>('SELECT issue_type FROM po_issues WHERE upload_id = ? ORDER BY id', [u.id])).map((i) => i.issue_type);
-    expect(issues).toEqual(expect.arrayContaining(['SKU_NOT_MAPPED', 'OTHER']));
+    // 2026-11-27 (b3a1c1c): Amazon lines take our master rate, so no separate "no unit price" issue: the SKU is the only reason
+    expect(issues).toEqual(['SKU_NOT_MAPPED']);
   });
 
   it('refuses a cancelled / closed shipment, a broken file, and a shipment POST_FG already has', async () => {
