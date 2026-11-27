@@ -257,6 +257,14 @@ export type IssueField = (typeof ISSUE_FIELDS)[keyof typeof ISSUE_FIELDS];
  */
 export const OUR_PRICE_ONLY_CHANNELS: readonly ChannelName[] = [CHANNELS.MYNTRA, CHANNELS.NOBLE_CHEMIST];
 
+/**
+ * Channels that send NO price at all (2026-11-27, user: Amazon FBA shipments). The connector copies our master rate onto
+ * the line when it fetches the PO; a line fetched before its SKU was in our master has no price, so the check takes the
+ * master rate (rate_after_margin) itself -> a master fix + re-check completes the PO (was: "no unit price" forever, 70 on
+ * prod). No "price missing" issue: unmapped = SKU_NOT_MAPPED, mapped without a rate = SKU_NO_RATE explain it.
+ */
+export const MASTER_PRICE_CHANNELS: readonly ChannelName[] = [CHANNELS.AMAZON];
+
 /** What a location's Uniware channel should be (a channel's own sheet); our master differing -> review (OTHER). */
 export const EXPECTED_UNIWARE_CHANNEL: Partial<Record<ChannelName, Record<string, string>>> = {
   [CHANNELS.MYNTRA]: Object.fromEntries(MYNTRA_STR.DESTINATIONS.map((d) => [d.location, d.uniwareChannel])),

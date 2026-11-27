@@ -2,6 +2,7 @@ import {
   CHANNEL_LOCATION_MATCH,
   CHANNEL_TOLERANCES, poTotalAllowed,
   EXPECTED_UNIWARE_CHANNEL,
+  MASTER_PRICE_CHANNELS,
   OUR_PRICE_ONLY_CHANNELS,
   PO_LOCATION_PEP_NAME,
   PRICE_CHOICE,
@@ -316,6 +317,13 @@ const validateLine = (
     } else {
       poUnit = unitCost * (1 + gst / 100);
       poValue = lineTotal !== null ? lineTotal * (1 + gst / 100) : chargedQty === null ? null : chargedQty * poUnit;
+    }
+  } else if (MASTER_PRICE_CHANNELS.includes(channel)) {
+    // The channel sends no price (Amazon): our master rate is the PO's price (none yet = the SKU / rate issue says why)
+    const masterRate = mapped?.rateAfterMargin ?? null;
+    if (masterRate !== null) {
+      poUnit = masterRate;
+      poValue = chargedQty === null ? null : chargedQty * masterRate;
     }
   } else if (!OUR_PRICE_ONLY_CHANNELS.includes(channel)) {
     add(validationIssue(ISSUE_TYPE.OTHER, { field: ISSUE_FIELDS.UNIT_PRICE, lineNo }, `${where}: ${VALIDATION_TEXT.PRICE_MISSING}`));
