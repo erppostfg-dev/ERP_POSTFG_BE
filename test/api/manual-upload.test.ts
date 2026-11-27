@@ -9,6 +9,7 @@ import { fkBulk, fkCsv, fkRobot, fkSwitchOn, seedFlipkart, WAREHOUSE } from '../
 import { runConnector } from '../../src/modules/channel-api/runner';
 import { flipkartConnector } from '../../src/modules/channel-api/flipkart/flipkart.connector';
 import { storeRobotResult } from '../../src/modules/channel-api/flipkart/consignments.service';
+import { recheckInReview } from '../../src/modules/po-review/recheck.service';
 
 /*
  * Manual Upload (2026-10-28): PO files uploaded by hand on Processed & Review -> Manual Upload, queued with Process,
@@ -165,6 +166,25 @@ describe('Amazon shipment file (.tsv, no OCR)', () => {
     await api().post(`${V}/process`).set('Cookie', reviewer.cookie).send({ ids: res.body.data.ids }).expect(200);
     await vi.waitFor(async () => expect((await statusOf(res.body.data.ids[0])).status).toBe('done'), { timeout: 15_000 });
     expect((await rows<{ status: string }>("SELECT status FROM po_uploads WHERE external_id = 'FBA15TEST0006'"))[0].status).toBe('completed');
+  });
+
+  it('prod 27 Nov: an Amazon PO stuck on an old "no unit price" issue completes on the re-check once its FNSKU is in our master', async () => {
+    await amazonMasters();
+    const res = await upload('amazon', [['FBA15TEST0007.tsv', tsv('FBA15TEST0007', 'X00LATER01', 24, 'SOME_OTHER_SKU')]]);
+    await api().post(`${V}/process`).set('Cookie', reviewer.cookie).send({ ids: res.body.data.ids }).expect(200);
+    await vi.waitFor(async () => expect((await statusOf(res.body.data.ids[0])).status).toBe('done'), { timeout: 15_000 });
+    const [u] = await rows<{ id: string; status: string }>("SELECT id, status FROM po_uploads WHERE external_id = 'FBA15TEST0007'");
+    expect(u.status).toBe('needs_review');
+    // the PO as saved before b3a1c1c: SKU not mapped AND "no unit price" on the line
+    const [sku] = await rows<{ line_no: number }>("SELECT line_no FROM po_issues WHERE upload_id = ? AND issue_type = 'SKU_NOT_MAPPED'", [u.id]);
+    await insert('po_issues', { upload_id: u.id, line_no: sku.line_no, issue_type: 'OTHER', field_name: 'unit_price', details: 'line 1: no unit price on the PO line', status: 'open' });
+    // the masters team adds the FNSKU: the re-check closes BOTH and the PO completes with our rate
+    await insert('master_channel_skus', { pep_code: m.pepCode, pep_sku_id: m.pepSkuId, channel_id: CHANNEL_MASTER_IDS[CHANNELS.AMAZON], channel_name: 'Amazon', channel_code: 'X00LATER01', mrp: 499, rate_after_margin: 349.3, is_active: 1 });
+    const out = await recheckInReview({ trigger: 'test' });
+    expect(out.issuesClosed).toBe(2);
+    expect(out.completed.map((c) => c.uploadId)).toEqual([String(u.id)]);
+    expect((await rows<{ status: string }>('SELECT status FROM po_uploads WHERE id = ?', [u.id]))[0].status).toBe('completed');
+    expect(await count('po_issues', "upload_id = ? AND status = 'open'", [u.id])).toBe(0);
   });
 
   it('an Amazon SKU we cannot match at all waits in review for the SKU only (Amazon sends no price; our master rate is the price once mapped, b3a1c1c)', async () => {

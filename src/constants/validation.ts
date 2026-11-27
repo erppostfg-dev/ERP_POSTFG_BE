@@ -305,6 +305,12 @@ export const ADDRESS_CHECK = {
  * by itself).
  */
 export const MASTER_GAP_FIELDS: readonly string[] = [ISSUE_FIELDS.RATE, ISSUE_FIELDS.GST];
+/**
+ * OTHER issues the re-check may close when the check no longer finds them: the master gaps, and "no unit price on the PO
+ * line" (2026-11-27: Amazon lines now take our master rate (b3a1c1c), but 70 prod POs kept the old open issue because the
+ * re-check never closed this kind). Closed only when validation no longer raises it, so other channels are unchanged.
+ */
+export const RECHECK_OTHER_FIELDS: readonly string[] = [...MASTER_GAP_FIELDS, ISSUE_FIELDS.UNIT_PRICE];
 
 /** Can a reviewer accept this issue with a remark? (type acceptable, and not a gap in our master) */
 export const isAcceptableIssue = (type: string, field: string | null | undefined): boolean =>
