@@ -6,6 +6,8 @@ import { appError } from '../../utils/AppError';
 import { openS3File } from '../email-intake/s3-mirror.service';
 import { flushChanges } from '../po-overview/po-overview.live';
 import { bumpReview } from './po-review.live';
+import { forgetCache } from '../cache/cache.service';
+import { CACHE_NS } from '../../constants/cache';
 
 /*
  * Uniware hand-off (user, 2026-10-19). A completed PO has a sale order CSV in S3; on the Processed tab it waits:
@@ -101,6 +103,7 @@ export const markUploaded = async (ids: string[], by: Actor, undo = false): Prom
         { id: In(todo.map((u) => u.id)) },
         undo ? { uniwareUploadedAt: null, uniwareUploadedBy: null } : { uniwareUploadedAt: new Date(), uniwareUploadedBy: by.id },
       );
+      void forgetCache(CACHE_NS.PO_OVERVIEW_COUNTS); // PO Overview list totals (2026-11-27): POs shown there change
       // The shipment's own history says it went to (or was taken back from) Uniware; this also tells PO Overview.
       const logs = m.getRepository(ShipmentLog);
       for (const u of todo.filter((x) => x.poUid)) {

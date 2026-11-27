@@ -18,6 +18,8 @@ import { planPoSync, PoSyncState } from './plan';
 import { readSaleOrder, SoDetail } from './sale-order';
 import { applyBulkTracking, bulkOrdersOfPos } from '../bulk-orders/bulk-tracking.service';
 import { isThrottled, poUniwareClient, UniwarePoster } from './uniware-client';
+import { forgetCache } from '../cache/cache.service';
+import { CACHE_NS } from '../../constants/cache';
 
 /*
  * Uniware sale order status of CHANNEL POs (2026-11-06, constants/po-uniware-sync.ts). The same way as D2C transfers,
@@ -210,6 +212,7 @@ const markFoundInUniware = async (now: Date): Promise<number> => {
   if (!found.length) return 0;
   await AppDataSource.transaction(async (m) => {
     await m.query(`UPDATE ${TABLES.PO_UPLOADS} SET uniware_uploaded_at = ? WHERE id IN (?) AND uniware_uploaded_at IS NULL`, [now, found.map((f) => f.id)]);
+    void forgetCache(CACHE_NS.PO_OVERVIEW_COUNTS); // PO Overview list totals (2026-11-27): POs shown there change
     await m.getRepository(ShipmentLog).insert([...new Map(found.map((f) => [String(f.po_uid), f])).values()].map((f) => ({
       shipmentUid: String(f.po_uid), userId: null, action: SHIPMENT_LOG_ACTION.UNIWARE_UPLOADED, source: SHIPMENT_LOG_SOURCE.UNIWARE,
       remark: `${f.orderNo1} ${PO_UNIWARE_SYNC.FOUND_REMARK}`,

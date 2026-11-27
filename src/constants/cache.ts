@@ -54,6 +54,9 @@ export const CACHE_NS = {
   MASTERS: 'masters',
   /** PO Overview dropdowns (GET /po-overview/filter-options): dropped on a new / changed PO and a master change. */
   PO_OVERVIEW_FILTERS: 'po-overview-filters',
+  /** PO Overview list totals per filter ("N lines", 2026-11-27): counting 320K prod lines on every page load jammed the
+   *  DB; kept PO_OVERVIEW_COUNT_SECONDS, dropped on any PO change (live flush) / new PO. */
+  PO_OVERVIEW_COUNTS: 'po-overview-counts',
   /** PO issues per channel (GET /po-review/issues): dropped on review / master changes (was in memory since 2026-10-29). */
   PO_ISSUES: 'po-issues',
   /** PO Review lists, one page each (GET /po-review): the key holds the review version, so any PO change (any process)

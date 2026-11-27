@@ -19,6 +19,8 @@ import { runPoSyncPass } from '../po-uniware-sync/sync.service';
 import { isThrottled, poUniwareClient, refusalMessages, UniwarePoster } from '../po-uniware-sync/uniware-client';
 import { unverifiedIds } from '../po-verify/po-verify.service';
 import { buildCreateRequest } from './payload';
+import { forgetCache } from '../cache/cache.service';
+import { CACHE_NS } from '../../constants/cache';
 
 /*
  * Create in Uniware (2026-11-09, constants/uniware-create.ts): the ONE write to Uniware. queueCreates (Processed tab,
@@ -211,6 +213,7 @@ const finish = async (row: UniwareCreate, status: UniwareCreateStatus, extra: Pa
     await m.getRepository(PoUpload).createQueryBuilder().update()
       .set({ uniwareUploadedAt: now, uniwareUploadedBy: row.requestedBy })
       .where('id = :id AND uniware_uploaded_at IS NULL', { id: row.uploadId }).execute();
+    void forgetCache(CACHE_NS.PO_OVERVIEW_COUNTS); // PO Overview list totals (2026-11-27): the PO now shows there
     await m.getRepository(ShipmentLog).insert({
       shipmentUid: row.poUid, userId: row.requestedBy, action: SHIPMENT_LOG_ACTION.UNIWARE_UPLOADED, source: SHIPMENT_LOG_SOURCE.TOOL_API,
       remark: `${row.saleOrderCode} ${status === UNIWARE_CREATE_STATUS.CREATED ? 'created in Uniware (API)' : 'already in Uniware: nothing sent'}`,

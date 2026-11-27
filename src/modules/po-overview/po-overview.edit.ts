@@ -20,6 +20,8 @@ import { appError } from '../../utils/AppError';
 import { codeIndex, matchKey } from '../masters/master-match';
 import { canEditShipment, PoOverviewAccess } from './po-overview.access';
 import { flushChanges } from './po-overview.live';
+import { forgetCache } from '../cache/cache.service';
+import { CACHE_NS } from '../../constants/cache';
 
 /*
  * Saving a shipment from the PO Overview (2026-10-14). Body: { changes: { <field>: { from, to } }, remark? }.
@@ -189,6 +191,8 @@ export const saveShipment = async (
       logIds.push(saved.id);
     }
   });
+  // list totals may move (a status / date filter): counted again on the next load (2026-11-27)
+  await forgetCache(CACHE_NS.PO_OVERVIEW_COUNTS);
   void flushChanges();
   return { logIds };
 };

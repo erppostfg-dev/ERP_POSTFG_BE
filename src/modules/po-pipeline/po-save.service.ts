@@ -261,6 +261,7 @@ export const applySave = async (db: DataSource, folder: string, plans: SavePlan[
   if (results.some((x) => x.poUid)) {
     // new POs: the PO Overview dropdowns (shared cache) are read again, also when no PO Overview screen is open (2026-11-10)
     void forgetCache(CACHE_NS.PO_OVERVIEW_FILTERS);
+    void forgetCache(CACHE_NS.PO_OVERVIEW_COUNTS);
     void flushChanges();
   }
   return results;

@@ -346,6 +346,7 @@ export const processBulkOrder = async (actor: ProcessActor, id: string, body: Re
   });
   log.info(LOG_SOURCE.API, `[bulk-orders] ${first.poNumber} processed by user ${actor.id}: sale order ${code}`);
   void forgetCache(CACHE_NS.PO_OVERVIEW_FILTERS);
+  void forgetCache(CACHE_NS.PO_OVERVIEW_COUNTS);
   void flushChanges();
   bumpReview();
   return teamBulkOrder(id);
