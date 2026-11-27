@@ -81,6 +81,25 @@ describe('what PO Overview shows', () => {
     expect((await api().get(`${V}/po-overview/shipments/999999`).set('Cookie', admin.cookie)).status).toBe(404);
   });
 
+  it('line list (2026-11-27 prod jam fix): newest PO first, its lines in order, pages continue; read through the index', async () => {
+    const a = await onOverview('IRA92000021');
+    const b = await onOverview('IRA92000022');
+    // two more lines on the older PO (copies of its first line), so a page boundary falls inside a PO
+    const ds = await db();
+    const cols = (await ds.query<{ c: string }[]>("SELECT column_name c FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'details_purchase_orders' AND column_name <> 'id' ORDER BY ordinal_position"))
+      .map((r) => `\`${r.c}\``).join(', ');
+    for (let i = 0; i < 2; i++) await ds.query(`INSERT INTO details_purchase_orders (${cols}) SELECT ${cols} FROM details_purchase_orders WHERE shipmentOrderId = ? ORDER BY id LIMIT 1`, [a.po_uid]);
+    const order = await ds.query<{ id: string; s: string }[]>('SELECT id, shipmentOrderId s FROM details_purchase_orders WHERE shipmentOrderId IN (?, ?) ORDER BY shipmentOrderId DESC, id ASC', [a.po_uid, b.po_uid]);
+    const page = async (n: number) => (await api().get(`${V}/po-overview/lines?pageSize=2&page=${n}`).set('Cookie', admin.cookie).expect(200)).body;
+    const [p1, p2] = [await page(1), await page(2)];
+    expect(p1.meta.total).toBe(order.length);
+    const got = [...p1.data, ...p2.data].map((l: { id: string | number }) => String(l.id));
+    expect(got).toEqual(order.slice(0, 4).map((r) => String(r.id)));
+    // the index the page is read through (shipmentOrderId DESC, id ASC)
+    const idx = await ds.query<{ c: string; d: string }[]>("SELECT column_name c, collation d FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'details_purchase_orders' AND index_name = 'idx_details_po_ship_desc' ORDER BY seq_in_index");
+    expect(idx).toEqual([{ c: 'shipmentOrderId', d: 'D' }, { c: 'id', d: 'A' }]);
+  });
+
   it('filter-options and edit-options give the dropdowns', async () => {
     await onOverview('IRA92000021');
     const f = await api().get(`${V}/po-overview/filter-options`).set('Cookie', admin.cookie).expect(200);

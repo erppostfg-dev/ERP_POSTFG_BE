@@ -1,4 +1,6 @@
 import { In, IsNull, SelectQueryBuilder } from 'typeorm';
+import { cached } from '../cache/cache.service';
+import { CACHE_NS } from '../../constants/cache';
 import { AppDataSource } from '../../config/data-source';
 import { NOT_ASSIGNED, NOT_ASSIGNED_DATE, NotAssignedDate, PO_GROUPS, PoGroup, STATUS_STAGE, STATUS_WHEN_EMPTY, TABLES } from '../../constants';
 import {
@@ -135,11 +137,22 @@ const applyFilters = async <T extends object>(qb: SelectQueryBuilder<T>, f: PoOv
   }
 };
 
+/*
+ * List totals (2026-11-27, prod jam: every page load counted every matching row again). A total is kept per filter for
+ * LIST_COUNT_SECONDS and dropped when any PO changes (po-overview.live flush / a new PO), so pages stay right and the
+ * count runs once per change instead of once per person per refresh.
+ */
+const LIST_COUNT_SECONDS = 60;
+const countKey = (kind: string, f: PoOverviewFilters) => `${kind}:${JSON.stringify(f)}`;
+
 /** One page of shipments, newest first, and how many match. */
 export const findShipmentPage = async (f: PoOverviewFilters, p: Paging): Promise<{ rows: MasterPurchaseOrder[]; total: number }> => {
   const qb = AppDataSource.getRepository(MasterPurchaseOrder).createQueryBuilder('po');
   await applyFilters(qb, f);
-  const [rows, total] = await qb.orderBy('po.uid', 'DESC').skip((p.page - 1) * p.pageSize).take(p.pageSize).getManyAndCount();
+  const [rows, total] = await Promise.all([
+    qb.clone().orderBy('po.uid', 'DESC').skip((p.page - 1) * p.pageSize).take(p.pageSize).getMany(),
+    cached(CACHE_NS.PO_OVERVIEW_COUNTS, countKey('shipments', f), () => qb.clone().getCount(), LIST_COUNT_SECONDS),
+  ]);
   return { rows, total };
 };
 
@@ -147,12 +160,31 @@ export const findShipmentPage = async (f: PoOverviewFilters, p: Paging): Promise
 export const findShipment = (uid: string): Promise<MasterPurchaseOrder | null> =>
   AppDataSource.getRepository(MasterPurchaseOrder).findOneBy({ uid, transferCode: IsNull() });
 
-/** One page of lines with their shipment, newest shipment first, lines in their order. */
+/**
+ * One page of lines with their shipment, newest shipment first, lines in their order (2026-11-27, prod jam fix).
+ * Was: every line joined with its PO, all columns of both, sorted as a whole (temporary table + filesort over 320K prod
+ * lines, 4-12 s, 30 s when several people loaded it at once). Now two small steps:
+ *   1. only the page's line ids: the lines are walked newest PO first through idx_details_po_ship_desc
+ *      (shipmentOrderId DESC, id ASC = the page order, no sort), each joined to its PO by key for the filters,
+ *      stopping at the page (STRAIGHT_JOIN keeps lines first so the index order is used);
+ *   2. the full rows of just those ids. The total comes from the cache (findShipmentPage's note).
+ */
 export const findLinePage = async (f: PoOverviewFilters, p: Paging): Promise<{ rows: DetailsPurchaseOrder[]; total: number }> => {
-  const qb = AppDataSource.getRepository(DetailsPurchaseOrder).createQueryBuilder('d').innerJoinAndSelect('d.purchaseOrder', 'po');
-  await applyFilters(qb, f, 'd');
-  const [rows, total] = await qb.orderBy('po.uid', 'DESC').addOrderBy('d.id', 'ASC').offset((p.page - 1) * p.pageSize).limit(p.pageSize).getManyAndCount();
-  return { rows, total };
+  const repo = AppDataSource.getRepository(DetailsPurchaseOrder);
+  const base = repo.createQueryBuilder('d').innerJoin('d.purchaseOrder', 'po');
+  await applyFilters(base, f, 'd');
+  const pageQb = base.clone().select('d.id', 'id').orderBy('d.shipmentOrderId', 'DESC').addOrderBy('d.id', 'ASC')
+    .offset((p.page - 1) * p.pageSize).limit(p.pageSize);
+  const [sql, params] = pageQb.getQueryAndParameters();
+  const [idRows, total] = await Promise.all([
+    AppDataSource.query<{ id: string | number }[]>(sql.replace(/^SELECT /, 'SELECT STRAIGHT_JOIN '), params),
+    cached(CACHE_NS.PO_OVERVIEW_COUNTS, countKey('lines', f), () => base.clone().getCount(), LIST_COUNT_SECONDS),
+  ]);
+  const ids = idRows.map((r) => String(r.id));
+  if (!ids.length) return { rows: [], total };
+  const found = await repo.find({ where: { id: In(ids) }, relations: { purchaseOrder: true } });
+  const at = new Map(ids.map((id, i) => [id, i]));
+  return { rows: found.sort((a, b) => (at.get(String(a.id)) ?? 0) - (at.get(String(b.id)) ?? 0)), total };
 };
 
 export const findLinesOfShipment = (uid: string): Promise<DetailsPurchaseOrder[]> =>

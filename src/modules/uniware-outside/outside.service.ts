@@ -17,6 +17,8 @@ import { withRunLock } from '../po-uniware-sync/pacing';
 import { isThrottled, poUniwareClient, UniwarePoster } from '../po-uniware-sync/uniware-client';
 import { B2bOrder, Candidate, findingsOf, kindOf, ordersOf, poKey } from './match';
 import { outsideCounts } from './read';
+import { forgetCache } from '../cache/cache.service';
+import { CACHE_NS } from '../../constants/cache';
 
 /*
  * POs punched in Uniware outside POST_FG (2026-11-25, constants/uniware-outside.ts). Read-only on Uniware.
@@ -304,6 +306,7 @@ export const resolveOutside = async (id: string, body: unknown, by: Actor) => {
       if (!po) throw appError(ERROR_CODES.UNIWARE_OUTSIDE_DONE, id);
       await m.getRepository(MasterPurchaseOrder).update({ uid: po.uid }, { orderNo1: row.uniwareCode });
       await m.getRepository(PoUpload).update({ id: u.id }, { uniwareUploadedAt: new Date(), uniwareUploadedBy: by.id });
+      void forgetCache(CACHE_NS.PO_OVERVIEW_COUNTS); // PO Overview list totals (2026-11-27): POs shown there change
       await m.getRepository(ShipmentLog).insert({
         shipmentUid: po.uid, userId: by.id, action: SHIPMENT_LOG_ACTION.UNIWARE_UPLOADED, source: SHIPMENT_LOG_SOURCE.SCREEN,
         remark: UNIWARE_OUTSIDE_TEXT.USE_CODE_REMARK(row.uniwareCode, po.orderNo1, remark),

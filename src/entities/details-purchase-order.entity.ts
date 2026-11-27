@@ -8,6 +8,9 @@ import { decimal } from './transformers';
 // PO Overview filters (2026-10-14).
 @Index('idx_details_po_sku_code', ['skuCode'])
 @Index('idx_details_po_brand', ['brandName'])
+// PO Overview line list page order (2026-11-27, migration LineListIndex): (shipmentOrderId DESC, id ASC); TypeORM cannot
+// describe a DESC column, so the index is made by the migration and left alone by schema sync / generate.
+@Index('idx_details_po_ship_desc', { synchronize: false })
 export class DetailsPurchaseOrder {
   @PrimaryGeneratedColumn({ name: 'id', type: 'bigint' })
   id: string;

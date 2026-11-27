@@ -83,6 +83,8 @@ export const flushChanges = (): Promise<void> => {
         more = changes.length > 0;
         // a new PO (any process / server) may bring a new channel / location / brand to the cached dropdowns (2026-11-10)
         if (changes.some((c) => c.action === SHIPMENT_LOG_ACTION.CREATED)) await forgetCache(CACHE_NS.PO_OVERVIEW_FILTERS);
+        // list totals per filter (2026-11-27): any PO change may move a PO in / out of a filter
+        if (changes.length) await forgetCache(CACHE_NS.PO_OVERVIEW_COUNTS);
         for (const c of changes) {
           if (Number(c.logId) > lastSent) lastSent = Number(c.logId);
           bus.emit('change', c);
