@@ -61,7 +61,7 @@ let lastSweep = 0;
 
 const keepFrom = (now = Date.now()) => new Date(now - NOTICES.KEEP_MS);
 const isManager = (actor: Actor) => actor.roles.some((r) => (USER_ADMIN_ROLES as readonly string[]).includes(r));
-const unknownPerson = (id: number): Person => ({ id, name: `User ${id}`, email: '' });
+const unknownPerson = (id: number): Person => (id === NOTICES.SYSTEM_FROM ? { id, name: NOTICES.SYSTEM_NAME, email: '' } : { id, name: `User ${id}`, email: '' });
 const bad = (field: string, message: string) => appError(ERROR_CODES.VALIDATION_FAILED).withDetails([{ field, code: ERROR_CODES.VALIDATION_FAILED, message }]);
 
 /** Forget the snapshot (the next bell re-reads it). Tests call this after resetting the DB. */
@@ -113,7 +113,7 @@ const view = (s: Snapshot, n: Notice, me: number): NoticeView => {
   return {
     id: String(n.id), from: person(n.fromUserId), to: n.toUserId === null ? NOTICE_TO_EVERYONE : person(n.toUserId),
     text: n.text, link: n.link, replyQuote: n.replyQuote, sent,
-    canReply: !sent && n.toUserId === me, read: sent || BigInt(n.id) <= seen,
+    canReply: !sent && n.toUserId === me && n.fromUserId !== NOTICES.SYSTEM_FROM, read: sent || BigInt(n.id) <= seen,
     createdAt: n.createdAt.toISOString(), expiresAt: new Date(n.createdAt.getTime() + NOTICES.KEEP_MS).toISOString(),
   };
 };
@@ -167,7 +167,7 @@ export const sendNotice = async (body: Record<string, unknown>, actor: Actor): P
     const id = typeof body.replyToId === 'string' || typeof body.replyToId === 'number' ? String(body.replyToId) : '';
     if (!/^\d{1,18}$/.test(id)) throw bad('replyToId', 'replyToId must be a notice id');
     const original = await repo.findOneBy({ id, createdAt: MoreThanOrEqual(keepFrom()) });
-    if (!original || original.toUserId !== actor.id || original.fromUserId === actor.id) throw appError(ERROR_CODES.NOTICE_REPLY_NOT_ALLOWED);
+    if (!original || original.toUserId !== actor.id || original.fromUserId === actor.id || original.fromUserId === NOTICES.SYSTEM_FROM) throw appError(ERROR_CODES.NOTICE_REPLY_NOT_ALLOWED);
     toUserId = original.fromUserId;
     replyToId = String(original.id);
     replyQuote = original.text.slice(0, NOTICES.REPLY_QUOTE_MAX);
@@ -189,6 +189,19 @@ export const sendNotice = async (body: Record<string, unknown>, actor: Actor): P
   await sweep();
   clearNoticeCache();
   return myNotices(actor);
+};
+
+/**
+ * The app's own notice to these people (2026-11-27: Myntra STR alerts), from NOTICES.SYSTEM_FROM (shown as POST_FG, no
+ * reply). Nothing when notices are switched off. One row per person, like any notice to one person.
+ */
+export const sendSystemNotices = async (userIds: number[], text: string, link: string | null): Promise<number> => {
+  if (!userIds.length || !(await readSettings())) return 0;
+  await AppDataSource.getRepository(Notice).insert(userIds.map((toUserId) => ({
+    fromUserId: NOTICES.SYSTEM_FROM, toUserId, text: text.slice(0, NOTICES.TEXT_MAX), link, replyToId: null, replyQuote: null,
+  })));
+  clearNoticeCache();
+  return userIds.length;
 };
 
 export interface NoticeSettings { enabled: boolean }

@@ -32,7 +32,6 @@ import { runJob } from './utils/log-call';
 import { log, logEvent } from './utils/logger';
 import { startCache, stopCache } from './modules/cache/cache.service';
 import { logCrashes, startProcessMonitor } from './utils/process-monitor';
-import { startStrRetry } from './modules/channel-api/myntra/str.service';
 import { startDiskCheck } from './modules/admin/server-health.service';
 
 const start = async (): Promise<void> => {
@@ -116,8 +115,8 @@ const start = async (): Promise<void> => {
   const robotSchedule = AppDataSource.isInitialized && !env.laptopMode ? startRobotSchedule() : undefined;
   // How full the disk is, every hour (2026-11-04; warning / error in the log for CloudWatch). Not on a laptop.
   const diskCheck = !env.laptopMode ? startDiskCheck() : undefined;
-  // Myntra STRs waiting (a failed run, a restart) are tried again by themselves (2026-11-03); same rule.
-  const strRetry = AppDataSource.isInitialized && !env.laptopMode ? startStrRetry() : undefined;
+  // Myntra STRs: no retry timer since 2026-11-27 (user: "don't keep on trying, it blocks the Myntra session"): waiting
+  // STRs run with the next STR email, Run robot now or Connect & run only.
 
   // D2C internal transfers (2026-11-03, phase 6): the Uniware SO status sync every d2c:settings.syncMinutes (read-only on
   // Uniware; one server at a time through a MySQL lock). Not on a laptop, not without a DB, not with D2C_SYNC_ENABLED=false.
@@ -200,7 +199,6 @@ const start = async (): Promise<void> => {
     uniwareOutside?.stop();
     uniwareCreate?.stop();
     d2cSync?.stop();
-    strRetry?.stop();
     diskCheck?.stop();
     await worker?.stop();
     if (recheckTimer) clearInterval(recheckTimer);

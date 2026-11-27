@@ -3,8 +3,9 @@ import { env } from '../../src/config/env';
 import { amazonConnector } from '../../src/modules/channel-api/amazon/amazon.connector';
 import { pollMinutesOf } from '../../src/modules/channel-api/poll-schedule';
 import { setFlipkartAfterStored } from '../../src/modules/channel-api/flipkart/consignments.service';
+import { setAfterStored as setStrAfterStored } from '../../src/modules/channel-api/myntra/str.service';
 import { api, loginAs, type TestLogin } from '../helpers/auth';
-import { closeDb, count, resetDb, rows } from '../helpers/db';
+import { closeDb, count, insert, resetDb, rows } from '../helpers/db';
 import { clearS3 } from '../helpers/fake-s3';
 import { seedMasters, type Masters } from '../helpers/fixtures';
 import { fkBulk, fkCsv, fkRobot, fkSwitchOn, seedFlipkart, WAREHOUSE } from '../helpers/flipkart';
@@ -17,7 +18,7 @@ import { covers } from '../helpers/routes';
  */
 covers([
   'GET /channel-pulls', 'GET /channel-pulls/:key/items', 'GET /channel-pulls/:key/robot', 'POST /channel-pulls/:key/robot',
-  'POST /channel-pulls/:key/process', 'PATCH /channel-pulls/:key/schedule',
+  'POST /channel-pulls/:key/process', 'PATCH /channel-pulls/:key/schedule', 'POST /channel-pulls/:key/connect',
 ]);
 
 const robotJob = vi.hoisted(() => {
@@ -155,6 +156,46 @@ describe('Run robot now -> Process now', () => {
     const run = await robotDone();
     expect(run).toMatchObject({ ok: false, stored: 0, error: 'Seller Hub did not open the dashboard after the OTP' });
     expect(await count('channel_pull_items')).toBe(0);
+  });
+});
+
+describe('Myntra STRs: Connect & run (2026-11-27)', () => {
+  const myntra = env.intransit.myntra;
+  const savedMyntra = { user: myntra.user, password: myntra.password };
+  afterEach(() => Object.assign(myntra, savedMyntra));
+  // what the ERP Robot Login extension posts: the portal's cookies from the person's Chrome (+ another site's, dropped)
+  const cookies = [
+    { name: 'session', value: 'abc', domain: 'partnersapi.myntrainfo.com', path: '/', expirationDate: Date.now() / 1000 + 86_400, sameSite: 'lax' },
+    { name: 'other', value: 'x', domain: 'example.com', path: '/' },
+  ];
+  const waitingStr = (id: string) => insert('channel_pull_items', {
+    source_system: 'myntra_str', external_id: id, status: null, warehouse: 'BP', created_on: '2026-11-27', label: `${id} · NON TC P0 · BP`,
+    data: JSON.stringify({ email: { folder: 'f', subject: 's', receivedAt: null }, order: 1, group: 'NON TC', priority: 'P0', destination: 'BP', runs: 0, lastError: null }),
+    fetched_at: new Date(), taken_at: null,
+  });
+
+  it('only editors; only Myntra STRs; refused when Chrome is not logged in to Myntra', async () => {
+    expect((await api().post(`${V}/myntra_str/connect`).send({ cookies }).expect(401)).body.error.code).toBe('UNAUTHENTICATED');
+    const viewer = await loginAs('viewer');
+    expect((await api().post(`${V}/myntra_str/connect`).set('Cookie', viewer.cookie).send({ cookies }).expect(403)).body.error.code).toBe('FORBIDDEN_PAGE');
+    expect((await api().post(`${V}/${FK_KEY}/connect`).set('Cookie', admin.cookie).send({ cookies }).expect(400)).body.error.code).toBe('CHANNEL_PULL_NO_CONNECT');
+    expect((await api().post(`${V}/myntra_str/connect`).set('Cookie', admin.cookie).send({ cookies: [cookies[1]] }).expect(422)).body.error.code).toBe('INTRANSIT_LOGIN_MISSING');
+    expect(robotJob.calls).toBe(0);
+  });
+
+  it('saves the login, clears "login needed", runs the waiting STRs at once (no check fetch)', async () => {
+    Object.assign(myntra, { user: 'robot@example.com', password: 'test-password' });
+    setStrAfterStored(() => undefined);
+    await waitingStr('STNCPWEBP271126-00');
+    await insert('app_state', { state_key: 'channel-pull:myntra-str:login', value: JSON.stringify({ since: '2026-11-27T05:00:00.000Z', kind: 'login', error: 'x', waiting: 1, alertedAt: '2026-11-27T05:00:00.000Z' }), updated_at: new Date() });
+    expect((await pull(admin, 'myntra_str')).robot).toMatchObject({ blocked: { kind: 'login', waiting: 1 } });
+    // the robot (recorder) answers with the STR's CSV
+    robotJob.result = [{ str: 'STNCPWEBP271126-00', csv: 'GTIN,SKU Code,Quantity,Source WH,Destination WH,MRP,IGST Rate\n08906129570016,MCAFF1,10,CPWE,Bilaspur Warehouse - Gurgaon,399,18\n' }];
+    const res = (await api().post(`${V}/myntra_str/connect`).set('Cookie', admin.cookie).send({ cookies }).expect(202)).body.data;
+    expect(res).toMatchObject({ cookies: 1, started: true, pull: { key: 'myntra_str' } });
+    await vi.waitFor(async () => expect((await rows<{ status: string | null }>("SELECT status FROM channel_pull_items WHERE source_system = 'myntra_str'"))[0].status).toBe('stored'));
+    expect(robotJob.calls).toBe(1);
+    expect((await pull(admin, 'myntra_str')).robot).toMatchObject({ blocked: null, lastRun: { ok: true, stored: 1, trigger: expect.stringMatching(/^connect & run/) } });
   });
 });
 

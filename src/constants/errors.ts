@@ -157,6 +157,7 @@ export const ERRORS = {
   CHANNEL_PULL_NO_PROCESSING: define(409, (label: string) => `${label}: making POs from these is not switched on yet`),
   CHANNEL_PULL_NO_SCHEDULE: define(400, (label: string) => `${label}: its robot starts when its email comes; it has no schedule`),
   CHANNEL_PULL_NO_ROBOT: define(400, (key: string) => `${key} has no robot to run (it is pulled by its API)`),
+  CHANNEL_PULL_NO_CONNECT: define(400, (key: string) => `${key} has no Connect & run (only Myntra STRs: its robot uses a person's Myntra login)`),
   CHANNEL_PULL_RUNNING: define(409, (what: string) => `${what} is already running: wait for it to finish`),
   MANUAL_AMAZON_STATUS: define(409, (id: string, status: string) => `${id} is ${status} at Amazon: cancelled / deleted / closed shipments are not made into POs`),
   MANUAL_MYNTRA_FILE: define(400, (name: string, why: string) => `${name} is not a Myntra STR file (${why}): upload the STR's CSV from the partner portal (STR Details > Download CSV), named <STR>-summary.csv`),

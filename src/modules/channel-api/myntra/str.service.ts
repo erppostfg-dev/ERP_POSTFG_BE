@@ -3,12 +3,15 @@ import path from 'path';
 import { In, IsNull } from 'typeorm';
 import { AppDataSource } from '../../../config/data-source';
 import { env } from '../../../config/env';
-import { APP_STATE_KEY, FILES, FOLDERS, monthFolder, MYNTRA_STR, PROVIDERS, SOURCE_SYSTEM, yearFolder } from '../../../constants';
+import { APP_STATE_KEY, FILES, FOLDERS, INTRANSIT_SOURCE, monthFolder, MYNTRA_STR, PROVIDERS, SOURCE_SYSTEM, yearFolder } from '../../../constants';
 import { LOG_SOURCE } from '../../../constants/logging';
 import { AppState, ChannelPullItem } from '../../../entities';
 import { log } from '../../../utils/logger';
 import { s3UrlOfKey, writeS3Text } from '../../email-intake/s3-mirror.service';
-import { runSellerHubJob } from '../../intransit/runs.service';
+import { Requester, runSellerHubJob } from '../../intransit/runs.service';
+import { saveRobotLogin } from '../../intransit/robot-login';
+import { MYNTRA_SESSION_NEEDED } from '../../intransit/sources/myntra-partner-portal';
+import { notifyStr } from './str-notify';
 import { readBodyText } from '../../po-processing/common/email-sources';
 import { intakeGate } from '../../po-intake-control/intake-settings.service';
 import { isStrEmail, StrRef, strsOf } from './str-email';
@@ -25,7 +28,11 @@ import { myntraStrConnector } from './myntra-str.connector';
  *      (status null = waiting), in the email's order; then the robot starts;
  *   2. the robot (In-transit worker, the Myntra login, one browser job at a time) downloads each waiting STR's CSV;
  *   3. here: CSV + processed.json -> S3 channel-api/FY<yy><yy>/<month>/myntra/<STR>/ (no local copy kept), the row ->
- *      `stored` with the S3 folder and a summary. An STR that fails waits for the next run; after MAX_RUNS runs -> failed.
+ *      `stored` with the S3 folder and a summary. An STR that does not download -> failed at once (MAX_RUNS 1).
+ * Never by itself again (2026-11-27, user: "don't block the Myntra session, don't keep on trying if it fails"): the robot
+ * uses the saved Myntra login only (never logs in), no retry timer. The login not working / the run failing = the STRs
+ * stay waiting and the "Myntra STRs" mail list hears it ONCE (bell + email: log in to Myntra, Connect & run); they run
+ * again only with the next STR email, Run robot now, or Connect & run (the person's login from Chrome, then a run).
  * Then (step 2, 2026-11-03) the stored STRs go through the Myntra connector at once (myntra-str.connector.ts): PO +
  * sale order, or In Review. One run at a time; an email during a run -> one more run.
  */
@@ -55,6 +62,31 @@ export const strRobotConfigured = (): boolean => !!(env.intransit.myntra.user &&
 export const lastStrRun = async (): Promise<StrRun | null> =>
   ((await stateRepo().findOneBy({ key: APP_STATE_KEY.MYNTRA_STR_ROBOT }))?.value as StrRun | undefined) ?? null;
 const saveRun = (run: StrRun) => stateRepo().save({ key: APP_STATE_KEY.MYNTRA_STR_ROBOT, value: run as unknown as Record<string, unknown>, updatedAt: new Date() });
+
+/** While the robot cannot run (login not working / run failed): since when, why, how many STRs wait; alerted once. */
+export interface StrBlocked {
+  since: string;
+  kind: 'login' | 'failed';
+  error: string;
+  waiting: number;
+  alertedAt: string | null;
+}
+export const strBlocked = async (): Promise<StrBlocked | null> =>
+  ((await stateRepo().findOneBy({ key: APP_STATE_KEY.MYNTRA_STR_LOGIN }))?.value as StrBlocked | undefined) ?? null;
+const clearBlocked = async (): Promise<void> => { await stateRepo().delete({ key: APP_STATE_KEY.MYNTRA_STR_LOGIN }); };
+
+/** The run could not work: STRs stay waiting, the mail list hears it once (not again until a good run or Connect). */
+const blocked = async (kind: StrBlocked['kind'], error: string, waiting: number): Promise<void> => {
+  const was = await strBlocked();
+  const alert = !was?.alertedAt;
+  const now = new Date().toISOString();
+  const next: StrBlocked = { since: was?.since ?? now, kind, error: error.slice(0, 300), waiting, alertedAt: was?.alertedAt ?? (alert ? now : null) };
+  await stateRepo().save({ key: APP_STATE_KEY.MYNTRA_STR_LOGIN, value: { ...next }, updatedAt: new Date() });
+  if (alert) {
+    const n = MYNTRA_STR.NOTIFY;
+    await (kind === 'login' ? notifyStr(n.LOGIN_NEEDED(waiting), n.LOGIN_SUBJECT(waiting)) : notifyStr(n.FAILED(waiting, error), n.FAILED_SUBJECT));
+  }
+};
 
 /** S3 folder (no trailing slash) of one STR, by the date in its code. */
 export const strS3Folder = (str: string, date: string): string => {
@@ -190,12 +222,19 @@ export const runStrRobot = async (trigger: string, fetcher: StrFetcher = workerF
   } catch (err) {
     out.ok = false;
     out.error = (err instanceof Error ? err.message : String(err)).slice(0, 500);
-    // the whole run failed (login, browser): each STR counts one try
-    for (const item of waiting) await failOne(item, out.error);
-    log.error(LOG_SOURCE.APP, `[myntra-str] ${trigger}: failed (waiting STRs are tried again): ${out.error}`);
+    // the whole run failed (the login, the browser): the STRs stay waiting, not counted; nothing tries again by itself
+    const login = out.error.includes(MYNTRA_SESSION_NEEDED);
+    log.error(LOG_SOURCE.APP, `[myntra-str] ${trigger}: ${login ? 'Myntra login needed' : 'failed'} (${waiting.length} STR(s) wait for Connect & run / Run robot now): ${out.error}`);
+    out.finishedAt = new Date().toISOString();
+    await saveRun(out);
+    await blocked(login ? 'login' : 'failed', out.error, waiting.length);
+    return out;
   }
   out.finishedAt = new Date().toISOString();
   await saveRun(out);
+  // a good run: the login works again (the next problem is alerted again); the people hear what came in
+  await clearBlocked();
+  await notifyStr(MYNTRA_STR.NOTIFY.DONE(out.stored, out.failed.length), MYNTRA_STR.NOTIFY.DONE_SUBJECT(out.stored, out.failed.length));
   // step 2 (2026-11-03): the STRs just stored become POs at once (the shared runner, as Flipkart's Process now)
   if (out.stored && MYNTRA_STR.PROCESSING) afterStored();
   return out;
@@ -224,13 +263,15 @@ export const startStrRun = (trigger: string): Promise<StrRun> | null => {
   return running;
 };
 
-/** Self-healing: waiting STRs (a failed run, a restart) are tried again every RETRY_MS (not in laptop mode). */
-export const startStrRetry = (everyMs = 30 * 60_000): { stop: () => void } => {
-  const timer = setInterval(() => {
-    void repo().count({ where: { sourceSystem: S, status: IsNull() } })
-      .then((n) => { if (n && !running) void startStrRun('retry'); })
-      .catch((err: unknown) => log.error(LOG_SOURCE.APP, `[myntra-str] retry check failed: ${err instanceof Error ? err.message : String(err)}`));
-  }, everyMs);
-  timer.unref();
-  return { stop: () => clearInterval(timer) };
+/**
+ * Connect & run (2026-11-27, Channel Pulls > Myntra): the person's Myntra login from their Chrome (the ERP Robot Login
+ * extension's cookies; the same session they keep using, not a new login) becomes the robot's saved login, then the
+ * waiting STRs run at once. No check fetch (the STR run is the check).
+ */
+export const connectAndRun = async (body: { cookies?: unknown; localStorage?: unknown }, who: Requester): Promise<{ cookies: number; started: boolean }> => {
+  const saved = await saveRobotLogin(INTRANSIT_SOURCE.MYNTRA, body, who, false);
+  await clearBlocked();
+  const started = startStrRun(`connect & run (${who.name ?? `user ${who.id}`})`);
+  void started?.catch(() => undefined);
+  return { cookies: saved.cookies, started: started !== null };
 };

@@ -19,6 +19,7 @@ export const MAIL_LIST = {
   INTRANSIT_DAILY: 'intransit-daily',
   INTRANSIT_FETCH_FAILURE: 'intransit-fetch-failure',
   INTRANSIT_FACILITY_CHANGES: 'intransit-facility-changes',
+  MYNTRA_STR: 'myntra-str',
 } as const;
 export type MailListKey = (typeof MAIL_LIST)[keyof typeof MAIL_LIST];
 
@@ -40,6 +41,12 @@ export const MAIL_LISTS: readonly MailListDef[] = [
     name: 'In-transit facility changes',
     description: 'Monday check of Uniware: facilities enabled there but not in the in-transit report yet, and ones disabled there but still exported / counted.',
     area: 'In-transit Stock',
+  },
+  {
+    key: MAIL_LIST.MYNTRA_STR,
+    name: 'Myntra STRs',
+    description: 'Myntra STR robot: the Myntra login is needed for waiting STRs (log in to Myntra in Chrome, then Connect & run on Channel Pulls), the robot could not run, or a run is done. People here who use POST_FG get it in the bell too.',
+    area: 'Channel Pulls',
   },
 ];
 

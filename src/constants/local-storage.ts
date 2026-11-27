@@ -43,6 +43,8 @@ export const APP_STATE_KEY = {
   DISK_LAST: 'server:disk',
   /** The Myntra STR robot's last run (2026-11-03). */
   MYNTRA_STR_ROBOT: 'channel-pull:myntra-str',
+  /** Its login state (2026-11-27): { since, waiting, alertedAt } while the saved Myntra login does not work, else absent. */
+  MYNTRA_STR_LOGIN: 'channel-pull:myntra-str:login',
   /** Its schedule: { everyHours, updatedBy, updatedAt } (Channel Pulls). */
   FLIPKART_ROBOT_SCHEDULE: 'channel-pull:flipkart:schedule',
   /** The last Bulk Consignment File the robot read: { savedAt, headers by consignment id } (Manual Upload's warehouse). */

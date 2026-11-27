@@ -205,13 +205,27 @@ const openLoginForm = async (page: Page): Promise<'form' | 'portal' | null> => {
   return opened;
 };
 
-/** Open the portal; when the saved session has expired, log in with the email and password. */
-const ensureLogin = async (page: Page, context: BrowserContext, cfg: MyntraConfig, sessionFile: string, log: Log): Promise<void> => {
+/**
+ * The words a saved-session-only run fails with when the saved session no longer opens the portal (channel-api Myntra
+ * STRs, 2026-11-27): its caller waits for a person's Connect instead of trying anything else.
+ */
+export const MYNTRA_SESSION_NEEDED = 'Myntra login needed: the saved login no longer opens the portal';
+
+/**
+ * Open the portal; when the saved session has expired, log in with the email and password. savedOnly (Myntra STRs,
+ * 2026-11-27, user: "don't block the Myntra session, don't keep trying"): never type the password and never press the
+ * landing page's buttons (both are new logins of the shared account): the saved session opens the portal, or the run
+ * stops with MYNTRA_SESSION_NEEDED.
+ */
+const ensureLogin = async (page: Page, context: BrowserContext, cfg: MyntraConfig, sessionFile: string, log: Log, savedOnly = false): Promise<void> => {
   // a portal page opens straight away with a valid session (the landing page does not show the portal then)
   await page.goto(DASHBOARD);
   const loggedIn = await page.getByText(PORTAL_MENU, { exact: true }).first().waitFor({ state: 'visible', timeout: 30_000 }).then(() => true, () => false);
   if (loggedIn) {
     log('Myntra: logged in (saved session)');
+  } else if (savedOnly) {
+    log('Myntra: the saved login no longer opens the portal; not logging in (waits for Connect)');
+    throw new Error(MYNTRA_SESSION_NEEDED);
   } else {
     const { user, password } = requireLogin(cfg);
     log('Myntra: logging in');
@@ -364,12 +378,12 @@ const FILES: Record<MyntraFile, RobotFile> = {
   grn: { name: 'Myntra_GRN.csv', download: downloadGrn },
 };
 
-const withPortal = async <T>(cfg: MyntraConfig, cacheDir: string, log: Log, work: (page: Page) => Promise<T>): Promise<T> => {
+const withPortal = async <T>(cfg: MyntraConfig, cacheDir: string, log: Log, work: (page: Page) => Promise<T>, savedOnly = false): Promise<T> => {
   const sessionFile = path.join(cacheDir, SESSION_FILE);
   const { browser, context } = await openBrowser(cfg, sessionFile);
   const page = await context.newPage();
   try {
-    await ensureLogin(page, context, cfg, sessionFile, log);
+    await ensureLogin(page, context, cfg, sessionFile, log, savedOnly);
     await skipHeavyContent(context);
     return await work(page);
   } catch (err) {
@@ -380,8 +394,12 @@ const withPortal = async <T>(cfg: MyntraConfig, cacheDir: string, log: Log, work
   }
 };
 
-/** The same browser + login for another module's robot (channel-api/myntra STRs, 2026-11-03). */
-export const withMyntraPortal = withPortal;
+/**
+ * The same browser + login for another module's robot (channel-api/myntra STRs, 2026-11-03). Saved session only
+ * (2026-11-27): it never logs in itself, so it never ends anyone's Myntra session; MYNTRA_SESSION_NEEDED when it fails.
+ */
+export const withMyntraPortal = <T>(cfg: MyntraConfig, cacheDir: string, log: Log, work: (page: Page) => Promise<T>): Promise<T> =>
+  withPortal(cfg, cacheDir, log, work, true);
 
 /** Where the browser was and what it showed (for a failed step's log: on a server nobody sees the window). */
 const pageState = async (page: Page): Promise<string> => {
