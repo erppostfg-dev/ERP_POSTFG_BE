@@ -189,6 +189,10 @@ export const ERRORS = {
   MASTER_HISTORY_BAD_REQUEST: define(400, (what: string) => `Masters history: ${what}`),
   MASTER_ROW_NOT_FOUND: define(404, (type: string, id: string) => `No ${type} row ${id}`),
   MASTER_EDIT_CONFLICT: define(409, () => 'Someone else changed this row while you were editing: reload it and save again'),
+  // Masters bulk upload (2026-11-27)
+  MASTER_BULK_NOT_SUPPORTED: define(400, (type: string, ok: string) => `Bulk upload is not available for "${type}" yet (now: ${ok})`),
+  MASTER_BULK_TOO_MANY: define(400, (rows: number, max: number) => `The file has ${rows} rows: at most ${max} per upload (split it)`),
+  MASTER_BULK_HAS_ERRORS: define(422, (n: number) => `${n} row(s) have problems: nothing was saved. Fix them (see the list) and upload again`),
   USER_ID_NOT_FOUND: define(404, (id: string) => `No user ${id}`),
   // --- Feedback (2026-10-29, constants/feedback.ts) ---
   FEEDBACK_NOT_FOUND: define(404, (id: string) => `No feedback item ${id}`),

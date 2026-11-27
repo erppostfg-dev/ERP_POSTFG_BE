@@ -211,7 +211,10 @@ export const insertChannelSku = async (m: EntityManager, by: Actor, v: NewChanne
  * approval of margins): it is added to master_channel_skus when it is approved. Since 2026-11-10 (user) a new channel SKU
  * needs ONE approval (Operations Manager / admin / developer); changes to existing rows keep two.
  */
-export const addChannelSku = async (body: unknown, by: Actor) => {
+export const addChannelSku = async (body: unknown, by: Actor) => AppDataSource.transaction((m) => addChannelSkuIn(m, body, by));
+
+/** The same add inside the caller's transaction (Masters bulk upload, 2026-11-27: every row of a file, all or nothing). */
+export const addChannelSkuIn = async (m: EntityManager, body: unknown, by: Actor) => {
   const c = checker(body);
   const v = {
     channelId: c.number('channelId', { min: 1, max: 2_147_483_647, int: true }), channelCode: c.text('channelCode'), pepCode: c.text('pepCode'),
@@ -220,7 +223,7 @@ export const addChannelSku = async (body: unknown, by: Actor) => {
   };
   const remark = c.remark();
   if (v.mrp !== null && v.rateAfterMargin !== null && v.rateAfterMargin > v.mrp) c.bad('rateAfterMargin', 'FIELD_OUT_OF_RANGE', 'rateAfterMargin', 0, v.mrp);
-  return AppDataSource.transaction(async (m) => {
+  {
     const channel = v.channelId ? await one<{ id: number; display_name: string }>(m, `SELECT id, display_name FROM ${TABLES.MASTER_CHANNELS} WHERE id = ?`, [v.channelId]) : undefined;
     if (v.channelId && !channel) c.bad('channelId', 'FIELD_NOT_FOUND', 'channelId', String(v.channelId));
     const sku = v.pepCode ? await one<{ id: number; pep_code: string }>(m, `SELECT id, pep_code FROM ${TABLES.MASTER_SKUS} WHERE LOWER(pep_code) = LOWER(?) LIMIT 1`, [v.pepCode]) : undefined;
@@ -237,7 +240,7 @@ export const addChannelSku = async (body: unknown, by: Actor) => {
     const requestId = await requestChannelSkuAdd(m, row, by, remark);
     log.info(LOG_SOURCE.APP, `[masters] ${by.email} asked to map ${row.channelName} ${row.channelCode} -> ${row.pepCode} (margin request #${requestId})`);
     return { requestId, channel: row.channelName };
-  });
+  }
 };
 
 // ---- Channel (master_channels) -------------------------------------------------------------------------------------

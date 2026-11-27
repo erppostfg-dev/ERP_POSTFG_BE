@@ -31,6 +31,11 @@ export const MASTER_ROUTES = {
   TRANSFER_ROUTES_TEMPLATE: '/transfer-routes/template',
   TRANSFER_ROUTES_PREVIEW: '/transfer-routes/upload/preview',
   TRANSFER_ROUTES_IMPORT: '/transfer-routes/upload/import',
+  /** Bulk upload (2026-11-27): the format (columns + lists), today's rows, check (nothing saved), apply (all or nothing). */
+  BULK_FORMAT: '/bulk/:type/format',
+  BULK_CURRENT: '/bulk/:type/current',
+  BULK_CHECK: '/bulk/:type/check',
+  BULK_APPLY: '/bulk/:type/apply',
 } as const;
 
 /**
@@ -44,6 +49,36 @@ export const ROUTE_UPLOAD_COLUMN = {
 } as const;
 export const ROUTE_UPLOAD_COLUMNS = Object.values(ROUTE_UPLOAD_COLUMN);
 export const ROUTE_UPLOAD_REQUIRED = [ROUTE_UPLOAD_COLUMN.SENDER, ROUTE_UPLOAD_COLUMN.CHANNEL, ROUTE_UPLOAD_COLUMN.LOCATION, ROUTE_UPLOAD_COLUMN.UNIWARE_CHANNEL];
+/**
+ * Masters bulk upload (2026-11-27, master-bulk.service.ts): one mode per file (add | update), up to MAX_ROWS rows.
+ * FIRST_DATA_ROW = the Excel row of the first data row (row 1 = the column names), so problems name the row people see.
+ */
+export const MASTER_BULK = {
+  MAX_ROWS: 5000,
+  FIRST_DATA_ROW: 2,
+  YES_NO: ['Yes', 'No'] as readonly string[],
+  REMARK_PREFIX: 'Bulk upload',
+  DEFAULT_FILE: 'upload.xlsx',
+} as const;
+export type MasterBulkMode = 'add' | 'update';
+/** One column of a bulk file: the frontend builds the Excel (header note, drop-down, number rule) from it. */
+export interface MasterBulkColumn {
+  key: string;
+  label: string;
+  type: 'text' | 'decimal' | 'int' | 'list' | 'yesno';
+  required: boolean;
+  /** Update files: shown for reference, never changed (a key of the row). */
+  readOnly?: boolean;
+  /** type list: which list of the format's lists. */
+  list?: string;
+  min?: number;
+  max?: number;
+  /** A format rule said in words (EAN digits ...). */
+  pattern?: string;
+  help: string;
+  example: string;
+}
+
 export const ROUTE_UPLOAD = { FIELD: 'file', MAX_BYTES: 2 * 1024 * 1024, MAX_ROWS: 5000, CUSTOMER_NAME_MAX: 255 } as const;
 
 /** Masters history (2026-10-28): most entries one call returns, and the "recent changes" look-back (days). */

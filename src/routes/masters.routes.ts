@@ -9,6 +9,7 @@ import { forgetMasters } from '../modules/masters/masters.cache';
 import { addChannel, addChannelLocation, addChannelSku, addPepSku, formOptions } from '../modules/masters/master-add.service';
 import { isMasterLogType, recentChanges, rowHistory } from '../modules/masters/master-history.service';
 import { editRow, setActive } from '../modules/masters/master-edit.service';
+import { bulkApply, bulkCheck, bulkCurrent, bulkFormat } from '../modules/masters/master-bulk.service';
 import { appError } from '../utils/AppError';
 import { listChannelCustomers } from '../modules/masters/channel-customers.service';
 import { listChannelSkus } from '../modules/masters/channel-skus.service';
@@ -227,5 +228,19 @@ router.post(MASTER_ROUTES.TRANSFER_ROUTES_PREVIEW, requireAuth, editorOf(PAGE.TR
 });
 router.post(MASTER_ROUTES.TRANSFER_ROUTES_IMPORT, requireAuth, editorOf(PAGE.TRANSFER_ROUTES), routesFile,
   created((req) => importRoutesUpload(fileOf(req), req.body, actor(req))));
+
+// Bulk upload (2026-11-27, master-bulk.service.ts): format + current data for viewers of that master's page; check
+// (nothing saved) + apply (all or nothing) for its editors, the same people as Add / Edit. Rows come as JSON (the browser
+// reads the Excel). An unknown :type -> 400 MASTER_BULK_NOT_SUPPORTED.
+const viewerOfType = (req: Request, res: Response, next: NextFunction) =>
+  (isMasterLogType(req.params.type) ? requirePage(MASTER_PAGE[req.params.type], ACCESS_LEVEL.VIEWER)(req, res, next) : next());
+// reads + the check write nothing: answered without dropping the Masters cache (apply drops it, as every write)
+const answer = (fn: (req: Request) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => {
+  fn(req).then((data) => res.json({ data })).catch(next);
+};
+router.get(MASTER_ROUTES.BULK_FORMAT, requireAuth, viewerOfType, answer((req) => bulkFormat(req.params.type)));
+router.get(MASTER_ROUTES.BULK_CURRENT, requireAuth, viewerOfType, answer((req) => bulkCurrent(req.params.type)));
+router.post(MASTER_ROUTES.BULK_CHECK, requireAuth, editorOfType, answer((req) => bulkCheck(req.params.type, req.body ?? {}, actor(req))));
+router.post(MASTER_ROUTES.BULK_APPLY, requireAuth, editorOfType, ok((req) => bulkApply(req.params.type, req.body ?? {}, actor(req))));
 
 export default router;
