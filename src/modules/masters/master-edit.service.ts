@@ -408,6 +408,23 @@ export const setActive = async (rawType: unknown, rawId: unknown, body: unknown,
   return { active, changed: result.changed };
 };
 
+/**
+ * Rows of a master in the Edit form's units (Masters bulk upload "current data", 2026-11-27): id, active, the key columns
+ * (DB names) and every editable field read as the form shows it (margin as a percent, Yes / No ...). ids = only those.
+ */
+export const readFormRows = async (m: EntityManager | typeof AppDataSource, type: MasterLogType, ids?: string[]): Promise<Row[]> => {
+  const spec = SPECS[type];
+  const cols = [...new Set(['id', 'is_active', ...spec.keyCols, ...Object.values(spec.fields).map((f) => f.col)])];
+  const where = ids ? ` WHERE id IN (${ids.map(() => '?').join(', ') || 'NULL'})` : '';
+  const rows = await m.query<Row[]>(`SELECT ${cols.map((c) => `\`${c}\``).join(', ')} FROM \`${spec.table}\`${where} ORDER BY ${spec.keyCols.map((c) => `\`${c}\``).join(', ')}`, ids ?? []);
+  return rows.map((r) => {
+    const out: Row = { id: str(r.id), is_active: r.is_active === null || r.is_active === undefined ? true : !!Number(r.is_active) };
+    for (const k of spec.keyCols) out[k] = r[k];
+    for (const [k, f] of Object.entries(spec.fields)) out[k] = (f.read ?? ((v: unknown) => v as Value))(r[f.col]);
+    return out;
+  });
+};
+
 /** Editable form keys per master (the frontend's Edit form uses the same keys as the Add form). */
 export const editableFields = (): Record<MasterLogType, { locked: string[]; fields: string[] }> =>
   Object.fromEntries(Object.entries(SPECS).map(([t, s]) => [t, { locked: s.locked, fields: Object.keys(s.fields) }])) as Record<MasterLogType, { locked: string[]; fields: string[] }>;

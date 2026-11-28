@@ -157,7 +157,10 @@ export const formOptions = async () => {
 
 // ---- PEP SKU (master_skus) -----------------------------------------------------------------------------------------
 
-export const addPepSku = async (body: unknown, by: Actor) => {
+export const addPepSku = async (body: unknown, by: Actor) => AppDataSource.transaction((m) => addPepSkuIn(m, body, by));
+
+/** The same add inside the caller's transaction (Masters bulk upload, 2026-11-27). */
+export const addPepSkuIn = async (m: EntityManager, body: unknown, by: Actor) => {
   const c = checker(body);
   const v = {
     pepCode: c.text('pepCode'), productName: c.text('productName'), brand: c.text('brand'), productType: c.text('productType'),
@@ -166,7 +169,7 @@ export const addPepSku = async (body: unknown, by: Actor) => {
     weightG: c.number('weightG'), shelfLife: c.number('shelfLife', { min: 1, max: 3650, int: true }), isActive: c.bool('isActive'),
   };
   const remark = c.remark();
-  return AppDataSource.transaction(async (m) => {
+  {
     if (v.pepCode && (await one(m, `SELECT id FROM ${TABLES.MASTER_SKUS} WHERE LOWER(pep_code) = LOWER(?) LIMIT 1`, [v.pepCode]))) c.bad('pepCode', 'FIELD_ALREADY_EXISTS', 'pepCode', v.pepCode);
     c.done();
     const now = new Date();
@@ -179,7 +182,7 @@ export const addPepSku = async (body: unknown, by: Actor) => {
     await logCreated(m, by, MASTER_LOG_TYPE.PEP_SKU, r.identifiers[0]?.id, v.pepCode!, v, remark);
     log.info(LOG_SOURCE.APP, `[masters] ${by.email} added PEP SKU ${v.pepCode}`);
     return { id: String(r.identifiers[0]?.id ?? ''), pepCode: v.pepCode };
-  });
+  }
 };
 
 // ---- Channel SKU (master_channel_skus) -----------------------------------------------------------------------------
@@ -211,7 +214,10 @@ export const insertChannelSku = async (m: EntityManager, by: Actor, v: NewChanne
  * approval of margins): it is added to master_channel_skus when it is approved. Since 2026-11-10 (user) a new channel SKU
  * needs ONE approval (Operations Manager / admin / developer); changes to existing rows keep two.
  */
-export const addChannelSku = async (body: unknown, by: Actor) => {
+export const addChannelSku = async (body: unknown, by: Actor) => AppDataSource.transaction((m) => addChannelSkuIn(m, body, by));
+
+/** The same add inside the caller's transaction (Masters bulk upload, 2026-11-27: every row of a file, all or nothing). */
+export const addChannelSkuIn = async (m: EntityManager, body: unknown, by: Actor) => {
   const c = checker(body);
   const v = {
     channelId: c.number('channelId', { min: 1, max: 2_147_483_647, int: true }), channelCode: c.text('channelCode'), pepCode: c.text('pepCode'),
@@ -220,7 +226,7 @@ export const addChannelSku = async (body: unknown, by: Actor) => {
   };
   const remark = c.remark();
   if (v.mrp !== null && v.rateAfterMargin !== null && v.rateAfterMargin > v.mrp) c.bad('rateAfterMargin', 'FIELD_OUT_OF_RANGE', 'rateAfterMargin', 0, v.mrp);
-  return AppDataSource.transaction(async (m) => {
+  {
     const channel = v.channelId ? await one<{ id: number; display_name: string }>(m, `SELECT id, display_name FROM ${TABLES.MASTER_CHANNELS} WHERE id = ?`, [v.channelId]) : undefined;
     if (v.channelId && !channel) c.bad('channelId', 'FIELD_NOT_FOUND', 'channelId', String(v.channelId));
     const sku = v.pepCode ? await one<{ id: number; pep_code: string }>(m, `SELECT id, pep_code FROM ${TABLES.MASTER_SKUS} WHERE LOWER(pep_code) = LOWER(?) LIMIT 1`, [v.pepCode]) : undefined;
@@ -237,16 +243,19 @@ export const addChannelSku = async (body: unknown, by: Actor) => {
     const requestId = await requestChannelSkuAdd(m, row, by, remark);
     log.info(LOG_SOURCE.APP, `[masters] ${by.email} asked to map ${row.channelName} ${row.channelCode} -> ${row.pepCode} (margin request #${requestId})`);
     return { requestId, channel: row.channelName };
-  });
+  }
 };
 
 // ---- Channel (master_channels) -------------------------------------------------------------------------------------
 
-export const addChannel = async (body: unknown, by: Actor) => {
+export const addChannel = async (body: unknown, by: Actor) => AppDataSource.transaction((m) => addChannelIn(m, body, by));
+
+/** The same add inside the caller's transaction (Masters bulk upload, 2026-11-27). */
+export const addChannelIn = async (m: EntityManager, body: unknown, by: Actor) => {
   const c = checker(body);
   const v = { displayName: c.text('displayName'), slug: c.format('slug', MASTER_ADD.SLUG), aliases: c.list('aliases'), isActive: c.bool('isActive') };
   const remark = c.remark();
-  return AppDataSource.transaction(async (m) => {
+  {
     const all = (await m.query(`SELECT id, slug, display_name, db_aliases FROM ${TABLES.MASTER_CHANNELS}`)) as { id: number; slug: string; display_name: string; db_aliases: string[] | string | null }[];
     const lc = (s: string) => s.trim().toLowerCase();
     const taken = new Map<string, string>();
@@ -265,12 +274,19 @@ export const addChannel = async (body: unknown, by: Actor) => {
     await logCreated(m, by, MASTER_LOG_TYPE.CHANNEL, r.identifiers[0]?.id, v.displayName!, v, remark);
     log.info(LOG_SOURCE.APP, `[masters] ${by.email} added channel ${v.displayName}`);
     return { id: Number(r.identifiers[0]?.id ?? 0), displayName: v.displayName };
-  });
+  }
 };
 
 // ---- Channel location (details_channels) ---------------------------------------------------------------------------
 
 export const addChannelLocation = async (body: unknown, by: Actor) => {
+  const result = await AppDataSource.transaction((m) => addChannelLocationIn(m, body, by));
+  recheckChannel(result.channel);
+  return result;
+};
+
+/** The same add inside the caller's transaction (Masters bulk upload, 2026-11-27); the caller re-checks the channel. */
+export const addChannelLocationIn = async (m: EntityManager, body: unknown, by: Actor) => {
   const c = checker(body);
   const v = {
     channelId: c.number('channelId', { min: 1, max: 2_147_483_647, int: true }), locationCode: c.text('locationCode'),
@@ -284,7 +300,7 @@ export const addChannelLocation = async (body: unknown, by: Actor) => {
     transferFacilityId: hasValue(body, 'transferFacilityId') ? c.number('transferFacilityId', { min: 1, max: 2_147_483_647, int: true }) : null,
   };
   const remark = c.remark();
-  const result = await AppDataSource.transaction(async (m) => {
+  {
     const channel = v.channelId ? await one<{ id: number; display_name: string }>(m, `SELECT id, display_name FROM ${TABLES.MASTER_CHANNELS} WHERE id = ?`, [v.channelId]) : undefined;
     if (v.channelId && !channel) c.bad('channelId', 'FIELD_NOT_FOUND', 'channelId', String(v.channelId));
     // facility codes are exact (upper / lower case = main / child warehouse)
@@ -311,7 +327,5 @@ export const addChannelLocation = async (body: unknown, by: Actor) => {
       { ...v, channelId: undefined, transferFacilityId: v.transferFacilityId ?? undefined, channel: channel!.display_name }, remark);
     log.info(LOG_SOURCE.APP, `[masters] ${by.email} added location ${channel!.display_name} ${v.locationCode}`);
     return { id: String(r.identifiers[0]?.id ?? ''), channel: channel!.display_name };
-  });
-  recheckChannel(result.channel);
-  return result;
+  }
 };
